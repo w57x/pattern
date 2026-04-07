@@ -1,10 +1,14 @@
-use std::os::fd::{AsFd, BorrowedFd};
+use std::{
+    cell::RefCell,
+    os::fd::{AsFd, BorrowedFd},
+    rc::Rc,
+};
 use udev::Enumerator;
 
 pub mod buffer;
 
 /// A simple wrapper for a device node.
-pub struct Card(std::fs::File);
+pub struct Card(std::fs::File, libseat::Device);
 
 impl AsFd for Card {
     fn as_fd(&self) -> BorrowedFd<'_> {
@@ -14,7 +18,7 @@ impl AsFd for Card {
 
 impl Card {
     /// Simple helper methods for opening a `Card`.
-    pub fn open(p: Option<&str>) -> Self {
+    pub fn open(p: Option<&str>, seat: Rc<RefCell<libseat::Seat>>) -> Self {
         let path = if p.is_some() {
             std::path::PathBuf::from(p.unwrap())
         } else {
@@ -25,10 +29,20 @@ impl Card {
                 panic!("Unable to locate a GPU to use");
             }
         };
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true);
-        options.write(true);
-        Card(options.open(path).unwrap())
+
+        let drm_device = seat
+            .borrow_mut()
+            .open_device(&path)
+            .expect("Seat manager refused to open the GPU");
+
+        let drm_fd = nix::unistd::dup(&drm_device).unwrap();
+        let gpu_file = std::fs::File::from(drm_fd);
+
+        // let mut options = std::fs::OpenOptions::new();
+        // options.read(true);
+        // options.write(true);
+        // Card(options.open(path).unwrap())
+        Card(gpu_file, drm_device)
     }
 
     pub fn find_primary_gpu() -> Option<std::path::PathBuf> {
@@ -100,6 +114,12 @@ impl Card {
 
 impl drm::Device for Card {}
 impl drm::control::Device for Card {}
+
+impl std::fmt::Display for Card {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Card(.file = {:?}, .seat = {:?})", self.0, self.1)
+    }
+}
 
 #[allow(unused)]
 pub struct GpuInfo {

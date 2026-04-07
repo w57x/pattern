@@ -1,6 +1,9 @@
+use std::{cell::RefCell, rc::Rc};
+
 use drm::control::Device as _;
 use gbm::{AsRaw as _, BufferObjectFlags, Device, Format};
 use khronos_egl as egl;
+use libseat::Seat;
 
 use crate::{
     gpu::{Card, buffer::Buffer},
@@ -15,7 +18,19 @@ mod input;
 const PLATFORM_GBM_MESA: egl::Enum = 0x31D7;
 
 fn main() {
-    let card = Card::open(None);
+    let seat = Seat::open(|seat, event| match event {
+        libseat::SeatEvent::Enable => println!("[seat]: Acquired DRM Master!"),
+        libseat::SeatEvent::Disable => {
+            println!("[seat]: Lost DRM Master! (User switched TTY)");
+            seat.disable().unwrap();
+        }
+    })
+    .expect("Failed to open libseat. Is seatd or systemd-logind running?");
+
+    let shared_seat = Rc::new(RefCell::new(seat));
+
+    let card = Card::open(None, shared_seat.clone());
+    println!("[info]: {card}");
     println!("[info]: {:?}", card.get_driver().unwrap());
 
     let info = card.fetch_gpu_info();
@@ -103,16 +118,22 @@ fn main() {
     println!("[pattern]: Started :)");
 
     let epoll = epoll::Epoll::new(epoll::EpollCreateFlags::empty()).unwrap();
+
     let drm_event = epoll::EpollEvent::new(epoll::EpollFlags::EPOLLIN, 0);
-    epoll.add(&card, drm_event).unwrap();
 
     let mut current_fb: Option<drm::control::framebuffer::Handle> = None;
     let mut current_bo: Option<Buffer<()>> = None;
 
-    let mut input = Input::new(width as f64, height as f64);
-
+    let mut input = Input::new(shared_seat.clone(), width as f64, height as f64);
     let input_event = epoll::EpollEvent::new(epoll::EpollFlags::EPOLLIN, 1);
+
+    let seat_event = epoll::EpollEvent::new(epoll::EpollFlags::EPOLLIN, 2);
+
+    epoll.add(&card, drm_event).unwrap();
     epoll.add(&input.context, input_event).unwrap();
+    epoll
+        .add(shared_seat.borrow_mut().get_fd().unwrap(), seat_event)
+        .unwrap();
 
     let mut waiting_for_flip = false;
 
@@ -138,6 +159,9 @@ fn main() {
                 }
                 1 => {
                     input.dispatch();
+                }
+                2 => {
+                    shared_seat.borrow_mut().dispatch(-1).unwrap();
                 }
                 _ => unreachable!(),
             }

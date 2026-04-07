@@ -1,25 +1,49 @@
 use input::event::keyboard::KeyboardEventTrait;
 use input::{Libinput, LibinputInterface};
-use std::fs::{File, OpenOptions};
-use std::os::unix::fs::OpenOptionsExt as _;
+use libseat::Seat;
+use nix::unistd::dup;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::io::OwnedFd;
 use std::path::Path;
+use std::rc::Rc;
 
-pub struct Interface;
+pub struct SeatInterface {
+    pub seat: Rc<RefCell<Seat>>,
+    /// Maps the OS File Descriptor to the libseat Device ID
+    pub devices: HashMap<RawFd, libseat::Device>,
+}
 
-impl LibinputInterface for Interface {
-    fn open_restricted(&mut self, path: &Path, flags: i32) -> Result<OwnedFd, i32> {
-        OpenOptions::new()
-            .custom_flags(flags)
-            .read(true)
-            .write(true)
-            .open(path)
-            .map(|file| file.into())
-            .map_err(|err| err.raw_os_error().unwrap_or(libc::EACCES))
+impl LibinputInterface for SeatInterface {
+    fn open_restricted(&mut self, path: &Path, _flags: i32) -> Result<OwnedFd, i32> {
+        let mut seat = self.seat.borrow_mut();
+        match seat.open_device(&path) {
+            Ok(device) => {
+                let dup_fd = dup(&device).map_err(|_| libc::EMFILE)?;
+                self.devices.insert(dup_fd.as_raw_fd(), device);
+
+                Ok(dup_fd)
+            }
+            Err(_) => Err(libc::EACCES),
+        }
+
+        // OpenOptions::new()
+        //     .custom_flags(flags)
+        //     .read(true)
+        //     .write(true)
+        //     .open(path)
+        //     .map(|file| file.into())
+        //     .map_err(|err| err.raw_os_error().unwrap_or(libc::EACCES))
     }
 
     fn close_restricted(&mut self, fd: OwnedFd) {
-        drop(File::from(fd));
+        let dup_fd = fd.as_raw_fd();
+        if let Some(device) = self.devices.remove(&dup_fd) {
+            let mut seat = self.seat.borrow_mut();
+            let _ = seat.close_device(device);
+        }
+        // drop(File::from(fd));
     }
 }
 
@@ -41,8 +65,14 @@ pub struct Input {
 }
 
 impl Input {
-    pub fn new(width: f64, height: f64) -> Self {
-        let mut input = Libinput::new_with_udev(Interface);
+    pub fn new(seat: Rc<RefCell<Seat>>, width: f64, height: f64) -> Self {
+        let interface = SeatInterface {
+            seat: seat.clone(),
+            devices: HashMap::new(),
+        };
+
+        let mut input = Libinput::new_with_udev(interface);
+
         input.udev_assign_seat("seat0").unwrap();
         Self {
             context: input,
