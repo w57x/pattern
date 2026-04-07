@@ -1,5 +1,7 @@
+use std::os::fd::OwnedFd;
+
 use drm::buffer;
-use gbm::{AsRaw, BufferObject};
+use gbm::BufferObject;
 
 pub struct Buffer<T: 'static>(BufferObject<T>);
 
@@ -8,13 +10,17 @@ impl<T: 'static> Buffer<T> {
         Self(bo)
     }
 
-    // pub fn into_raw(self) -> gbm::BufferObject<T> {
-    //     self.0
-    // }
-
-    pub fn as_raw_bo(&self) -> *mut gbm_sys::gbm_bo {
-        self.0.as_raw() as *mut _
+    pub fn raw(&self) -> &gbm::BufferObject<T> {
+        &self.0
     }
+
+    pub fn to_owned_fd(&self) -> OwnedFd {
+        self.0.fd().unwrap()
+    }
+
+    // pub fn as_raw_bo(&self) -> *mut gbm_sys::gbm_bo {
+    //     self.0.as_raw() as *mut _
+    // }
 }
 
 impl<T> buffer::Buffer for Buffer<T> {

@@ -5,12 +5,11 @@ edition = "2024"
 license = "MPL-2.0"
 
 [dependencies]
+ash = "0.38.0"
 drm = "0.15.0"
 gbm = "0.18.0"
 gbm-sys = "0.4.0"
-gl = "0.14.0"
 input = "0.10.0"
-khronos-egl = { version = "6.0.0", features = ["dynamic"] }
 libc = "0.2.184"
 libloading = "0.9.0"
 libseat = "0.2.4"
