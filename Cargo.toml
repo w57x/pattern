@@ -6,6 +6,7 @@ license = "MPL-2.0"
 
 [dependencies]
 ash = "0.38.0"
+dirs = "6.0.0"
 drm = "0.15.0"
 gbm = "0.18.0"
 gbm-sys = "0.4.0"
@@ -14,5 +15,7 @@ libc = "0.2.184"
 libloading = "0.9.0"
 libseat = "0.2.4"
 nix = { version = "0.31.2", features = ["event", "fs"] }
+resvg = "0.47.0"
 udev = "0.9.3"
 wayland-server = "0.31.13"
+xcursor = "0.3.10"

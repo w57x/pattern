@@ -87,8 +87,10 @@ impl Input {
         }
     }
 
-    pub fn dispatch(&mut self) {
+    pub fn dispatch(&mut self) -> bool {
         self.context.dispatch().unwrap();
+
+        let mut should_exit = false;
 
         for event in &mut self.context {
             match event {
@@ -96,7 +98,7 @@ impl Input {
                 input::Event::Keyboard(input::event::keyboard::KeyboardEvent::Key(k)) => {
                     if k.key() == 1 && k.key_state() == input::event::keyboard::KeyState::Pressed {
                         println!("[pattern]: ESC pressed. Shutting down substrate...");
-                        std::process::exit(0);
+                        should_exit = true;
                     }
                 }
                 input::Event::Keyboard(_) => {}
@@ -121,5 +123,7 @@ impl Input {
                 _ => todo!(),
             }
         }
+
+        return should_exit;
     }
 }
