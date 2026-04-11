@@ -1,9 +1,9 @@
-use nix::time::{ClockId, clock_gettime};
 use std::{cell::RefCell, os::fd::AsFd, rc::Rc, sync::Arc};
 
 use drm::control::Device as _;
 use gbm::{BufferObjectFlags, Device, Format};
 use libseat::Seat;
+use nix::time::{ClockId, clock_gettime};
 use nix::{poll::PollTimeout, sys::epoll};
 use pattern::vulkan::RenderQuad;
 use pattern::{
@@ -170,6 +170,9 @@ fn main() {
 
     let mut waiting_for_flip = false;
     let mut running = true;
+
+    let socket_name = socket.socket_name().unwrap().to_string_lossy().into_owned();
+    println!("[pattern]: Auto-launching Kitty on socket: {}", socket_name);
 
     println!("[pattern]: Started :)");
 

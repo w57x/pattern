@@ -92,11 +92,16 @@ impl Input {
         for event in &mut self.context {
             match event {
                 input::Event::Device(input::event::DeviceEvent::Added(evt)) => {
-                    let device = evt.device();
+                    let mut device = evt.device();
 
                     if device.config_dwt_is_available() {
                         println!("[pattern]: Disabling DWT (Palm Rejection) for device.");
                         device.config_dwt_set_enabled(false).unwrap();
+                    }
+
+                    if device.config_tap_finger_count() > 0 {
+                        println!("[pattern]: Touchpad detected. Enabling Tap-to-Click!");
+                        device.config_tap_set_enabled(true).unwrap();
                     }
                 }
                 input::Event::Device(_) => {}
@@ -110,18 +115,35 @@ impl Input {
                         wayland_server::protocol::wl_keyboard::KeyState::Released
                     };
 
-                    if key == 1
-                        && key_state == wayland_server::protocol::wl_keyboard::KeyState::Pressed
-                    {
-                        if let Some(active_window) = state.windows.last() {
-                            println!("[pattern]: ESC pressed. Asking window to close...");
-                            active_window.close();
-                        } else {
+                    if key == 125 || key == 126 {
+                        state.super_held =
+                            key_state == wayland_server::protocol::wl_keyboard::KeyState::Pressed;
+                        continue;
+                    }
+
+                    let xkb_keycode = key + 8;
+                    let keysym = state.xkb_state.key_get_one_sym(xkb_keycode.into());
+
+                    if keysym.raw() == xkbcommon::xkb::keysyms::KEY_q && state.super_held {
+                        if key_state == wayland_server::protocol::wl_keyboard::KeyState::Pressed {
+                            if let Some(active_window) = state.windows.last() {
+                                println!("[pattern]: Super+Q pressed. Asking window to close...");
+                                active_window.close();
+                            } else {
+                                println!("[pattern]: Super+Q pressed, but no windows are open.");
+                            }
+                        }
+                        continue;
+                    }
+
+                    if keysym.raw() == xkbcommon::xkb::keysyms::KEY_e && state.super_held {
+                        if key_state == wayland_server::protocol::wl_keyboard::KeyState::Pressed {
                             println!(
-                                "[pattern]: ESC pressed with no windows open. Shutting down substrate..."
+                                "[pattern]: Super+E pressed. Safely shutting down the Wayland server..."
                             );
                             should_exit = true;
                         }
+                        continue;
                     }
 
                     if let Some(focused_surface) = &state.input_focus {
@@ -195,12 +217,6 @@ impl Input {
                         let is_left_click = button == 272;
                         let is_pressed = state_val == WlButtonState::Pressed;
 
-                        let super_active = state.xkb_state.mod_name_is_active(
-                            "Mod4",
-                            xkbcommon::xkb::STATE_MODS_DEPRESSED
-                                | xkbcommon::xkb::STATE_MODS_LATCHED,
-                        );
-
                         let mut hit_surface = None;
 
                         for win in state.wm.get_render_list().iter().rev() {
@@ -265,7 +281,7 @@ impl Input {
                                     }
                                 }
 
-                                if super_active {
+                                if state.super_held {
                                     state
                                         .wm
                                         .begin_drag(&surf.id(), self.cursor.x, self.cursor.y);
@@ -275,7 +291,7 @@ impl Input {
                             state.wm.end_drag();
                         }
 
-                        if !super_active {
+                        if !state.super_held {
                             if let Some(focused) = &state.pointer_focus {
                                 if let Some(client) = focused.client() {
                                     state.serial += 1;

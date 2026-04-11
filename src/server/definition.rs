@@ -80,6 +80,7 @@ pub struct ServerState {
     pub pointer_focus: Option<WlSurface>,
 
     pub serial: u32,
+    pub super_held: bool,
 }
 
 impl ServerState {
@@ -90,8 +91,8 @@ impl ServerState {
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
         let keymap = xkb::Keymap::new_from_names(
             &context,
-            "",
-            "",
+            "evdev",
+            "pc105",
             "be",
             "oss",
             None,
@@ -142,6 +143,7 @@ impl ServerState {
             pointer_focus: None,
 
             serial: 1,
+            super_held: false,
         }
     }
 }
