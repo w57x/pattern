@@ -76,6 +76,7 @@ pub struct ServerState {
 
     pub window_surfaces: Vec<WlSurface>,
     pub wm: Box<dyn crate::wm::WindowManager>,
+    pub cursor_pos: (f64, f64),
 
     pub frame_callbacks: Vec<wayland_server::protocol::wl_callback::WlCallback>,
 
@@ -95,6 +96,8 @@ pub struct ServerState {
 
     pub gpu_dev_t: u64,
     pub dmabuf_table_fd: std::os::unix::io::OwnedFd,
+
+    pub xdg_to_surface: HashMap<wayland_server::backend::ObjectId, WlSurface>,
 }
 
 impl ServerState {
@@ -150,6 +153,8 @@ impl ServerState {
 
             window_surfaces: Vec::new(),
             wm: Box::new(crate::wm::FloatingWm::new()),
+            cursor_pos: (0., 0.),
+            xdg_to_surface: HashMap::new(),
 
             frame_callbacks: Vec::new(),
 
@@ -525,9 +530,12 @@ impl Dispatch<XdgWmBase, ()> for ServerState {
     ) {
         match request {
             xdg_wm_base::Request::GetXdgSurface { id, surface } => {
-                println!("[pattern]: Client upgraded a WlSurface to an XdgSurface!");
-                state.wm.map_window(surface);
-                data_init.init(id, ());
+                println!("[pattern]: Client upgraded a WlSurface to an XdgSurface");
+
+                let xdg_surface = data_init.init(id, ());
+
+                state.wm.map_window(surface.clone());
+                state.xdg_to_surface.insert(xdg_surface.id(), surface);
             }
             xdg_wm_base::Request::CreatePositioner { id } => {
                 data_init.init(id, ());
@@ -540,7 +548,7 @@ impl Dispatch<XdgWmBase, ()> for ServerState {
 // The XDG Surface
 impl Dispatch<XdgSurface, ()> for ServerState {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _client: &wayland_server::Client,
         resource: &XdgSurface,
         request: xdg_surface::Request,
@@ -552,14 +560,21 @@ impl Dispatch<XdgSurface, ()> for ServerState {
             xdg_surface::Request::GetToplevel { id } => {
                 let toplevel = data_init.init(id, ());
 
-                let state_val =
-                    wayland_protocols::xdg::shell::server::xdg_toplevel::State::Activated as u32;
+                if let Some(surface) = state.xdg_to_surface.get(&resource.id()) {
+                    state.wm.assign_toplevel(&surface.id(), toplevel.clone());
+                }
+
+                let state_val = xdg_toplevel::State::Activated as u32;
                 let states_bytes = state_val.to_ne_bytes().to_vec();
 
                 toplevel.configure(800, 600, states_bytes);
 
                 resource.configure(1);
             }
+            // xdg_surface::Request::GetPopup { id, .. } => {
+            //     data_init.init(id, ());
+            // }
+            xdg_surface::Request::AckConfigure { .. } => {}
             _ => {}
         }
     }
@@ -585,8 +600,11 @@ impl Dispatch<XdgToplevel, ()> for ServerState {
                 println!("[pattern]: App ID set to: {}", app_id);
             }
             xdg_toplevel::Request::Move { seat: _, serial: _ } => {
-                // state.is_dragging = true;
-                // TODO: Ask the wm what to do in this case
+                state.wm.begin_interactive_move(
+                    &resource.id(),
+                    state.cursor_pos.0,
+                    state.cursor_pos.1,
+                );
             }
             _ => {}
         }

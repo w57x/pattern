@@ -1,3 +1,4 @@
+use wayland_protocols::xdg::shell::server::xdg_toplevel::XdgToplevel;
 use wayland_server::Resource;
 use wayland_server::backend::ObjectId;
 use wayland_server::protocol::wl_surface::WlSurface;
@@ -5,6 +6,7 @@ use wayland_server::protocol::wl_surface::WlSurface;
 #[derive(Clone)]
 pub struct WindowState {
     pub surface: WlSurface,
+    pub toplevel: Option<XdgToplevel>,
     pub x: f64,
     pub y: f64,
 }
@@ -18,6 +20,9 @@ pub trait WindowManager {
 
     /// Brings a window to the front and grants it focus
     fn focus_window(&mut self, surface_id: &ObjectId);
+
+    fn assign_toplevel(&mut self, surface_id: &ObjectId, toplevel: XdgToplevel);
+    fn begin_interactive_move(&mut self, toplevel_id: &ObjectId, cursor_x: f64, cursor_y: f64);
 
     /// Starts dragging a specific window
     fn begin_drag(&mut self, surface_id: &ObjectId, cursor_x: f64, cursor_y: f64);
@@ -57,6 +62,7 @@ impl WindowManager for FloatingWm {
         let offset = (self.windows.len() * 30) as f64;
         self.windows.push(WindowState {
             surface,
+            toplevel: None,
             x: 100.0 + offset,
             y: 100.0 + offset,
         });
@@ -81,6 +87,31 @@ impl WindowManager for FloatingWm {
         {
             let window = self.windows.remove(index);
             self.windows.push(window);
+        }
+    }
+
+    fn assign_toplevel(&mut self, surface_id: &ObjectId, toplevel: XdgToplevel) {
+        if let Some(window) = self
+            .windows
+            .iter_mut()
+            .find(|w| &w.surface.id() == surface_id)
+        {
+            window.toplevel = Some(toplevel);
+        }
+    }
+
+    fn begin_interactive_move(&mut self, toplevel_id: &ObjectId, cursor_x: f64, cursor_y: f64) {
+        let target_surface_id = self.windows.iter().find_map(|w| {
+            if let Some(top) = &w.toplevel {
+                if &top.id() == toplevel_id {
+                    return Some(w.surface.id());
+                }
+            }
+            None
+        });
+
+        if let Some(surface_id) = target_surface_id {
+            self.begin_drag(&surface_id, cursor_x, cursor_y);
         }
     }
 

@@ -191,6 +191,7 @@ impl Input {
                         self.cursor.x = (self.cursor.x + m.dx()).clamp(0.0, self.dimension.x);
                         self.cursor.y = (self.cursor.y + m.dy()).clamp(0.0, self.dimension.y);
 
+                        state.cursor_pos = (self.cursor.x, self.cursor.y);
                         state.wm.update_drag(self.cursor.x, self.cursor.y);
                         Self::route_pointer_motion(self.cursor, state, m.time());
                     }
@@ -198,7 +199,8 @@ impl Input {
                     input::event::PointerEvent::MotionAbsolute(m) => {
                         self.cursor.x = m.absolute_x_transformed(self.dimension.x as u32);
                         self.cursor.y = m.absolute_y_transformed(self.dimension.y as u32);
-                        Self::route_pointer_motion(self.cursor, state, m.time());
+
+                        state.cursor_pos = (self.cursor.x, self.cursor.y);
                         state.wm.update_drag(self.cursor.x, self.cursor.y);
                         Self::route_pointer_motion(self.cursor, state, m.time());
                     }

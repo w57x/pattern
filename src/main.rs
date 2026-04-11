@@ -281,6 +281,8 @@ fn main() {
             for id in dead_surface_ids {
                 state.wm.unmap_window(&id);
 
+                state.xdg_to_surface.retain(|_, v| v.id() != id);
+
                 if let Some(tex) = state.surface_textures.remove(&id) {
                     println!("[pattern]: Client disconnected! Reaping surface memory...");
                     unsafe {
