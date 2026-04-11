@@ -13,6 +13,7 @@ use pattern::{
     utils,
     vulkan::{VulkanContext, frame::VulkanFrame},
 };
+use wayland_server::protocol::wl_data_device_manager::WlDataDeviceManager;
 use wayland_server::{
     Display, ListeningSocket, Resource,
     protocol::{
@@ -55,6 +56,8 @@ fn main() {
 
     dh.create_global::<ServerState, WlOutput, ()>(3, ());
     dh.create_global::<ServerState, WlSeat, ()>(3, ());
+
+    dh.create_global::<ServerState, WlDataDeviceManager, ()>(3, ());
 
     dh.create_global::<ServerState, wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase, ()>(3, ());
 
@@ -220,16 +223,14 @@ fn main() {
 
         if !waiting_for_flip {
             let frame = &swapchain[frame_index % 2];
+
             let mut dead_surface_ids = Vec::new();
 
-            state.window_surfaces.retain(|surf| {
-                if surf.is_alive() {
-                    true
-                } else {
-                    dead_surface_ids.push(surf.id());
-                    false
+            for win in state.wm.get_render_list() {
+                if !win.surface.is_alive() {
+                    dead_surface_ids.push(win.surface.id());
                 }
-            });
+            }
 
             if let Some((cursor_surf, _, _)) = &state.cursor_surface {
                 if !cursor_surf.is_alive() {
@@ -239,6 +240,8 @@ fn main() {
             }
 
             for id in dead_surface_ids {
+                state.wm.unmap_window(&id);
+
                 if let Some(tex) = state.surface_textures.remove(&id) {
                     println!("[pattern]: Client disconnected! Reaping surface memory...");
                     unsafe {
@@ -266,12 +269,12 @@ fn main() {
 
             let mut draw_list = Vec::new();
 
-            for window_surf in &state.window_surfaces {
-                if let Some(tex) = state.surface_textures.get(&window_surf.id()) {
+            for win_state in state.wm.get_render_list() {
+                if let Some(tex) = state.surface_textures.get(&win_state.surface.id()) {
                     draw_list.push(RenderQuad {
                         set: tex.set,
-                        x: state.window_loc.0 as f32,
-                        y: state.window_loc.1 as f32,
+                        x: win_state.x as f32,
+                        y: win_state.y as f32,
                         w: tex.w,
                         h: tex.h,
                     });

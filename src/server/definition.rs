@@ -9,9 +9,11 @@ use wayland_server::{
     backend::{ClientData, ClientId, DisconnectReason},
     protocol::{
         wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor,
-        wl_keyboard::WlKeyboard, wl_output::WlOutput, wl_pointer::WlPointer, wl_region::WlRegion,
-        wl_seat::WlSeat, wl_shm::WlShm, wl_shm_pool::WlShmPool, wl_subcompositor::WlSubcompositor,
-        wl_subsurface::WlSubsurface, wl_surface::WlSurface,
+        wl_data_device::WlDataDevice, wl_data_device_manager::WlDataDeviceManager,
+        wl_data_source::WlDataSource, wl_keyboard::WlKeyboard, wl_output::WlOutput,
+        wl_pointer::WlPointer, wl_region::WlRegion, wl_seat::WlSeat, wl_shm::WlShm,
+        wl_shm_pool::WlShmPool, wl_subcompositor::WlSubcompositor, wl_subsurface::WlSubsurface,
+        wl_surface::WlSurface,
     },
 };
 
@@ -65,9 +67,7 @@ pub struct ServerState {
     pub cursor_surface: Option<(WlSurface, i32, i32)>,
 
     pub window_surfaces: Vec<WlSurface>,
-    pub window_loc: (f64, f64),       // Where the window is drawn
-    pub is_dragging: bool,            // Are we currently dragging?
-    pub drag_grab_offset: (f64, f64), // Where on the titlebar did we click?
+    pub wm: Box<dyn crate::wm::WindowManager>,
 
     pub frame_callbacks: Vec<wayland_server::protocol::wl_callback::WlCallback>,
 
@@ -129,9 +129,7 @@ impl ServerState {
             cursor_surface: None,
 
             window_surfaces: Vec::new(),
-            window_loc: (0., 0.),
-            is_dragging: false,
-            drag_grab_offset: (0., 0.),
+            wm: Box::new(crate::wm::FloatingWm::new()),
 
             frame_callbacks: Vec::new(),
 
@@ -303,22 +301,6 @@ impl Dispatch<WlSurface, ()> for ServerState {
                                 );
                             }
 
-                            if state.input_focus.as_ref() != Some(surface) {
-                                state.input_focus = Some(surface.clone());
-
-                                if let Some(client) = surface.client() {
-                                    state.serial += 1;
-                                    for keyboard in state
-                                        .keyboards
-                                        .iter()
-                                        .filter(|k| k.client().map(|c| c.id()) == Some(client.id()))
-                                    {
-                                        keyboard.enter(state.serial, surface, Vec::new());
-                                        keyboard.modifiers(state.serial, 0, 0, 0, 0);
-                                    }
-                                }
-                            }
-
                             buffer.release();
                         }
                     }
@@ -454,7 +436,7 @@ impl Dispatch<XdgWmBase, ()> for ServerState {
         match request {
             xdg_wm_base::Request::GetXdgSurface { id, surface } => {
                 println!("[pattern]: Client upgraded a WlSurface to an XdgSurface!");
-                state.window_surfaces.push(surface);
+                state.wm.map_window(surface);
                 data_init.init(id, ());
             }
             xdg_wm_base::Request::CreatePositioner { id } => {
@@ -513,7 +495,8 @@ impl Dispatch<XdgToplevel, ()> for ServerState {
                 println!("[pattern]: App ID set to: {}", app_id);
             }
             xdg_toplevel::Request::Move { seat: _, serial: _ } => {
-                state.is_dragging = true;
+                // state.is_dragging = true;
+                // TODO: Ask the wm what to do in this case
             }
             _ => {}
         }
@@ -731,6 +714,71 @@ impl Dispatch<WlSubsurface, ()> for ServerState {
         _client: &wayland_server::Client,
         _resource: &WlSubsurface,
         _request: wayland_server::protocol::wl_subsurface::Request,
+        _data: &(),
+        _dhandle: &wayland_server::DisplayHandle,
+        _data_init: &mut wayland_server::DataInit<'_, Self>,
+    ) {
+    }
+}
+
+impl GlobalDispatch<WlDataDeviceManager, ()> for ServerState {
+    fn bind(
+        _state: &mut Self,
+        _handle: &wayland_server::DisplayHandle,
+        _client: &wayland_server::Client,
+        resource: wayland_server::New<WlDataDeviceManager>,
+        _global_data: &(),
+        data_init: &mut wayland_server::DataInit<'_, Self>,
+    ) {
+        data_init.init(resource, ());
+    }
+}
+
+impl Dispatch<WlDataDeviceManager, ()> for ServerState {
+    fn request(
+        _state: &mut Self,
+        _client: &wayland_server::Client,
+        _resource: &WlDataDeviceManager,
+        request: wayland_server::protocol::wl_data_device_manager::Request,
+        _data: &(),
+        _dhandle: &wayland_server::DisplayHandle,
+        data_init: &mut wayland_server::DataInit<'_, Self>,
+    ) {
+        match request {
+            wayland_server::protocol::wl_data_device_manager::Request::GetDataDevice {
+                id, ..
+            } => {
+                data_init.init(id, ());
+            }
+            wayland_server::protocol::wl_data_device_manager::Request::CreateDataSource { id } => {
+                data_init.init(id, ());
+            }
+            _ => {}
+        }
+    }
+}
+
+// Dummy handler for the actual device
+impl Dispatch<WlDataDevice, ()> for ServerState {
+    fn request(
+        _state: &mut Self,
+        _client: &wayland_server::Client,
+        _resource: &WlDataDevice,
+        _request: wayland_server::protocol::wl_data_device::Request,
+        _data: &(),
+        _dhandle: &wayland_server::DisplayHandle,
+        _data_init: &mut wayland_server::DataInit<'_, Self>,
+    ) {
+    }
+}
+
+// Dummy handler for the data source
+impl Dispatch<WlDataSource, ()> for ServerState {
+    fn request(
+        _state: &mut Self,
+        _client: &wayland_server::Client,
+        _resource: &WlDataSource,
+        _request: wayland_server::protocol::wl_data_source::Request,
         _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
         _data_init: &mut wayland_server::DataInit<'_, Self>,

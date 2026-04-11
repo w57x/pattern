@@ -31,14 +31,6 @@ impl LibinputInterface for SeatInterface {
             }
             Err(_) => Err(libc::EACCES),
         }
-
-        // OpenOptions::new()
-        //     .custom_flags(flags)
-        //     .read(true)
-        //     .write(true)
-        //     .open(path)
-        //     .map(|file| file.into())
-        //     .map_err(|err| err.raw_os_error().unwrap_or(libc::EACCES))
     }
 
     fn close_restricted(&mut self, fd: OwnedFd) {
@@ -47,7 +39,6 @@ impl LibinputInterface for SeatInterface {
             let mut seat = self.seat.borrow_mut();
             let _ = seat.close_device(device);
         }
-        // drop(File::from(fd));
     }
 }
 
@@ -168,12 +159,16 @@ impl Input {
                     input::event::PointerEvent::Motion(m) => {
                         self.cursor.x = (self.cursor.x + m.dx()).clamp(0.0, self.dimension.x);
                         self.cursor.y = (self.cursor.y + m.dy()).clamp(0.0, self.dimension.y);
+
+                        state.wm.update_drag(self.cursor.x, self.cursor.y);
                         Self::route_pointer_motion(self.cursor, state, m.time());
                     }
 
                     input::event::PointerEvent::MotionAbsolute(m) => {
                         self.cursor.x = m.absolute_x_transformed(self.dimension.x as u32);
                         self.cursor.y = m.absolute_y_transformed(self.dimension.y as u32);
+                        Self::route_pointer_motion(self.cursor, state, m.time());
+                        state.wm.update_drag(self.cursor.x, self.cursor.y);
                         Self::route_pointer_motion(self.cursor, state, m.time());
                     }
 
@@ -188,16 +183,101 @@ impl Input {
                             WlButtonState::Released
                         };
 
-                        if let Some(focused) = &state.pointer_focus {
-                            if let Some(client) = focused.client() {
-                                state.serial += 1;
-                                for pointer in state
-                                    .pointers
-                                    .iter()
-                                    .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                        let is_left_click = button == 272;
+                        let is_pressed = state_val == WlButtonState::Pressed;
+
+                        let super_active = state.xkb_state.mod_name_is_active(
+                            "Mod4",
+                            xkbcommon::xkb::STATE_MODS_DEPRESSED
+                                | xkbcommon::xkb::STATE_MODS_LATCHED,
+                        );
+
+                        let mut hit_surface = None;
+
+                        for win in state.wm.get_render_list().iter().rev() {
+                            if let Some(tex) = state.surface_textures.get(&win.surface.id()) {
+                                if self.cursor.x >= win.x
+                                    && self.cursor.x <= win.x + (tex.w as f64)
+                                    && self.cursor.y >= win.y
+                                    && self.cursor.y <= win.y + (tex.h as f64)
                                 {
-                                    pointer.button(state.serial, b.time(), button, state_val);
-                                    pointer.frame(); // Sync
+                                    hit_surface = Some(win.surface.clone());
+                                    break;
+                                }
+                            }
+                        }
+
+                        if is_left_click && is_pressed {
+                            if let Some(surf) = &hit_surface {
+                                state.wm.focus_window(&surf.id());
+
+                                // Tell the old window it lost focus!
+                                if state.input_focus.as_ref() != Some(surf) {
+                                    if let Some(old_focus) = &state.input_focus {
+                                        if let Some(old_client) = old_focus.client() {
+                                            state.serial += 1;
+                                            for keyboard in state.keyboards.iter().filter(|k| {
+                                                k.client().map(|c| c.id()) == Some(old_client.id())
+                                            }) {
+                                                keyboard.leave(state.serial, old_focus);
+                                            }
+                                        }
+                                    }
+
+                                    state.input_focus = Some(surf.clone());
+                                    if let Some(client) = surf.client() {
+                                        state.serial += 1;
+                                        for keyboard in state.keyboards.iter().filter(|k| {
+                                            k.client().map(|c| c.id()) == Some(client.id())
+                                        }) {
+                                            keyboard.enter(state.serial, surf, Vec::new());
+
+                                            // Re-send the current modifier state so the new window knows if Shift/Ctrl are held!
+                                            let depressed = state.xkb_state.serialize_mods(
+                                                xkbcommon::xkb::STATE_MODS_DEPRESSED,
+                                            );
+                                            let latched = state
+                                                .xkb_state
+                                                .serialize_mods(xkbcommon::xkb::STATE_MODS_LATCHED);
+                                            let locked = state
+                                                .xkb_state
+                                                .serialize_mods(xkbcommon::xkb::STATE_MODS_LOCKED);
+                                            let group = state.xkb_state.serialize_layout(
+                                                xkbcommon::xkb::STATE_LAYOUT_EFFECTIVE,
+                                            );
+                                            keyboard.modifiers(
+                                                state.serial,
+                                                depressed,
+                                                latched,
+                                                locked,
+                                                group,
+                                            );
+                                        }
+                                    }
+                                }
+
+                                if super_active {
+                                    state
+                                        .wm
+                                        .begin_drag(&surf.id(), self.cursor.x, self.cursor.y);
+                                }
+                            }
+                        } else if is_left_click && !is_pressed {
+                            state.wm.end_drag();
+                        }
+
+                        if !super_active {
+                            if let Some(focused) = &state.pointer_focus {
+                                if let Some(client) = focused.client() {
+                                    state.serial += 1;
+                                    for pointer in state
+                                        .pointers
+                                        .iter()
+                                        .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                                    {
+                                        pointer.button(state.serial, b.time(), button, state_val);
+                                        pointer.frame();
+                                    }
                                 }
                             }
                         }
@@ -222,20 +302,17 @@ impl Input {
         let mut local_x = 0.0;
         let mut local_y = 0.0;
 
-        for window_surf in &state.window_surfaces {
-            if let Some(tex) = state.surface_textures.get(&window_surf.id()) {
-                let win_x = state.window_loc.0;
-                let win_y = state.window_loc.1;
-
-                if cursor.x >= win_x
-                    && cursor.x <= win_x + (tex.w as f64)
-                    && cursor.y >= win_y
-                    && cursor.y <= win_y + (tex.h as f64)
+        for win in state.wm.get_render_list().iter().rev() {
+            if let Some(tex) = state.surface_textures.get(&win.surface.id()) {
+                if cursor.x >= win.x
+                    && cursor.x <= win.x + (tex.w as f64)
+                    && cursor.y >= win.y
+                    && cursor.y <= win.y + (tex.h as f64)
                 {
-                    target_surface = Some(window_surf.clone());
-                    local_x = cursor.x - win_x;
-                    local_y = cursor.y - win_y;
-                    break; // Stop at the first window we hit
+                    target_surface = Some(win.surface.clone());
+                    local_x = cursor.x - win.x;
+                    local_y = cursor.y - win.y;
+                    break;
                 }
             }
         }
