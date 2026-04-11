@@ -457,13 +457,9 @@ impl VulkanContext {
     pub unsafe fn draw_frame(
         &self,
         vk_fb: vk::Framebuffer,
-        descriptor_set: vk::DescriptorSet,
-        width: u32,
-        height: u32,
-        mouse_x: f32,
-        mouse_y: f32,
-        cursor_w: f32,
-        cursor_h: f32,
+        screen_w: u32,
+        screen_h: u32,
+        quads: &[RenderQuad],
     ) {
         unsafe {
             self.device.reset_fences(&[self.fence]).unwrap();
@@ -485,7 +481,7 @@ impl VulkanContext {
                 .unwrap();
         }
 
-        // Begin the Render Pass (This clears the screen to dark gray)
+        // Begin the Render Pass
         let clear_values = [vk::ClearValue {
             color: vk::ClearColorValue {
                 float32: [0.1, 0.1, 0.12, 1.0],
@@ -497,7 +493,10 @@ impl VulkanContext {
             .framebuffer(vk_fb)
             .render_area(vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
-                extent: vk::Extent2D { width, height },
+                extent: vk::Extent2D {
+                    width: screen_w,
+                    height: screen_h,
+                },
             })
             .clear_values(&clear_values);
 
@@ -522,8 +521,8 @@ impl VulkanContext {
         let viewport = vk::Viewport {
             x: 0.0,
             y: 0.0,
-            width: width as f32,
-            height: height as f32,
+            width: screen_w as f32,
+            height: screen_h as f32,
             min_depth: 0.0,
             max_depth: 1.0,
         };
@@ -535,7 +534,10 @@ impl VulkanContext {
 
         let scissor = vk::Rect2D {
             offset: vk::Offset2D { x: 0, y: 0 },
-            extent: vk::Extent2D { width, height },
+            extent: vk::Extent2D {
+                width: screen_w,
+                height: screen_h,
+            },
         };
 
         unsafe {
@@ -543,43 +545,45 @@ impl VulkanContext {
                 .cmd_set_scissor(cmd_buffer, 0, std::slice::from_ref(&scissor));
         }
 
-        unsafe {
-            self.device.cmd_bind_descriptor_sets(
-                cmd_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline_layout,
-                0,
-                std::slice::from_ref(&descriptor_set),
-                &[],
-            );
-        }
+        // PAINTER LOGIC
+        for quad in quads {
+            unsafe {
+                self.device.cmd_bind_descriptor_sets(
+                    cmd_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.pipeline_layout,
+                    0,
+                    std::slice::from_ref(&quad.set),
+                    &[],
+                );
+            }
 
-        // Inject the Mouse Coordinates straight into the GPU registers!
-        let push_constants = PushConstants {
-            pos: [mouse_x, mouse_y],
-            screen_size: [width as f32, height as f32],
-            cursor_size: [cursor_w, cursor_h],
-        };
+            let push_constants = PushConstants {
+                pos: [quad.x, quad.y],
+                screen_size: [screen_w as f32, screen_h as f32],
+                quad_size: [quad.w, quad.h],
+            };
 
-        let push_bytes = unsafe {
-            std::slice::from_raw_parts(
-                &push_constants as *const _ as *const u8,
-                std::mem::size_of::<PushConstants>(),
-            )
-        };
+            let push_bytes = unsafe {
+                std::slice::from_raw_parts(
+                    &push_constants as *const _ as *const u8,
+                    std::mem::size_of::<PushConstants>(),
+                )
+            };
 
-        unsafe {
-            self.device.cmd_push_constants(
-                cmd_buffer,
-                self.pipeline_layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                push_bytes,
-            );
-        }
+            unsafe {
+                // to the Vertex Shader
+                self.device.cmd_push_constants(
+                    cmd_buffer,
+                    self.pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    push_bytes,
+                );
 
-        unsafe {
-            self.device.cmd_draw(cmd_buffer, 6, 1, 0, 0);
+                // Draw the quad
+                self.device.cmd_draw(cmd_buffer, 6, 1, 0, 0);
+            }
         }
 
         // SUBMITINNNNG :)
@@ -599,7 +603,7 @@ impl VulkanContext {
 
             // Wait for the GPU to finish painting
             self.device
-                .wait_for_fences(&[self.fence], true, std::u64::MAX)
+                .wait_for_fences(&[self.fence], true, u64::MAX)
                 .unwrap();
             self.device
                 .free_command_buffers(self.command_pool, &[cmd_buffer]);
@@ -890,5 +894,31 @@ impl VulkanContext {
 pub struct PushConstants {
     pub pos: [f32; 2],
     pub screen_size: [f32; 2],
-    pub cursor_size: [f32; 2],
+    pub quad_size: [f32; 2],
+}
+
+#[derive(Default)]
+pub struct RenderQuad {
+    pub set: ash::vk::DescriptorSet,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+impl RenderQuad {
+    pub fn from(set: ash::vk::DescriptorSet) -> Self {
+        Self {
+            set,
+            ..Self::default()
+        }
+    }
+
+    pub fn xy(self, x: f32, y: f32) -> Self {
+        Self { x, y, ..self }
+    }
+
+    pub fn dim(self, w: f32, h: f32) -> Self {
+        Self { w, h, ..self }
+    }
 }

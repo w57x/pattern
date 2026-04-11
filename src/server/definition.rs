@@ -36,6 +36,17 @@ pub struct ShmBuffer {
     pub stride: i32,
 }
 
+pub struct SurfaceTexture {
+    pub img: vk::Image,
+    pub mem: vk::DeviceMemory,
+    pub view: vk::ImageView,
+    pub samp: vk::Sampler,
+    pub pool: vk::DescriptorPool,
+    pub set: vk::DescriptorSet,
+    pub w: f32,
+    pub h: f32,
+}
+
 pub struct ServerState {
     pub surfaces: Vec<WlSurface>,
     pub windows: Vec<XdgToplevel>,
@@ -45,29 +56,28 @@ pub struct ServerState {
     pub input_focus: Option<WlSurface>,
     mode: drm::control::Mode,
 
-    pub pools: HashMap<ObjectId, memmap2::MmapMut>,
+    pub pools: HashMap<ObjectId, (OwnedFd, memmap2::MmapMut)>,
     pub buffers: HashMap<ObjectId, ShmBuffer>,
+
     // Maps Surface ID -> WlBuffer
     pub surface_buffers: HashMap<ObjectId, wayland_server::protocol::wl_buffer::WlBuffer>,
-    pub active_window: Option<(
-        WlSurface,
-        vk::Image,
-        vk::DeviceMemory,
-        vk::ImageView,
-        vk::Sampler,
-        vk::DescriptorPool,
-        vk::DescriptorSet,
-        f32,
-        f32,
-    )>,
+    pub surface_textures: HashMap<ObjectId, SurfaceTexture>,
+    pub cursor_surface: Option<(WlSurface, i32, i32)>,
 
     pub window_surfaces: Vec<WlSurface>,
+    pub window_loc: (f64, f64),       // Where the window is drawn
+    pub is_dragging: bool,            // Are we currently dragging?
+    pub drag_grab_offset: (f64, f64), // Where on the titlebar did we click?
 
     pub frame_callbacks: Vec<wayland_server::protocol::wl_callback::WlCallback>,
 
     pub keyboards: Vec<wayland_server::protocol::wl_keyboard::WlKeyboard>,
     pub keymap_fd: OwnedFd,
     pub keymap_size: u32,
+    pub xkb_state: xkbcommon::xkb::State,
+
+    pub pointers: Vec<wayland_server::protocol::wl_pointer::WlPointer>,
+    pub pointer_focus: Option<WlSurface>,
 
     pub serial: u32,
 }
@@ -103,6 +113,8 @@ impl ServerState {
         write(keymap_fd.as_fd(), keymap_bytes).unwrap();
         write(keymap_fd.as_fd(), &[0]).unwrap();
 
+        let xkb_state = xkb::State::new(&keymap);
+
         Self {
             surfaces: Vec::new(),
             windows: Vec::new(),
@@ -113,14 +125,23 @@ impl ServerState {
             pools: HashMap::new(),
             buffers: HashMap::new(),
             surface_buffers: HashMap::new(),
-            active_window: None,
+            surface_textures: HashMap::new(),
+            cursor_surface: None,
+
             window_surfaces: Vec::new(),
+            window_loc: (0., 0.),
+            is_dragging: false,
+            drag_grab_offset: (0., 0.),
 
             frame_callbacks: Vec::new(),
 
             keyboards: Vec::new(),
             keymap_fd,
             keymap_size,
+            xkb_state,
+
+            pointers: Vec::new(),
+            pointer_focus: None,
 
             serial: 1,
         }
@@ -211,7 +232,7 @@ impl Dispatch<WlShm, ()> for ServerState {
                     .unwrap()
             };
             let pool = data_init.init(id, ());
-            state.pools.insert(pool.id(), mmap);
+            state.pools.insert(pool.id(), (fd, mmap));
         }
     }
 }
@@ -237,7 +258,7 @@ impl Dispatch<WlSurface, ()> for ServerState {
                 // Finding the buffer attached to this surface
                 if let Some(buffer) = state.surface_buffers.get(&surface.id()) {
                     if let Some(buffer_info) = state.buffers.get(&buffer.id()) {
-                        if let Some(mmap) = state.pools.get(&buffer_info.pool_id) {
+                        if let Some((_, mmap)) = state.pools.get(&buffer_info.pool_id) {
                             let start = buffer_info.offset as usize;
                             let len = (buffer_info.height * buffer_info.stride) as usize;
                             let pixels = &mmap[start..start + len];
@@ -248,15 +269,13 @@ impl Dispatch<WlSurface, ()> for ServerState {
                             );
 
                             unsafe {
-                                // Cleanup the old window texture if it exists
-                                if let Some((_, img, mem, view, samp, pool, _, _, _)) =
-                                    state.active_window.take()
-                                {
-                                    state.vkctx.device.destroy_sampler(samp, None);
-                                    state.vkctx.device.destroy_image_view(view, None);
-                                    state.vkctx.device.destroy_image(img, None);
-                                    state.vkctx.device.free_memory(mem, None);
-                                    state.vkctx.device.destroy_descriptor_pool(pool, None);
+                                // Cleanup old texture if this surface is resizing
+                                if let Some(old) = state.surface_textures.remove(&surface.id()) {
+                                    state.vkctx.device.destroy_sampler(old.samp, None);
+                                    state.vkctx.device.destroy_image_view(old.view, None);
+                                    state.vkctx.device.destroy_image(old.img, None);
+                                    state.vkctx.device.free_memory(old.mem, None);
+                                    state.vkctx.device.destroy_descriptor_pool(old.pool, None);
                                 }
 
                                 // Upload the new pixels
@@ -273,31 +292,29 @@ impl Dispatch<WlSurface, ()> for ServerState {
                                     samp,
                                 );
 
-                                state.active_window = Some((
-                                    surface.clone(),
-                                    img,
-                                    mem,
-                                    view,
-                                    samp,
-                                    pool,
-                                    set,
-                                    buffer_info.width as f32,
-                                    buffer_info.height as f32,
-                                ));
+                                #[rustfmt::skip]
+                                state.surface_textures.insert(
+                                    surface.id(),
+                                    SurfaceTexture {
+                                        img, mem, view, samp, pool, set,
+                                        w: buffer_info.width as f32,
+                                        h: buffer_info.height as f32,
+                                    },
+                                );
                             }
 
-                            if state.window_surfaces.contains(surface) {
-                                if state.input_focus.as_ref() != Some(surface) {
-                                    state.input_focus = Some(surface.clone());
+                            if state.input_focus.as_ref() != Some(surface) {
+                                state.input_focus = Some(surface.clone());
 
-                                    if let Some(client) = surface.client() {
-                                        state.serial += 1;
-                                        for keyboard in state.keyboards.iter().filter(|k| {
-                                            k.client().map(|c| c.id()) == Some(client.id())
-                                        }) {
-                                            keyboard.enter(state.serial, surface, Vec::new());
-                                            keyboard.modifiers(state.serial, 0, 0, 0, 0);
-                                        }
+                                if let Some(client) = surface.client() {
+                                    state.serial += 1;
+                                    for keyboard in state
+                                        .keyboards
+                                        .iter()
+                                        .filter(|k| k.client().map(|c| c.id()) == Some(client.id()))
+                                    {
+                                        keyboard.enter(state.serial, surface, Vec::new());
+                                        keyboard.modifiers(state.serial, 0, 0, 0, 0);
                                     }
                                 }
                             }
@@ -353,27 +370,44 @@ impl Dispatch<WlShmPool, ()> for ServerState {
         _dhandle: &wayland_server::DisplayHandle,
         data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
-        if let wayland_server::protocol::wl_shm_pool::Request::CreateBuffer {
-            id,
-            offset,
-            width,
-            height,
-            stride,
-            ..
-        } = request
-        {
-            println!("[pattern]: Client carved a WlBuffer out of the SHM Pool");
-            let buffer = data_init.init(id, ());
-            state.buffers.insert(
-                buffer.id(),
-                ShmBuffer {
-                    pool_id: resource.id(),
-                    offset,
-                    width,
-                    height,
-                    stride,
-                },
-            );
+        match request {
+            wayland_server::protocol::wl_shm_pool::Request::CreateBuffer {
+                id,
+                offset,
+                width,
+                height,
+                stride,
+                ..
+            } => {
+                println!("[pattern]: Client carved a WlBuffer out of the SHM Pool");
+                let buffer = data_init.init(id, ());
+                state.buffers.insert(
+                    buffer.id(),
+                    ShmBuffer {
+                        pool_id: resource.id(),
+                        offset,
+                        width,
+                        height,
+                        stride,
+                    },
+                );
+            }
+
+            wayland_server::protocol::wl_shm_pool::Request::Resize { size } => {
+                println!("[pattern]: Client resized the SHM pool to {}", size);
+                if let Some((fd, mmap)) = state.pools.get_mut(&resource.id()) {
+                    *mmap = unsafe {
+                        memmap2::MmapOptions::new()
+                            .len(size as usize)
+                            .map_mut(&fd.as_fd())
+                            .unwrap()
+                    };
+                }
+            }
+
+            wayland_server::protocol::wl_shm_pool::Request::Destroy => {}
+
+            _ => {}
         }
     }
 }
@@ -473,9 +507,13 @@ impl Dispatch<XdgToplevel, ()> for ServerState {
         match request {
             xdg_toplevel::Request::SetTitle { title } => {
                 println!("[pattern]: Window title set to: {}", title);
+                state.windows.push(resource.clone());
             }
             xdg_toplevel::Request::SetAppId { app_id } => {
                 println!("[pattern]: App ID set to: {}", app_id);
+            }
+            xdg_toplevel::Request::Move { seat: _, serial: _ } => {
+                state.is_dragging = true;
             }
             _ => {}
         }
@@ -581,7 +619,8 @@ impl Dispatch<WlSeat, ()> for ServerState {
     ) {
         match request {
             wayland_server::protocol::wl_seat::Request::GetPointer { id } => {
-                data_init.init(id, ());
+                let pointer = data_init.init(id, ());
+                state.pointers.push(pointer);
             }
             wayland_server::protocol::wl_seat::Request::GetKeyboard { id } => {
                 let keyboard = data_init.init(id, ());
@@ -613,14 +652,27 @@ impl Dispatch<WlSeat, ()> for ServerState {
 // 3. Dummy handlers for the actual Pointer and Keyboard objects
 impl Dispatch<WlPointer, ()> for ServerState {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _client: &wayland_server::Client,
         _resource: &WlPointer,
-        _request: wayland_server::protocol::wl_pointer::Request,
+        request: wayland_server::protocol::wl_pointer::Request,
         _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
         _data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
+        if let wayland_server::protocol::wl_pointer::Request::SetCursor {
+            surface,
+            hotspot_x,
+            hotspot_y,
+            ..
+        } = request
+        {
+            if let Some(surf) = surface {
+                state.cursor_surface = Some((surf, hotspot_x, hotspot_y));
+            } else {
+                state.cursor_surface = None;
+            }
+        }
     }
 }
 

@@ -5,6 +5,7 @@ use drm::control::Device as _;
 use gbm::{BufferObjectFlags, Device, Format};
 use libseat::Seat;
 use nix::{poll::PollTimeout, sys::epoll};
+use pattern::vulkan::RenderQuad;
 use pattern::{
     gpu::{Card, buffer::Buffer},
     input::Input,
@@ -219,49 +220,91 @@ fn main() {
 
         if !waiting_for_flip {
             let frame = &swapchain[frame_index % 2];
+            let mut dead_surface_ids = Vec::new();
 
-            let mut window_died = false;
+            state.window_surfaces.retain(|surf| {
+                if surf.is_alive() {
+                    true
+                } else {
+                    dead_surface_ids.push(surf.id());
+                    false
+                }
+            });
 
-            if let Some((surface, img, mem, view, samp, pool, _, _, _)) = &state.active_window {
-                // wayland-server knows if the socket closed!
-                if !surface.is_alive() {
-                    println!("[pattern]: Client disconnected! Reaping window...");
-                    unsafe {
-                        vkctx.device.destroy_sampler(*samp, None);
-                        vkctx.device.destroy_image_view(*view, None);
-                        vkctx.device.destroy_image(*img, None);
-                        vkctx.device.free_memory(*mem, None);
-                        vkctx.device.destroy_descriptor_pool(*pool, None);
-                    }
-                    window_died = true;
+            if let Some((cursor_surf, _, _)) = &state.cursor_surface {
+                if !cursor_surf.is_alive() {
+                    dead_surface_ids.push(cursor_surf.id());
+                    state.cursor_surface = None;
                 }
             }
 
-            if window_died {
-                state.active_window = None;
-                state.input_focus = None;
-                // Remove the dead window from state.windows too
-                state.windows.retain(|w| w.is_alive());
+            for id in dead_surface_ids {
+                if let Some(tex) = state.surface_textures.remove(&id) {
+                    println!("[pattern]: Client disconnected! Reaping surface memory...");
+                    unsafe {
+                        vkctx.device.destroy_sampler(tex.samp, None);
+                        vkctx.device.destroy_image_view(tex.view, None);
+                        vkctx.device.destroy_image(tex.img, None);
+                        vkctx.device.free_memory(tex.mem, None);
+                        vkctx.device.destroy_descriptor_pool(tex.pool, None);
+                    }
+                }
             }
 
-            let (set, target_w, target_h) =
-                if let Some((_, _, _, _, _, _, window_set, w, h)) = &state.active_window {
-                    (*window_set, *w, *h)
-                } else {
-                    (desc_set, cur_w, cur_h)
-                };
+            state.windows.retain(|w| w.is_alive());
+
+            if let Some(focus) = &state.input_focus {
+                if !focus.is_alive() {
+                    state.input_focus = None;
+                }
+            }
+            if let Some(focus) = &state.pointer_focus {
+                if !focus.is_alive() {
+                    state.pointer_focus = None;
+                }
+            }
+
+            let mut draw_list = Vec::new();
+
+            for window_surf in &state.window_surfaces {
+                if let Some(tex) = state.surface_textures.get(&window_surf.id()) {
+                    draw_list.push(RenderQuad {
+                        set: tex.set,
+                        x: state.window_loc.0 as f32,
+                        y: state.window_loc.1 as f32,
+                        w: tex.w,
+                        h: tex.h,
+                    });
+                }
+            }
+
+            let mut cursor_drawn = false;
+
+            if let Some((cursor_surf, hot_x, hot_y)) = &state.cursor_surface {
+                if let Some(tex) = state.surface_textures.get(&cursor_surf.id()) {
+                    draw_list.push(RenderQuad {
+                        set: tex.set,
+                        x: input.cursor.x as f32 - *hot_x as f32,
+                        y: input.cursor.y as f32 - *hot_y as f32,
+                        w: tex.w,
+                        h: tex.h,
+                    });
+                    cursor_drawn = true;
+                }
+            }
+
+            if !cursor_drawn {
+                draw_list.push(RenderQuad {
+                    set: desc_set,
+                    x: input.cursor.x as f32 - hot_x,
+                    y: input.cursor.y as f32 - hot_y,
+                    w: cur_w,
+                    h: cur_h,
+                });
+            }
 
             unsafe {
-                vkctx.draw_frame(
-                    frame.vk_fb,
-                    set,
-                    width as u32,
-                    height as u32,
-                    input.cursor.x as f32 - hot_x,
-                    input.cursor.y as f32 - hot_y,
-                    target_w,
-                    target_h,
-                );
+                vkctx.draw_frame(frame.vk_fb, width as u32, height as u32, &draw_list);
             }
 
             card.page_flip(

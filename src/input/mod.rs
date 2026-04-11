@@ -1,4 +1,5 @@
 use input::event::keyboard::KeyboardEventTrait;
+use input::event::pointer::PointerEventTrait;
 use input::{Libinput, LibinputInterface};
 use libseat::Seat;
 use nix::unistd::dup;
@@ -50,6 +51,7 @@ impl LibinputInterface for SeatInterface {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct Vec2 {
     pub x: f64,
     pub y: f64,
@@ -126,12 +128,37 @@ impl Input {
                         if let Some(client) = focused_surface.client() {
                             state.serial += 1;
 
+                            let xkb_keycode = key + 8;
+                            let direction = if key_state
+                                == wayland_server::protocol::wl_keyboard::KeyState::Pressed
+                            {
+                                xkbcommon::xkb::KeyDirection::Down
+                            } else {
+                                xkbcommon::xkb::KeyDirection::Up
+                            };
+
+                            state.xkb_state.update_key(xkb_keycode.into(), direction);
+
+                            let depressed = state
+                                .xkb_state
+                                .serialize_mods(xkbcommon::xkb::STATE_MODS_DEPRESSED);
+                            let latched = state
+                                .xkb_state
+                                .serialize_mods(xkbcommon::xkb::STATE_MODS_LATCHED);
+                            let locked = state
+                                .xkb_state
+                                .serialize_mods(xkbcommon::xkb::STATE_MODS_LOCKED);
+                            let group = state
+                                .xkb_state
+                                .serialize_layout(xkbcommon::xkb::STATE_LAYOUT_EFFECTIVE);
+
                             for keyboard in state
                                 .keyboards
                                 .iter()
                                 .filter(|kbd| kbd.client().map(|c| c.id()) == Some(client.id()))
                             {
                                 keyboard.key(state.serial, time, key, key_state);
+                                keyboard.modifiers(state.serial, depressed, latched, locked, group);
                             }
                         }
                     }
@@ -141,11 +168,39 @@ impl Input {
                     input::event::PointerEvent::Motion(m) => {
                         self.cursor.x = (self.cursor.x + m.dx()).clamp(0.0, self.dimension.x);
                         self.cursor.y = (self.cursor.y + m.dy()).clamp(0.0, self.dimension.y);
+                        Self::route_pointer_motion(self.cursor, state, m.time());
                     }
 
                     input::event::PointerEvent::MotionAbsolute(m) => {
                         self.cursor.x = m.absolute_x_transformed(self.dimension.x as u32);
                         self.cursor.y = m.absolute_y_transformed(self.dimension.y as u32);
+                        Self::route_pointer_motion(self.cursor, state, m.time());
+                    }
+
+                    input::event::PointerEvent::Button(b) => {
+                        use input::event::pointer::ButtonState as LibinputButtonState;
+                        use wayland_server::protocol::wl_pointer::ButtonState as WlButtonState;
+
+                        let button = b.button();
+                        let state_val = if b.button_state() == LibinputButtonState::Pressed {
+                            WlButtonState::Pressed
+                        } else {
+                            WlButtonState::Released
+                        };
+
+                        if let Some(focused) = &state.pointer_focus {
+                            if let Some(client) = focused.client() {
+                                state.serial += 1;
+                                for pointer in state
+                                    .pointers
+                                    .iter()
+                                    .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                                {
+                                    pointer.button(state.serial, b.time(), button, state_val);
+                                    pointer.frame(); // Sync
+                                }
+                            }
+                        }
                     }
 
                     _ => {}
@@ -160,5 +215,75 @@ impl Input {
         }
 
         return should_exit;
+    }
+
+    fn route_pointer_motion(cursor: Vec2, state: &mut ServerState, time: u32) {
+        let mut target_surface = None;
+        let mut local_x = 0.0;
+        let mut local_y = 0.0;
+
+        for window_surf in &state.window_surfaces {
+            if let Some(tex) = state.surface_textures.get(&window_surf.id()) {
+                let win_x = state.window_loc.0;
+                let win_y = state.window_loc.1;
+
+                if cursor.x >= win_x
+                    && cursor.x <= win_x + (tex.w as f64)
+                    && cursor.y >= win_y
+                    && cursor.y <= win_y + (tex.h as f64)
+                {
+                    target_surface = Some(window_surf.clone());
+                    local_x = cursor.x - win_x;
+                    local_y = cursor.y - win_y;
+                    break; // Stop at the first window we hit
+                }
+            }
+        }
+
+        if target_surface.as_ref() != state.pointer_focus.as_ref() {
+            if let Some(old_focus) = &state.pointer_focus {
+                if let Some(client) = old_focus.client() {
+                    state.serial += 1;
+                    for pointer in state
+                        .pointers
+                        .iter()
+                        .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                    {
+                        pointer.leave(state.serial, old_focus);
+                        pointer.frame();
+                    }
+                }
+            }
+
+            if let Some(new_focus) = &target_surface {
+                if let Some(client) = new_focus.client() {
+                    state.serial += 1;
+                    for pointer in state
+                        .pointers
+                        .iter()
+                        .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                    {
+                        pointer.enter(state.serial, new_focus, local_x, local_y);
+                        pointer.frame();
+                    }
+                }
+            }
+
+            state.pointer_focus = target_surface.clone();
+        }
+
+        // MOTION: Move the mouse inside the window
+        if let Some(focused) = &state.pointer_focus {
+            if let Some(client) = focused.client() {
+                for pointer in state
+                    .pointers
+                    .iter()
+                    .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                {
+                    pointer.motion(time, local_x, local_y);
+                    pointer.frame();
+                }
+            }
+        }
     }
 }
