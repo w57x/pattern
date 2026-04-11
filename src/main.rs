@@ -13,6 +13,7 @@ use pattern::{
     utils,
     vulkan::{VulkanContext, frame::VulkanFrame},
 };
+use wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use wayland_server::protocol::wl_data_device_manager::WlDataDeviceManager;
 use wayland_server::{
     Display, ListeningSocket, Resource,
@@ -40,6 +41,44 @@ fn main() {
 
     let info = card.fetch_gpu_info();
 
+    let stat = nix::sys::stat::fstat(card.as_fd()).unwrap();
+    let gpu_dev_t = stat.st_rdev as libc::dev_t;
+
+    let table_fd = nix::sys::memfd::memfd_create(
+        "dmabuf-formats",
+        nix::sys::memfd::MFdFlags::MFD_CLOEXEC | nix::sys::memfd::MFdFlags::MFD_ALLOW_SEALING,
+    )
+    .unwrap();
+
+    // We have 2 entries. 2 * 16 bytes = 32 bytes.
+    nix::unistd::ftruncate(&table_fd, 32).unwrap();
+
+    let mut table_data = Vec::new();
+
+    // Entry 0: ARGB8888, LINEAR
+    table_data.extend_from_slice(&0x34325241u32.to_ne_bytes());
+    table_data.extend_from_slice(&0u32.to_ne_bytes());
+    table_data.extend_from_slice(&0u64.to_ne_bytes());
+
+    // Entry 1: XRGB8888, LINEAR
+    table_data.extend_from_slice(&0x34325258u32.to_ne_bytes());
+    table_data.extend_from_slice(&0u32.to_ne_bytes());
+    table_data.extend_from_slice(&0u64.to_ne_bytes());
+
+    nix::unistd::write(&table_fd, &table_data).unwrap();
+
+    use nix::fcntl::{FcntlArg, SealFlag, fcntl};
+    fcntl(
+        &table_fd,
+        FcntlArg::F_ADD_SEALS(
+            SealFlag::F_SEAL_SHRINK
+                | SealFlag::F_SEAL_GROW
+                | SealFlag::F_SEAL_WRITE
+                | SealFlag::F_SEAL_SEAL,
+        ),
+    )
+    .expect("Failed to seal format table");
+
     let gbm = Device::new(&card).expect("Failed to create GBM device");
     let (width, height) = info.mode.size();
 
@@ -56,6 +95,7 @@ fn main() {
     dh.create_global::<ServerState, WlSeat, ()>(5, ());
     dh.create_global::<ServerState, WlDataDeviceManager, ()>(3, ());
     dh.create_global::<ServerState, wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase, ()>(3, ());
+    dh.create_global::<ServerState, ZwpLinuxDmabufV1, ()>(4, ());
 
     let socket = ListeningSocket::bind_auto("wayland", 0..32).unwrap();
     println!(
@@ -67,7 +107,7 @@ fn main() {
     let vkctx = Rc::new(VulkanContext::new());
     println!("[pattern]: Vulkan Ready. Entering the void.");
 
-    let mut state = ServerState::new(vkctx.clone(), info.mode.clone());
+    let mut state = ServerState::new(vkctx.clone(), info.mode.clone(), gpu_dev_t, table_fd);
     let mut input = Input::new(shared_seat.clone(), width as f64, height as f64);
 
     let epoll = epoll::Epoll::new(epoll::EpollCreateFlags::empty()).unwrap();

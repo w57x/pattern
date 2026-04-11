@@ -1,7 +1,7 @@
 use ash::{Device, Entry, Instance, vk};
 use drm::buffer::Buffer as _;
 use std::ffi::CStr;
-use std::os::fd::IntoRawFd;
+use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
 
 use crate::gpu::buffer::Buffer;
 pub mod frame;
@@ -887,6 +887,110 @@ impl VulkanContext {
 
         (descriptor_pool, descriptor_set)
     }
+
+    pub unsafe fn import_dmabuf(
+        &self,
+        ofd: &OwnedFd,
+        width: u32,
+        height: u32,
+        stride: u32,
+        modifier: u64,
+    ) -> (vk::Image, vk::DeviceMemory) {
+        let dup_fd = nix::unistd::dup(ofd).expect("Failed to duplicate DMA-BUF FD");
+
+        let format = vk::Format::B8G8R8A8_UNORM;
+
+        let subresource_layout = vk::SubresourceLayout::default()
+            .offset(0)
+            .size(0)
+            .row_pitch(stride as u64)
+            .array_pitch(0)
+            .depth_pitch(0);
+
+        let mut modifier_info = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
+            .drm_format_modifier(modifier)
+            .plane_layouts(std::slice::from_ref(&subresource_layout));
+
+        let mut external_memory_info = vk::ExternalMemoryImageCreateInfo::default()
+            .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+
+        let mut image_create_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(format)
+            .extent(vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            // Use DRM modifier tiling for direct zero-copy access
+            .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
+            .usage(vk::ImageUsageFlags::SAMPLED) // We will sample this directly
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED);
+
+        image_create_info = image_create_info.push_next(&mut external_memory_info);
+        image_create_info = image_create_info.push_next(&mut modifier_info);
+
+        let image = unsafe {
+            self.device
+                .create_image(&image_create_info, None)
+                .expect("Failed to create Vulkan Image from DMA-BUF")
+        };
+
+        let mem_reqs = unsafe { self.device.get_image_memory_requirements(image) };
+        let mut import_info = vk::ImportMemoryFdInfoKHR::default()
+            .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
+            .fd(dup_fd.as_raw_fd());
+
+        let allocate_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(mem_reqs.size)
+            .memory_type_index(self.find_memory_type_index(
+                mem_reqs.memory_type_bits,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            ))
+            .push_next(&mut import_info);
+
+        let memory = unsafe {
+            self.device
+                .allocate_memory(&allocate_info, None)
+                .expect("Failed to import DMA-BUF memory into Vulkan")
+        };
+
+        unsafe {
+            self.device.bind_image_memory(image, memory, 0).unwrap();
+
+            self.execute_one_time_commands(|cmd| {
+                let barrier = vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .src_access_mask(vk::AccessFlags::empty())
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                    .image(image)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    });
+
+                self.device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[barrier],
+                );
+            });
+        }
+
+        (image, memory)
+    }
 }
 
 #[repr(C)]
@@ -921,4 +1025,15 @@ impl RenderQuad {
     pub fn dim(self, w: f32, h: f32) -> Self {
         Self { w, h, ..self }
     }
+}
+
+pub struct SurfaceTexture {
+    pub img: vk::Image,
+    pub mem: vk::DeviceMemory,
+    pub view: vk::ImageView,
+    pub samp: vk::Sampler,
+    pub pool: vk::DescriptorPool,
+    pub set: vk::DescriptorSet,
+    pub w: f32,
+    pub h: f32,
 }

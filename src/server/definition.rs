@@ -17,19 +17,29 @@ use wayland_server::{
     },
 };
 
-use wayland_protocols::xdg::shell::server::{
-    xdg_positioner::{self, XdgPositioner},
-    xdg_surface::{self, XdgSurface},
-    xdg_toplevel::{self, XdgToplevel},
-    xdg_wm_base::{self, XdgWmBase},
+use wayland_protocols::{
+    wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags,
+    xdg::shell::server::{
+        xdg_positioner::{self, XdgPositioner},
+        xdg_surface::{self, XdgSurface},
+        xdg_toplevel::{self, XdgToplevel},
+        xdg_wm_base::{self, XdgWmBase},
+    },
+};
+
+use wayland_protocols::wp::linux_dmabuf::zv1::server::{
+    zwp_linux_buffer_params_v1::{self, ZwpLinuxBufferParamsV1},
+    zwp_linux_dmabuf_feedback_v1::{self, ZwpLinuxDmabufFeedbackV1},
+    zwp_linux_dmabuf_v1::{self, ZwpLinuxDmabufV1},
 };
 
 use ash::vk;
 use std::collections::HashMap;
 use wayland_server::backend::ObjectId;
 
-use crate::vulkan::VulkanContext;
+use crate::vulkan::{SurfaceTexture, VulkanContext};
 
+#[derive(Clone)]
 pub struct ShmBuffer {
     pub pool_id: ObjectId,
     pub offset: i32,
@@ -38,15 +48,13 @@ pub struct ShmBuffer {
     pub stride: i32,
 }
 
-pub struct SurfaceTexture {
-    pub img: vk::Image,
-    pub mem: vk::DeviceMemory,
-    pub view: vk::ImageView,
-    pub samp: vk::Sampler,
-    pub pool: vk::DescriptorPool,
-    pub set: vk::DescriptorSet,
-    pub w: f32,
-    pub h: f32,
+pub struct DmabufData {
+    pub fd: OwnedFd,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub format: u32,
+    pub modifier: u64,
 }
 
 pub struct ServerState {
@@ -81,10 +89,21 @@ pub struct ServerState {
 
     pub serial: u32,
     pub super_held: bool,
+
+    pub pending_dmabufs: HashMap<ObjectId, DmabufData>,
+    pub dmabuffers: HashMap<ObjectId, DmabufData>,
+
+    pub gpu_dev_t: u64,
+    pub dmabuf_table_fd: std::os::unix::io::OwnedFd,
 }
 
 impl ServerState {
-    pub fn new(vkctx: Rc<VulkanContext>, mode: drm::control::Mode) -> Self {
+    pub fn new(
+        vkctx: Rc<VulkanContext>,
+        mode: drm::control::Mode,
+        gpu_dev_t: u64,
+        dmabuf_table_fd: std::os::unix::io::OwnedFd,
+    ) -> Self {
         use nix::unistd::{ftruncate, write};
         use xkbcommon::xkb;
 
@@ -144,6 +163,11 @@ impl ServerState {
 
             serial: 1,
             super_held: false,
+
+            pending_dmabufs: HashMap::new(),
+            dmabuffers: HashMap::new(),
+            gpu_dev_t,
+            dmabuf_table_fd,
         }
     }
 }
@@ -263,11 +287,6 @@ impl Dispatch<WlSurface, ()> for ServerState {
                             let len = (buffer_info.height * buffer_info.stride) as usize;
                             let pixels = &mmap[start..start + len];
 
-                            println!(
-                                "[pattern]: Sending {}x{} pixels to Vulkan!",
-                                buffer_info.width, buffer_info.height
-                            );
-
                             unsafe {
                                 // Cleanup old texture if this surface is resizing
                                 if let Some(old) = state.surface_textures.remove(&surface.id()) {
@@ -302,10 +321,79 @@ impl Dispatch<WlSurface, ()> for ServerState {
                                     },
                                 );
                             }
+                        }
+                    } else if let Some(dmabuf) = state.dmabuffers.get(&buffer.id()) {
+                        unsafe {
+                            // Cleanup old texture
+                            if let Some(old) = state.surface_textures.remove(&surface.id()) {
+                                state.vkctx.device.destroy_sampler(old.samp, None);
+                                state.vkctx.device.destroy_image_view(old.view, None);
+                                state.vkctx.device.destroy_image(old.img, None);
+                                state.vkctx.device.free_memory(old.mem, None);
+                                state.vkctx.device.destroy_descriptor_pool(old.pool, None);
+                            }
 
-                            buffer.release();
+                            let (img, mem) = state.vkctx.import_dmabuf(
+                                &dmabuf.fd,
+                                dmabuf.width,
+                                dmabuf.height,
+                                dmabuf.stride,
+                                dmabuf.modifier,
+                            );
+
+                            let view_info = vk::ImageViewCreateInfo::default()
+                                .image(img)
+                                .view_type(vk::ImageViewType::TYPE_2D)
+                                .format(vk::Format::B8G8R8A8_UNORM)
+                                .subresource_range(
+                                    vk::ImageSubresourceRange::default()
+                                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                        .level_count(1)
+                                        .layer_count(1),
+                                );
+
+                            let view = state
+                                .vkctx
+                                .device
+                                .create_image_view(&view_info, None)
+                                .expect("Failed to create Image View for DMA-BUF");
+
+                            let sampler_info = vk::SamplerCreateInfo::default()
+                                .mag_filter(vk::Filter::LINEAR)
+                                .min_filter(vk::Filter::LINEAR)
+                                .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                                .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                                .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE);
+
+                            let samp = state
+                                .vkctx
+                                .device
+                                .create_sampler(&sampler_info, None)
+                                .expect("Failed to create Sampler for DMA-BUF");
+
+                            let (pool, set) = state.vkctx.create_descriptor_set(
+                                state.vkctx.descriptor_set_layout,
+                                view,
+                                samp,
+                            );
+
+                            state.surface_textures.insert(
+                                surface.id(),
+                                SurfaceTexture {
+                                    img,
+                                    mem,
+                                    view,
+                                    samp,
+                                    pool,
+                                    set,
+                                    w: dmabuf.width as f32,
+                                    h: dmabuf.height as f32,
+                                },
+                            );
                         }
                     }
+
+                    buffer.release();
                 }
             }
             wayland_server::protocol::wl_surface::Request::Frame { callback } => {
@@ -572,7 +660,7 @@ impl Dispatch<WlOutput, ()> for ServerState {
     }
 }
 
-// 2. The Seat (Input Hub)
+// The Seat (Input Hub)
 impl GlobalDispatch<WlSeat, ()> for ServerState {
     fn bind(
         _state: &mut Self,
@@ -638,7 +726,7 @@ impl Dispatch<WlSeat, ()> for ServerState {
     }
 }
 
-// 3. Dummy handlers for the actual Pointer and Keyboard objects
+// Dummy handlers for the actual Pointer and Keyboard objects
 impl Dispatch<WlPointer, ()> for ServerState {
     fn request(
         state: &mut Self,
@@ -678,9 +766,7 @@ impl Dispatch<WlKeyboard, ()> for ServerState {
     }
 }
 
-// ==========================================
 // THE SUBCOMPOSITOR (Required by GLFW/GTK)
-// ==========================================
 
 impl GlobalDispatch<WlSubcompositor, ()> for ServerState {
     fn bind(
@@ -789,5 +875,147 @@ impl Dispatch<WlDataSource, ()> for ServerState {
         _dhandle: &wayland_server::DisplayHandle,
         _data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
+    }
+}
+
+// DMA-BUF / HARDWARE ACCELERATION
+
+impl GlobalDispatch<ZwpLinuxDmabufV1, ()> for ServerState {
+    fn bind(
+        _state: &mut Self,
+        _handle: &wayland_server::DisplayHandle,
+        _client: &wayland_server::Client,
+        resource: wayland_server::New<ZwpLinuxDmabufV1>,
+        _global_data: &(),
+        data_init: &mut wayland_server::DataInit<'_, Self>,
+    ) {
+        let dmabuf = data_init.init(resource, ());
+
+        if dmabuf.version() < 4 {
+            // ARGB8888
+            dmabuf.modifier(0x34325241, 0, 0);
+            // XRGB8888
+            dmabuf.modifier(0x34325258, 0, 0);
+        }
+    }
+}
+
+impl Dispatch<ZwpLinuxDmabufV1, ()> for ServerState {
+    fn request(
+        state: &mut Self,
+        _client: &wayland_server::Client,
+        _resource: &ZwpLinuxDmabufV1,
+        request: zwp_linux_dmabuf_v1::Request,
+        _data: &(),
+        _dhandle: &wayland_server::DisplayHandle,
+        data_init: &mut wayland_server::DataInit<'_, Self>,
+    ) {
+        match request {
+            zwp_linux_dmabuf_v1::Request::CreateParams { params_id } => {
+                data_init.init(params_id, ());
+            }
+            zwp_linux_dmabuf_v1::Request::GetDefaultFeedback { id }
+            | zwp_linux_dmabuf_v1::Request::GetSurfaceFeedback { id, .. } => {
+                let feedback = data_init.init(id, ());
+
+                // Send the sealed 32-byte format table first
+                feedback.format_table(state.dmabuf_table_fd.as_fd(), 32);
+
+                // Identify the compositor's core GPU
+                let dev_bytes = state.gpu_dev_t.to_ne_bytes().to_vec();
+                feedback.main_device(dev_bytes.clone());
+
+                // Define the optimal format tranche
+                feedback.tranche_target_device(dev_bytes);
+                feedback.tranche_flags(TrancheFlags::empty());
+
+                // Tell Mesa to look at both entries in our table
+                let indices: [u16; 2] = [0, 1];
+                let indices_bytes =
+                    unsafe { std::slice::from_raw_parts(indices.as_ptr() as *const u8, 4) };
+
+                feedback.tranche_formats(indices_bytes.to_vec());
+                feedback.tranche_done();
+
+                // Conclude the transaction
+                feedback.done();
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for ServerState {
+    fn request(
+        _state: &mut Self,
+        _client: &wayland_server::Client,
+        _resource: &ZwpLinuxDmabufFeedbackV1,
+        _request: zwp_linux_dmabuf_feedback_v1::Request,
+        _data: &(),
+        _dhandle: &wayland_server::DisplayHandle,
+        _data_init: &mut wayland_server::DataInit<'_, Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpLinuxBufferParamsV1, ()> for ServerState {
+    fn request(
+        state: &mut Self,
+        _client: &wayland_server::Client,
+        resource: &ZwpLinuxBufferParamsV1,
+        request: zwp_linux_buffer_params_v1::Request,
+        _data: &(),
+        _dhandle: &wayland_server::DisplayHandle,
+        data_init: &mut wayland_server::DataInit<'_, Self>,
+    ) {
+        match request {
+            zwp_linux_buffer_params_v1::Request::Add {
+                fd,
+                stride,
+                modifier_hi,
+                modifier_lo,
+                ..
+            } => {
+                // The client gave us the raw GPU File Descriptor
+                let modifier = ((modifier_hi as u64) << 32) | (modifier_lo as u64);
+
+                // Store it temporarily in our pending map
+                state.pending_dmabufs.insert(
+                    resource.id(),
+                    DmabufData {
+                        fd,
+                        width: 0,
+                        height: 0, // Set in CreateImmed
+                        stride,
+                        format: 0,
+                        modifier,
+                    },
+                );
+            }
+            zwp_linux_buffer_params_v1::Request::CreateImmed {
+                buffer_id,
+                width,
+                height,
+                format,
+                ..
+            } => {
+                // The client finished defining the buffer. Give them a WlBuffer
+                let wl_buffer = data_init.init(buffer_id, ());
+
+                if let Some(mut data) = state.pending_dmabufs.remove(&resource.id()) {
+                    data.width = width as u32;
+                    data.height = height as u32;
+                    data.format = format;
+                    println!(
+                        "[pattern]: Client successfully created a Hardware Accelerated DMA-BUF"
+                    );
+                    state.dmabuffers.insert(wl_buffer.id(), data);
+                }
+            }
+            zwp_linux_buffer_params_v1::Request::Destroy => {
+                state.pending_dmabufs.remove(&resource.id());
+            }
+            _ => {}
+        }
     }
 }
