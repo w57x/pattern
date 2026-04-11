@@ -703,7 +703,7 @@ impl VulkanContext {
             })
             .mip_levels(1)
             .array_layers(1)
-            .format(vk::Format::R8G8B8A8_SRGB) // Xcursor pixels are usually sRGB
+            .format(vk::Format::B8G8R8A8_SRGB) // Xcursor pixels are usually sRGB
             .tiling(vk::ImageTiling::OPTIMAL)
             .initial_layout(vk::ImageLayout::UNDEFINED)
             .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
@@ -809,7 +809,7 @@ impl VulkanContext {
         let view_info = vk::ImageViewCreateInfo::default()
             .image(image)
             .view_type(vk::ImageViewType::TYPE_2D)
-            .format(vk::Format::R8G8B8A8_SRGB)
+            .format(vk::Format::B8G8R8A8_SRGB)
             .subresource_range(
                 vk::ImageSubresourceRange::default()
                     .aspect_mask(vk::ImageAspectFlags::COLOR)

@@ -1,23 +1,24 @@
-use std::{cell::RefCell, rc::Rc};
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::{cell::RefCell, os::fd::AsFd, rc::Rc, sync::Arc};
 
 use drm::control::Device as _;
 use gbm::{BufferObjectFlags, Device, Format};
 use libseat::Seat;
 use nix::{poll::PollTimeout, sys::epoll};
-use pattern::utils;
-use wayland_server::Display;
-
-use crate::{
+use pattern::{
     gpu::{Card, buffer::Buffer},
     input::Input,
+    server::definition::{ClientState, ServerState},
+    utils,
     vulkan::{VulkanContext, frame::VulkanFrame},
 };
-
-mod gpu;
-mod input;
-mod vulkan;
-
-pub struct ServerState;
+use wayland_server::{
+    Display, ListeningSocket, Resource,
+    protocol::{
+        wl_compositor::WlCompositor, wl_output::WlOutput, wl_seat::WlSeat, wl_shm::WlShm,
+        wl_subcompositor::WlSubcompositor,
+    },
+};
 
 fn main() {
     let seat = Seat::open(|seat, event| match event {
@@ -40,24 +41,64 @@ fn main() {
     let gbm = Device::new(&card).expect("Failed to create GBM device");
     let (width, height) = info.mode.size();
 
-    let epoll = epoll::Epoll::new(epoll::EpollCreateFlags::empty()).unwrap();
+    println!("[info]: {:?}", info.mode);
 
-    let drm_event = epoll::EpollEvent::new(epoll::EpollFlags::EPOLLIN, 0);
+    println!("[pattern]: Booting Wayland Server...");
+    let mut display: Display<ServerState> = Display::new().unwrap();
+    let dh = display.handle();
 
-    let mut input = Input::new(shared_seat.clone(), width as f64, height as f64);
-    let input_event = epoll::EpollEvent::new(epoll::EpollFlags::EPOLLIN, 1);
+    dh.create_global::<ServerState, WlCompositor, ()>(5, ());
+    dh.create_global::<ServerState, WlShm, ()>(1, ());
 
-    let seat_event = epoll::EpollEvent::new(epoll::EpollFlags::EPOLLIN, 2);
+    dh.create_global::<ServerState, WlSubcompositor, ()>(1, ());
 
-    epoll.add(&card, drm_event).unwrap();
-    epoll.add(&input.context, input_event).unwrap();
-    epoll
-        .add(shared_seat.borrow_mut().get_fd().unwrap(), seat_event)
-        .unwrap();
+    dh.create_global::<ServerState, WlOutput, ()>(3, ());
+    dh.create_global::<ServerState, WlSeat, ()>(3, ());
+
+    dh.create_global::<ServerState, wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase, ()>(3, ());
+
+    let socket = ListeningSocket::bind_auto("wayland", 0..32).unwrap();
+    println!(
+        "[pattern]: Wayland socket created: {}",
+        socket.socket_name().unwrap().to_string_lossy()
+    );
 
     println!("[pattern]: Booting Vulkan Context...");
-    let vkctx = VulkanContext::new();
+    let vkctx = Rc::new(VulkanContext::new());
     println!("[pattern]: Vulkan Ready. Entering the void.");
+
+    let mut state = ServerState::new(vkctx.clone(), info.mode.clone());
+    let mut input = Input::new(shared_seat.clone(), width as f64, height as f64);
+
+    let epoll = epoll::Epoll::new(epoll::EpollCreateFlags::empty()).unwrap();
+
+    epoll
+        .add(&card, epoll::EpollEvent::new(epoll::EpollFlags::EPOLLIN, 0))
+        .unwrap();
+    epoll
+        .add(
+            &input.context,
+            epoll::EpollEvent::new(epoll::EpollFlags::EPOLLIN, 1),
+        )
+        .unwrap();
+    epoll
+        .add(
+            shared_seat.borrow_mut().get_fd().unwrap(),
+            epoll::EpollEvent::new(epoll::EpollFlags::EPOLLIN, 2),
+        )
+        .unwrap();
+    epoll
+        .add(
+            socket.as_fd(),
+            epoll::EpollEvent::new(epoll::EpollFlags::EPOLLIN, 3),
+        )
+        .unwrap(); // NEW CLIENTS
+    epoll
+        .add(
+            display.backend().poll_fd(),
+            epoll::EpollEvent::new(epoll::EpollFlags::EPOLLIN, 4),
+        )
+        .unwrap(); // EXISTING CLIENTS
 
     let mut swapchain: Vec<VulkanFrame> = Vec::with_capacity(2);
 
@@ -139,7 +180,7 @@ fn main() {
             PollTimeout::ZERO
         };
 
-        let mut events = [epoll::EpollEvent::empty(); 3];
+        let mut events = [epoll::EpollEvent::empty(); 5];
         let num_events = epoll.wait(&mut events, timeout).unwrap();
 
         for i in 0..num_events {
@@ -153,12 +194,24 @@ fn main() {
                     }
                 }
                 1 => {
-                    if input.dispatch() {
+                    if input.dispatch(&mut state) {
                         running = false;
                     }
                 }
                 2 => {
                     shared_seat.borrow_mut().dispatch(-1).unwrap();
+                }
+                3 => {
+                    if let Ok(Some(stream)) = socket.accept() {
+                        println!("[pattern]: A new Wayland client connected!");
+                        display
+                            .handle()
+                            .insert_client(stream, Arc::new(ClientState))
+                            .unwrap();
+                    }
+                }
+                4 => {
+                    display.dispatch_clients(&mut state).unwrap();
                 }
                 _ => unreachable!(),
             }
@@ -167,16 +220,47 @@ fn main() {
         if !waiting_for_flip {
             let frame = &swapchain[frame_index % 2];
 
+            let mut window_died = false;
+
+            if let Some((surface, img, mem, view, samp, pool, _, _, _)) = &state.active_window {
+                // wayland-server knows if the socket closed!
+                if !surface.is_alive() {
+                    println!("[pattern]: Client disconnected! Reaping window...");
+                    unsafe {
+                        vkctx.device.destroy_sampler(*samp, None);
+                        vkctx.device.destroy_image_view(*view, None);
+                        vkctx.device.destroy_image(*img, None);
+                        vkctx.device.free_memory(*mem, None);
+                        vkctx.device.destroy_descriptor_pool(*pool, None);
+                    }
+                    window_died = true;
+                }
+            }
+
+            if window_died {
+                state.active_window = None;
+                state.input_focus = None;
+                // Remove the dead window from state.windows too
+                state.windows.retain(|w| w.is_alive());
+            }
+
+            let (set, target_w, target_h) =
+                if let Some((_, _, _, _, _, _, window_set, w, h)) = &state.active_window {
+                    (*window_set, *w, *h)
+                } else {
+                    (desc_set, cur_w, cur_h)
+                };
+
             unsafe {
                 vkctx.draw_frame(
                     frame.vk_fb,
-                    desc_set,
+                    set,
                     width as u32,
                     height as u32,
                     input.cursor.x as f32 - hot_x,
                     input.cursor.y as f32 - hot_y,
-                    cur_w,
-                    cur_h,
+                    target_w,
+                    target_h,
                 );
             }
 
@@ -188,9 +272,20 @@ fn main() {
             )
             .expect("Failed to page flip");
 
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u32;
+
+            for cb in state.frame_callbacks.drain(..) {
+                cb.done(now);
+            }
+
             waiting_for_flip = true;
             frame_index += 1;
         }
+
+        let _ = display.flush_clients();
     }
 
     println!("[pattern]: Tearing down swapchain...");

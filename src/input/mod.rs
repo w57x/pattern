@@ -8,6 +8,9 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::io::OwnedFd;
 use std::path::Path;
 use std::rc::Rc;
+use wayland_server::Resource;
+
+use crate::server::definition::ServerState;
 
 pub struct SeatInterface {
     pub seat: Rc<RefCell<Seat>>,
@@ -87,7 +90,7 @@ impl Input {
         }
     }
 
-    pub fn dispatch(&mut self) -> bool {
+    pub fn dispatch(&mut self, state: &mut ServerState) -> bool {
         self.context.dispatch().unwrap();
 
         let mut should_exit = false;
@@ -96,9 +99,41 @@ impl Input {
             match event {
                 input::Event::Device(_) => {}
                 input::Event::Keyboard(input::event::keyboard::KeyboardEvent::Key(k)) => {
-                    if k.key() == 1 && k.key_state() == input::event::keyboard::KeyState::Pressed {
-                        println!("[pattern]: ESC pressed. Shutting down substrate...");
-                        should_exit = true;
+                    let key = k.key();
+                    let time = k.time();
+
+                    let key_state = if k.key_state() == input::event::keyboard::KeyState::Pressed {
+                        wayland_server::protocol::wl_keyboard::KeyState::Pressed
+                    } else {
+                        wayland_server::protocol::wl_keyboard::KeyState::Released
+                    };
+
+                    if key == 1
+                        && key_state == wayland_server::protocol::wl_keyboard::KeyState::Pressed
+                    {
+                        if let Some(active_window) = state.windows.last() {
+                            println!("[pattern]: ESC pressed. Asking window to close...");
+                            active_window.close();
+                        } else {
+                            println!(
+                                "[pattern]: ESC pressed with no windows open. Shutting down substrate..."
+                            );
+                            should_exit = true;
+                        }
+                    }
+
+                    if let Some(focused_surface) = &state.input_focus {
+                        if let Some(client) = focused_surface.client() {
+                            state.serial += 1;
+
+                            for keyboard in state
+                                .keyboards
+                                .iter()
+                                .filter(|kbd| kbd.client().map(|c| c.id()) == Some(client.id()))
+                            {
+                                keyboard.key(state.serial, time, key, key_state);
+                            }
+                        }
                     }
                 }
                 input::Event::Keyboard(_) => {}
