@@ -614,6 +614,10 @@ impl Dispatch<WlSeat, ()> for ServerState {
                     state.keymap_size,
                 );
 
+                if keyboard.version() >= 4 {
+                    keyboard.repeat_info(35, 300);
+                }
+
                 // If this client already has focus, send an enter event immediately
                 if let Some(focused_surface) = &state.input_focus {
                     if let Some(focused_client) = focused_surface.client() {

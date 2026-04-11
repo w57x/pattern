@@ -1,4 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use nix::time::{ClockId, clock_gettime};
 use std::{cell::RefCell, os::fd::AsFd, rc::Rc, sync::Arc};
 
 use drm::control::Device as _;
@@ -51,14 +51,10 @@ fn main() {
 
     dh.create_global::<ServerState, WlCompositor, ()>(5, ());
     dh.create_global::<ServerState, WlShm, ()>(1, ());
-
     dh.create_global::<ServerState, WlSubcompositor, ()>(1, ());
-
-    dh.create_global::<ServerState, WlOutput, ()>(3, ());
-    dh.create_global::<ServerState, WlSeat, ()>(3, ());
-
+    dh.create_global::<ServerState, WlOutput, ()>(4, ());
+    dh.create_global::<ServerState, WlSeat, ()>(5, ());
     dh.create_global::<ServerState, WlDataDeviceManager, ()>(3, ());
-
     dh.create_global::<ServerState, wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase, ()>(3, ());
 
     let socket = ListeningSocket::bind_auto("wayland", 0..32).unwrap();
@@ -318,10 +314,8 @@ fn main() {
             )
             .expect("Failed to page flip");
 
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u32;
+            let ts = clock_gettime(ClockId::CLOCK_MONOTONIC).unwrap();
+            let now = (ts.tv_sec() * 1000 + ts.tv_nsec() / 1_000_000) as u32;
 
             for cb in state.frame_callbacks.drain(..) {
                 cb.done(now);

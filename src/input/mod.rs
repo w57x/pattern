@@ -1,3 +1,4 @@
+use input::event::EventTrait;
 use input::event::keyboard::KeyboardEventTrait;
 use input::event::pointer::PointerEventTrait;
 use input::{Libinput, LibinputInterface};
@@ -90,6 +91,14 @@ impl Input {
 
         for event in &mut self.context {
             match event {
+                input::Event::Device(input::event::DeviceEvent::Added(evt)) => {
+                    let device = evt.device();
+
+                    if device.config_dwt_is_available() {
+                        println!("[pattern]: Disabling DWT (Palm Rejection) for device.");
+                        device.config_dwt_set_enabled(false).unwrap();
+                    }
+                }
                 input::Event::Device(_) => {}
                 input::Event::Keyboard(input::event::keyboard::KeyboardEvent::Key(k)) => {
                     let key = k.key();
