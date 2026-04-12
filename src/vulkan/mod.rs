@@ -1,7 +1,7 @@
 use ash::{Device, Entry, Instance, vk};
 use drm::buffer::Buffer as _;
 use std::ffi::CStr;
-use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
+use std::os::fd::{IntoRawFd, OwnedFd};
 
 use crate::gpu::buffer::Buffer;
 pub mod frame;
@@ -629,7 +629,10 @@ impl VulkanContext {
                         pos: [quad.x, quad.y],
                         screen_size: [screen_w as f32, screen_h as f32],
                         quad_size: [quad.w, quad.h],
-                        _padding: [0.0, 0.0],
+                        src_offset: [quad.src_x, quad.src_y],
+                        src_size: [quad.src_w, quad.src_h],
+                        border_radius: quad.border_radius,
+                        _padding: 0.0,
                         color: [1.0, 1.0, 1.0, 1.0], // Default color, unused by quad.frag
                     };
 
@@ -668,7 +671,10 @@ impl VulkanContext {
                         pos: [quad.x, quad.y],
                         screen_size: [screen_w as f32, screen_h as f32],
                         quad_size: [quad.w, quad.h],
-                        _padding: [0.0, 0.0],
+                        src_offset: [0.0, 0.0],
+                        src_size: [1.0, 1.0],
+                        border_radius: quad.border_radius,
+                        _padding: 0.0,
                         color: quad.color,
                     };
 
@@ -1004,7 +1010,8 @@ impl VulkanContext {
         stride: u32,
         modifier: u64,
     ) -> (vk::Image, vk::DeviceMemory) {
-        let dup_fd = nix::unistd::dup(ofd).expect("Failed to duplicate DMA-BUF FD");
+        let dup_fd = ofd.try_clone().expect("Failed to duplicate DMA-BUF FD");
+        let raw_fd = dup_fd.into_raw_fd();
 
         let format = vk::Format::B8G8R8A8_UNORM;
 
@@ -1051,7 +1058,7 @@ impl VulkanContext {
         let mem_reqs = unsafe { self.device.get_image_memory_requirements(image) };
         let mut import_info = vk::ImportMemoryFdInfoKHR::default()
             .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
-            .fd(dup_fd.as_raw_fd());
+            .fd(raw_fd);
 
         let allocate_info = vk::MemoryAllocateInfo::default()
             .allocation_size(mem_reqs.size)
@@ -1061,10 +1068,13 @@ impl VulkanContext {
             ))
             .push_next(&mut import_info);
 
-        let memory = unsafe {
-            self.device
-                .allocate_memory(&allocate_info, None)
-                .expect("Failed to import DMA-BUF memory into Vulkan")
+        let memory = match unsafe { self.device.allocate_memory(&allocate_info, None) } {
+            Ok(m) => m,
+            Err(e) => {
+                // If allocation fails, Vulkan did not take ownership. We must close the FD.
+                let _ = unsafe { libc::close(raw_fd) };
+                panic!("Failed to import DMA-BUF memory into Vulkan: {:?}", e);
+            }
         };
 
         unsafe {
@@ -1107,7 +1117,10 @@ pub struct PushConstants {
     pub pos: [f32; 2],
     pub screen_size: [f32; 2],
     pub quad_size: [f32; 2],
-    pub _padding: [f32; 2],
+    pub src_offset: [f32; 2],
+    pub src_size: [f32; 2],
+    pub border_radius: f32,
+    pub _padding: f32,
     pub color: [f32; 4],
 }
 
@@ -1118,6 +1131,11 @@ pub struct RenderQuad {
     pub y: f32,
     pub w: f32,
     pub h: f32,
+    pub src_x: f32,
+    pub src_y: f32,
+    pub src_w: f32,
+    pub src_h: f32,
+    pub border_radius: f32,
 }
 
 #[derive(Default, Debug)]
@@ -1127,6 +1145,7 @@ pub struct ColorQuad {
     pub y: f32,
     pub w: f32,
     pub h: f32,
+    pub border_radius: f32,
 }
 
 #[derive(Debug)]
@@ -1161,4 +1180,5 @@ pub struct SurfaceTexture {
     pub set: vk::DescriptorSet,
     pub w: f32,
     pub h: f32,
+    pub scale: i32,
 }

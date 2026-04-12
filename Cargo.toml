@@ -18,7 +18,7 @@ memmap2 = "0.9.10"
 nix = { version = "0.31.2", features = ["event", "fs", "time"] }
 resvg = "0.47.0"
 udev = "0.9.3"
-wayland-protocols = { version = "0.32.12", features = ["server"] }
+wayland-protocols = { version = "0.32.12", features = ["server", "unstable"] }
 wayland-server = "0.31.13"
 xcursor = "0.3.10"
 xkbcommon = "0.9.0"

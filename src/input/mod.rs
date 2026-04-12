@@ -62,6 +62,7 @@ pub struct Input {
     pub context: Libinput,
     pub cursor: Vec2,
     pub dimension: Vec2,
+    pub natural_scroll: bool,
 }
 
 impl Input {
@@ -84,6 +85,7 @@ impl Input {
                 x: width,
                 y: height,
             },
+            natural_scroll: true,
         }
     }
 
@@ -99,12 +101,19 @@ impl Input {
 
                     if device.config_dwt_is_available() {
                         println!("[pattern]: Disabling DWT (Palm Rejection) for device.");
-                        device.config_dwt_set_enabled(false).unwrap();
+                        let _ = device.config_dwt_set_enabled(false);
                     }
 
                     if device.config_tap_finger_count() > 0 {
                         println!("[pattern]: Touchpad detected. Enabling Tap-to-Click!");
-                        device.config_tap_set_enabled(true).unwrap();
+                        let _ = device.config_tap_set_enabled(true);
+                    }
+
+                    if device
+                        .config_scroll_set_natural_scroll_enabled(self.natural_scroll)
+                        .is_ok()
+                    {
+                        println!("[pattern]: Natural scroll set to: {}", self.natural_scroll);
                     }
                 }
                 input::Event::Device(_) => {}
@@ -177,6 +186,9 @@ impl Input {
 
                         state.cursor_pos = (self.cursor.x, self.cursor.y);
                         state.wm.update_drag(self.cursor.x, self.cursor.y);
+                        state
+                            .wm
+                            .update_resize(self.cursor.x, self.cursor.y, state.serial);
                         Self::route_pointer_motion(self.cursor, state, m.time());
                     }
 
@@ -186,6 +198,9 @@ impl Input {
 
                         state.cursor_pos = (self.cursor.x, self.cursor.y);
                         state.wm.update_drag(self.cursor.x, self.cursor.y);
+                        state
+                            .wm
+                            .update_resize(self.cursor.x, self.cursor.y, state.serial);
                         Self::route_pointer_motion(self.cursor, state, m.time());
                     }
 
@@ -203,78 +218,42 @@ impl Input {
                         let is_left_click = button == 272;
                         let is_pressed = state_val == WlButtonState::Pressed;
 
-                        let mut hit_surface = None;
-
-                        for win in state.wm.get_render_list().iter().rev() {
-                            if let Some(tex) = state.surface_textures.get(&win.surface.id()) {
-                                if self.cursor.x >= win.x
-                                    && self.cursor.x <= win.x + (tex.w as f64)
-                                    && self.cursor.y >= win.y
-                                    && self.cursor.y <= win.y + (tex.h as f64)
-                                {
-                                    hit_surface = Some(win.surface.clone());
-                                    break;
-                                }
-                            }
-                        }
+                        let hit = state.styler.hit_test(
+                            self.cursor.x,
+                            self.cursor.y,
+                            &state.wm.get_render_list(),
+                            &state.wm.get_popups(),
+                            &state.subsurfaces,
+                            &state.surface_textures,
+                            &state.viewports,
+                            &state.surface_to_viewport,
+                            state.wm.as_ref(),
+                        );
+                        let hit_surface = hit.surface;
 
                         if is_left_click && is_pressed {
                             if let Some(surf) = &hit_surface {
-                                state.wm.focus_window(&surf.id());
+                                let focused_id = state.wm.focus_window(&surf.id());
+                                let target_surf = state
+                                    .surfaces
+                                    .iter()
+                                    .find(|s| s.id() == focused_id)
+                                    .cloned()
+                                    .unwrap_or_else(|| surf.clone());
 
-                                // Tell the old window it lost focus
-                                if state.input_focus.as_ref() != Some(surf) {
-                                    if let Some(old_focus) = &state.input_focus {
-                                        if let Some(old_client) = old_focus.client() {
-                                            state.serial += 1;
-                                            for keyboard in state.keyboards.iter().filter(|k| {
-                                                k.client().map(|c| c.id()) == Some(old_client.id())
-                                            }) {
-                                                keyboard.leave(state.serial, old_focus);
-                                            }
-                                        }
-                                    }
-
-                                    state.input_focus = Some(surf.clone());
-                                    if let Some(client) = surf.client() {
-                                        state.serial += 1;
-                                        for keyboard in state.keyboards.iter().filter(|k| {
-                                            k.client().map(|c| c.id()) == Some(client.id())
-                                        }) {
-                                            keyboard.enter(state.serial, surf, Vec::new());
-
-                                            // Re-send the current modifier state so the new window knows if Shift/Ctrl are held!
-                                            let depressed = state.xkb_state.serialize_mods(
-                                                xkbcommon::xkb::STATE_MODS_DEPRESSED,
-                                            );
-                                            let latched = state
-                                                .xkb_state
-                                                .serialize_mods(xkbcommon::xkb::STATE_MODS_LATCHED);
-                                            let locked = state
-                                                .xkb_state
-                                                .serialize_mods(xkbcommon::xkb::STATE_MODS_LOCKED);
-                                            let group = state.xkb_state.serialize_layout(
-                                                xkbcommon::xkb::STATE_LAYOUT_EFFECTIVE,
-                                            );
-                                            keyboard.modifiers(
-                                                state.serial,
-                                                depressed,
-                                                latched,
-                                                locked,
-                                                group,
-                                            );
-                                        }
-                                    }
-                                }
+                                state.set_input_focus(target_surf.clone());
 
                                 if state.super_held {
-                                    state
-                                        .wm
-                                        .begin_drag(&surf.id(), self.cursor.x, self.cursor.y);
+                                    state.wm.begin_drag(
+                                        &target_surf.id(),
+                                        self.cursor.x,
+                                        self.cursor.y,
+                                    );
                                 }
                             }
                         } else if is_left_click && !is_pressed {
                             state.wm.end_drag();
+                            state.wm.end_resize();
                         }
 
                         if !state.super_held {
@@ -294,6 +273,16 @@ impl Input {
                         }
                     }
 
+                    input::event::PointerEvent::ScrollWheel(a) => {
+                        Self::handle_scroll(a, state);
+                    }
+                    input::event::PointerEvent::ScrollFinger(a) => {
+                        Self::handle_scroll(a, state);
+                    }
+                    input::event::PointerEvent::ScrollContinuous(a) => {
+                        Self::handle_scroll(a, state);
+                    }
+
                     _ => {}
                 },
                 input::Event::Touch(_) => {}
@@ -308,50 +297,15 @@ impl Input {
         return should_exit;
     }
 
-    fn route_pointer_motion(cursor: Vec2, state: &mut ServerState, time: u32) {
-        let hit = state.styler.hit_test(
-            cursor.x,
-            cursor.y,
-            &state.wm.get_render_list(),
-            &state.surface_textures,
-        );
-        let target_surface = hit.surface;
-        let local_x = hit.local_x;
-        let local_y = hit.local_y;
+    fn handle_scroll<
+        E: input::event::pointer::PointerScrollEvent + input::event::pointer::PointerEventTrait,
+    >(
+        event: E,
+        state: &mut ServerState,
+    ) {
+        use input::event::pointer::Axis as LibinputAxis;
+        use wayland_server::protocol::wl_pointer::Axis as WlAxis;
 
-        if target_surface.as_ref() != state.pointer_focus.as_ref() {
-            if let Some(old_focus) = &state.pointer_focus {
-                if let Some(client) = old_focus.client() {
-                    state.serial += 1;
-                    for pointer in state
-                        .pointers
-                        .iter()
-                        .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
-                    {
-                        pointer.leave(state.serial, old_focus);
-                        pointer.frame();
-                    }
-                }
-            }
-
-            if let Some(new_focus) = &target_surface {
-                if let Some(client) = new_focus.client() {
-                    state.serial += 1;
-                    for pointer in state
-                        .pointers
-                        .iter()
-                        .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
-                    {
-                        pointer.enter(state.serial, new_focus, local_x, local_y);
-                        pointer.frame();
-                    }
-                }
-            }
-
-            state.pointer_focus = target_surface.clone();
-        }
-
-        // MOTION: Move the mouse inside the window
         if let Some(focused) = &state.pointer_focus {
             if let Some(client) = focused.client() {
                 for pointer in state
@@ -359,10 +313,33 @@ impl Input {
                     .iter()
                     .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
                 {
-                    pointer.motion(time, local_x, local_y);
+                    if event.has_axis(LibinputAxis::Vertical) {
+                        let value = event.scroll_value(LibinputAxis::Vertical);
+                        pointer.axis(event.time(), WlAxis::VerticalScroll, value);
+                    }
+                    if event.has_axis(LibinputAxis::Horizontal) {
+                        let value = event.scroll_value(LibinputAxis::Horizontal);
+                        pointer.axis(event.time(), WlAxis::HorizontalScroll, value);
+                    }
                     pointer.frame();
                 }
             }
         }
+    }
+
+    fn route_pointer_motion(cursor: Vec2, state: &mut ServerState, time: u32) {
+        let hit = state.styler.hit_test(
+            cursor.x,
+            cursor.y,
+            &state.wm.get_render_list(),
+            &state.wm.get_popups(),
+            &state.subsurfaces,
+            &state.surface_textures,
+            &state.viewports,
+            &state.surface_to_viewport,
+            state.wm.as_ref(),
+        );
+
+        state.set_pointer_focus(hit.surface, hit.local_x, hit.local_y, time);
     }
 }

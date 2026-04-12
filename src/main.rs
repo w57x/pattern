@@ -14,7 +14,10 @@ use pattern::{
     vulkan::{VulkanContext, frame::VulkanFrame},
 };
 use wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
+use wayland_protocols::wp::viewporter::server::wp_viewporter::WpViewporter;
+use wayland_protocols::xdg::decoration::zv1::server::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1;
 use wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase;
+use wayland_protocols::xdg::xdg_output::zv1::server::zxdg_output_manager_v1::ZxdgOutputManagerV1;
 use wayland_server::protocol::wl_data_device_manager::WlDataDeviceManager;
 use wayland_server::{
     Display, ListeningSocket, Resource,
@@ -26,13 +29,17 @@ use wayland_server::{
 
 fn main() {
     let seat = Seat::open(|seat, event| match event {
-        libseat::SeatEvent::Enable => println!("[seat]: Acquired DRM Master!"),
+        libseat::SeatEvent::Enable => println!("[seat]: Acquired DRM Master"),
         libseat::SeatEvent::Disable => {
-            println!("[seat]: Lost DRM Master! (User switched TTY)");
+            println!("[seat]: Lost DRM Master (User switched TTY)");
             seat.disable().unwrap();
         }
     })
     .expect("Failed to open libseat. Is seatd or systemd-logind running?");
+
+    for (var, value) in std::env::vars() {
+        eprintln!("{var} :: {value}")
+    }
 
     let shared_seat = Rc::new(RefCell::new(seat));
 
@@ -97,6 +104,9 @@ fn main() {
     dh.create_global::<ServerState, WlDataDeviceManager, ()>(3, ());
     dh.create_global::<ServerState, XdgWmBase, ()>(3, ());
     dh.create_global::<ServerState, ZwpLinuxDmabufV1, ()>(4, ());
+    dh.create_global::<ServerState, ZxdgDecorationManagerV1, ()>(1, ());
+    dh.create_global::<ServerState, WpViewporter, ()>(1, ());
+    dh.create_global::<ServerState, ZxdgOutputManagerV1, ()>(2, ());
 
     let socket = ListeningSocket::bind_auto("wayland", 0..32).unwrap();
     let socket_name = socket.socket_name().unwrap().to_string_lossy().into_owned();
@@ -104,8 +114,9 @@ fn main() {
 
     unsafe {
         std::env::set_var("WAYLAND_DISPLAY", &socket_name);
-        std::env::set_var("XDG_CURRENT_DESKTOP", "pattern");
-        std::env::set_var("DESKTOP", "pattern");
+        std::env::set_var("XDG_SESSION_TYPE", "wayland");
+        std::env::set_var("XDG_CURRENT_DESKTOP", "Pattern");
+        std::env::set_var("DESKTOP", "Pattern");
         std::env::set_var("DISPLAY", ":0");
     }
 
@@ -115,6 +126,7 @@ fn main() {
 
     let mut state = ServerState::new(vkctx.clone(), info.mode.clone(), gpu_dev_t, table_fd);
     let mut input = Input::new(shared_seat.clone(), width as f64, height as f64);
+    input.natural_scroll = true; // Change this to false to disable natural scroll
 
     let epoll = epoll::Epoll::new(epoll::EpollCreateFlags::empty()).unwrap();
 
@@ -277,6 +289,12 @@ fn main() {
                 }
             }
 
+            for popup in state.wm.get_popups() {
+                if !popup.surface.is_alive() {
+                    dead_surface_ids.push(popup.surface.id());
+                }
+            }
+
             if let Some((cursor_surf, _, _)) = &state.cursor_surface {
                 if !cursor_surf.is_alive() {
                     dead_surface_ids.push(cursor_surf.id());
@@ -286,6 +304,7 @@ fn main() {
 
             for id in dead_surface_ids {
                 state.wm.unmap_window(&id);
+                state.wm.unmap_popup(&id);
 
                 state.xdg_to_surface.retain(|_, v| v.id() != id);
 
@@ -302,6 +321,9 @@ fn main() {
             }
 
             state.windows.retain(|w| w.is_alive());
+            state.outputs.retain(|o| o.is_alive());
+            state.pointers.retain(|p| p.is_alive());
+            state.keyboards.retain(|k| k.is_alive());
 
             if let Some(focus) = &state.input_focus {
                 if !focus.is_alive() {
@@ -314,11 +336,15 @@ fn main() {
                 }
             }
 
-            let mut draw_list = state
-                .styler
-                .generate_draw_list(&state.wm.get_render_list(), &state.surface_textures);
-
-            println!("{draw_list:?}");
+            let mut draw_list = state.styler.generate_draw_list(
+                &state.wm.get_render_list(),
+                &state.wm.get_popups(),
+                &state.subsurfaces,
+                &state.surface_textures,
+                &state.viewports,
+                &state.surface_to_viewport,
+                state.wm.as_ref(),
+            );
 
             let mut cursor_drawn = false;
 
@@ -326,10 +352,15 @@ fn main() {
                 if let Some(tex) = state.surface_textures.get(&cursor_surf.id()) {
                     draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
                         set: tex.set,
-                        x: input.cursor.x as f32 - *hot_x as f32,
-                        y: input.cursor.y as f32 - *hot_y as f32,
+                        x: (input.cursor.x as f32 - *hot_x as f32).round(),
+                        y: (input.cursor.y as f32 - *hot_y as f32).round(),
                         w: tex.w,
                         h: tex.h,
+                        src_x: 0.0,
+                        src_y: 0.0,
+                        src_w: 1.0,
+                        src_h: 1.0,
+                        border_radius: 0.0,
                     }));
                     cursor_drawn = true;
                 }
@@ -338,10 +369,15 @@ fn main() {
             if !cursor_drawn {
                 draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
                     set: desc_set,
-                    x: input.cursor.x as f32 - hot_x,
-                    y: input.cursor.y as f32 - hot_y,
+                    x: (input.cursor.x as f32 - hot_x).round(),
+                    y: (input.cursor.y as f32 - hot_y).round(),
                     w: cur_w,
                     h: cur_h,
+                    src_x: 0.0,
+                    src_y: 0.0,
+                    src_w: 1.0,
+                    src_h: 1.0,
+                    border_radius: 0.0,
                 }));
             }
 
@@ -374,6 +410,16 @@ fn main() {
     println!("[pattern]: Tearing down swapchain...");
     for frame in swapchain {
         unsafe { frame.destroy(&vkctx.device, &card) };
+    }
+
+    for tex in state.surface_textures.values() {
+        unsafe {
+            vkctx.device.destroy_sampler(tex.samp, None);
+            vkctx.device.destroy_image_view(tex.view, None);
+            vkctx.device.destroy_image(tex.img, None);
+            vkctx.device.free_memory(tex.mem, None);
+            vkctx.device.destroy_descriptor_pool(tex.pool, None);
+        }
     }
 
     unsafe {

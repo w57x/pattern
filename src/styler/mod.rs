@@ -1,5 +1,6 @@
-use crate::vulkan::{ColorQuad, DrawCommand, RenderQuad, SurfaceTexture};
-use crate::wm::WindowState;
+use crate::server::definition::SubsurfaceData;
+use crate::vulkan::{DrawCommand, RenderQuad, SurfaceTexture};
+use crate::wm::{PopupState, WindowState};
 use std::collections::HashMap;
 use wayland_server::Resource;
 use wayland_server::backend::ObjectId;
@@ -15,7 +16,12 @@ pub trait Styler {
     fn generate_draw_list(
         &self,
         windows: &[WindowState],
+        popups: &[PopupState],
+        subsurfaces: &[SubsurfaceData],
         textures: &HashMap<ObjectId, SurfaceTexture>,
+        viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
+        surface_to_viewport: &HashMap<ObjectId, ObjectId>,
+        wm: &dyn crate::wm::WindowManager,
     ) -> Vec<DrawCommand>;
 
     fn hit_test(
@@ -23,8 +29,17 @@ pub trait Styler {
         cursor_x: f64,
         cursor_y: f64,
         windows: &[WindowState],
+        popups: &[PopupState],
+        subsurfaces: &[SubsurfaceData],
         textures: &HashMap<ObjectId, SurfaceTexture>,
+        viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
+        surface_to_viewport: &HashMap<ObjectId, ObjectId>,
+        wm: &dyn crate::wm::WindowManager,
     ) -> HitResult;
+
+    fn supports_ssd(&self) -> bool {
+        false
+    }
 }
 
 pub struct DefaultStyler;
@@ -33,42 +48,186 @@ impl DefaultStyler {
     pub fn new() -> Self {
         Self
     }
+
+    fn get_surface_size(
+        &self,
+        surface_id: &ObjectId,
+        textures: &HashMap<ObjectId, SurfaceTexture>,
+        viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
+        surface_to_viewport: &HashMap<ObjectId, ObjectId>,
+    ) -> (f64, f64) {
+        // If viewport destination size is set, use it.
+        if let Some(vp_id) = surface_to_viewport.get(surface_id) {
+            if let Some((_, Some(dst))) = viewports.get(vp_id) {
+                return (dst.0 as f64, dst.1 as f64);
+            }
+        }
+
+        // Otherwise use buffer size / scale
+        if let Some(tex) = textures.get(surface_id) {
+            return (
+                tex.w as f64 / tex.scale as f64,
+                tex.h as f64 / tex.scale as f64,
+            );
+        }
+
+        (0.0, 0.0)
+    }
+
+    fn draw_surface_recursive(
+        &self,
+        surface: &WlSurface,
+        abs_x: f64,
+        abs_y: f64,
+        subsurfaces: &[SubsurfaceData],
+        textures: &HashMap<ObjectId, SurfaceTexture>,
+        viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
+        surface_to_viewport: &HashMap<ObjectId, ObjectId>,
+        draw_list: &mut Vec<DrawCommand>,
+        border_radius: f32,
+    ) {
+        let (lw, lh) =
+            self.get_surface_size(&surface.id(), textures, viewports, surface_to_viewport);
+
+        if let Some(tex) = textures.get(&surface.id()) {
+            let mut src_x = 0.0;
+            let mut src_y = 0.0;
+            let mut src_w = 1.0;
+            let mut src_h = 1.0;
+
+            // Handle viewport source (cropping)
+            if let Some(vp_id) = surface_to_viewport.get(&surface.id()) {
+                if let Some((Some(src), _)) = viewports.get(vp_id) {
+                    src_x = (src.0 / tex.w as f64) as f32;
+                    src_y = (src.1 / tex.h as f64) as f32;
+                    src_w = (src.2 / tex.w as f64) as f32;
+                    src_h = (src.3 / tex.h as f64) as f32;
+                }
+            }
+
+            draw_list.push(DrawCommand::Texture(RenderQuad {
+                set: tex.set,
+                x: abs_x.round() as f32,
+                y: abs_y.round() as f32,
+                w: lw.round() as f32,
+                h: lh.round() as f32,
+                src_x,
+                src_y,
+                src_w,
+                src_h,
+                border_radius,
+            }));
+        }
+
+        for sub in subsurfaces {
+            if sub.parent.id() == surface.id() {
+                self.draw_surface_recursive(
+                    &sub.surface,
+                    abs_x + sub.x as f64,
+                    abs_y + sub.y as f64,
+                    subsurfaces,
+                    textures,
+                    viewports,
+                    surface_to_viewport,
+                    draw_list,
+                    0.0,
+                );
+            }
+        }
+    }
+
+    fn hit_test_recursive(
+        &self,
+        surface: &WlSurface,
+        abs_x: f64,
+        abs_y: f64,
+        cursor_x: f64,
+        cursor_y: f64,
+        subsurfaces: &[SubsurfaceData],
+        textures: &HashMap<ObjectId, SurfaceTexture>,
+        viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
+        surface_to_viewport: &HashMap<ObjectId, ObjectId>,
+    ) -> Option<HitResult> {
+        for sub in subsurfaces.iter().rev() {
+            if sub.parent.id() == surface.id() {
+                if let Some(hit) = self.hit_test_recursive(
+                    &sub.surface,
+                    abs_x + sub.x as f64,
+                    abs_y + sub.y as f64,
+                    cursor_x,
+                    cursor_y,
+                    subsurfaces,
+                    textures,
+                    viewports,
+                    surface_to_viewport,
+                ) {
+                    return Some(hit);
+                }
+            }
+        }
+
+        let (lw, lh) =
+            self.get_surface_size(&surface.id(), textures, viewports, surface_to_viewport);
+
+        if cursor_x >= abs_x
+            && cursor_x <= abs_x + lw
+            && cursor_y >= abs_y
+            && cursor_y <= abs_y + lh
+        {
+            return Some(HitResult {
+                surface: Some(surface.clone()),
+                local_x: cursor_x - abs_x,
+                local_y: cursor_y - abs_y,
+            });
+        }
+
+        None
+    }
 }
 
 impl Styler for DefaultStyler {
     fn generate_draw_list(
         &self,
         windows: &[WindowState],
+        popups: &[PopupState],
+        subsurfaces: &[SubsurfaceData],
         textures: &HashMap<ObjectId, SurfaceTexture>,
+        viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
+        surface_to_viewport: &HashMap<ObjectId, ObjectId>,
+        wm: &dyn crate::wm::WindowManager,
     ) -> Vec<DrawCommand> {
         let mut draw_list = Vec::new();
 
-        let focused_surface = windows.last().map(|w| w.surface.id());
-
         for win_state in windows {
-            if let Some(tex) = textures.get(&win_state.surface.id()) {
-                let is_focused = Some(win_state.surface.id()) == focused_surface;
-
-                if is_focused {
-                    let border_size = 2.0;
-                    draw_list.push(DrawCommand::Color(ColorQuad {
-                        color: [0.8, 0.4, 0.4, 1.0], // Red-ish border
-                        x: win_state.x as f32 - border_size,
-                        y: win_state.y as f32 - border_size,
-                        w: tex.w + border_size * 2.0,
-                        h: tex.h + border_size * 2.0,
-                    }));
-                }
-
-                draw_list.push(DrawCommand::Texture(RenderQuad {
-                    set: tex.set,
-                    x: win_state.x as f32,
-                    y: win_state.y as f32,
-                    w: tex.w,
-                    h: tex.h,
-                }));
-            }
+            let radius = if win_state.ssd { 20.0 } else { 0.0 };
+            self.draw_surface_recursive(
+                &win_state.surface,
+                win_state.x,
+                win_state.y,
+                subsurfaces,
+                textures,
+                viewports,
+                surface_to_viewport,
+                &mut draw_list,
+                radius,
+            );
         }
+
+        for popup in popups {
+            let (abs_x, abs_y) = wm.get_absolute_position(&popup.surface.id());
+            self.draw_surface_recursive(
+                &popup.surface,
+                abs_x,
+                abs_y,
+                subsurfaces,
+                textures,
+                viewports,
+                surface_to_viewport,
+                &mut draw_list,
+                0.0,
+            );
+        }
+
         draw_list
     }
 
@@ -77,31 +236,65 @@ impl Styler for DefaultStyler {
         cursor_x: f64,
         cursor_y: f64,
         windows: &[WindowState],
+        popups: &[PopupState],
+        subsurfaces: &[SubsurfaceData],
         textures: &HashMap<ObjectId, SurfaceTexture>,
+        viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
+        surface_to_viewport: &HashMap<ObjectId, ObjectId>,
+        wm: &dyn crate::wm::WindowManager,
     ) -> HitResult {
-        let mut target_surface = None;
-        let mut local_x = 0.0;
-        let mut local_y = 0.0;
+        for popup in popups.iter().rev() {
+            let (abs_x, abs_y) = wm.get_absolute_position(&popup.surface.id());
+            if let Some(hit) = self.hit_test_recursive(
+                &popup.surface,
+                abs_x,
+                abs_y,
+                cursor_x,
+                cursor_y,
+                subsurfaces,
+                textures,
+                viewports,
+                surface_to_viewport,
+            ) {
+                return hit;
+            }
+        }
 
         for win in windows.iter().rev() {
-            if let Some(tex) = textures.get(&win.surface.id()) {
-                if cursor_x >= win.x
-                    && cursor_x <= win.x + (tex.w as f64)
-                    && cursor_y >= win.y
-                    && cursor_y <= win.y + (tex.h as f64)
-                {
-                    target_surface = Some(win.surface.clone());
-                    local_x = cursor_x - win.x;
-                    local_y = cursor_y - win.y;
-                    break;
+            let has_transient_child = windows
+                .iter()
+                .any(|w| w.parent_id.as_ref() == Some(&win.surface.id()));
+
+            if let Some(hit) = self.hit_test_recursive(
+                &win.surface,
+                win.x,
+                win.y,
+                cursor_x,
+                cursor_y,
+                subsurfaces,
+                textures,
+                viewports,
+                surface_to_viewport,
+            ) {
+                if has_transient_child {
+                    return HitResult {
+                        surface: None,
+                        local_x: 0.0,
+                        local_y: 0.0,
+                    };
                 }
+                return hit;
             }
         }
 
         HitResult {
-            surface: target_surface,
-            local_x,
-            local_y,
+            surface: None,
+            local_x: 0.0,
+            local_y: 0.0,
         }
+    }
+
+    fn supports_ssd(&self) -> bool {
+        true
     }
 }

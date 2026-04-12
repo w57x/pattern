@@ -32,8 +32,9 @@ pub fn handle_keybinding(
                 return BindingAction::Exit;
             }
             xkbcommon::xkb::keysyms::KEY_t => {
-                Command::new("kitty").spawn().ok();
-                return BindingAction::Handled;
+                if let Ok(_c) = Command::new("kitty").spawn() {
+                    return BindingAction::Handled;
+                }
             }
             _ => {}
         }
