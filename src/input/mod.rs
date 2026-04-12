@@ -14,6 +14,9 @@ use wayland_server::Resource;
 
 use crate::server::definition::ServerState;
 
+mod bindings;
+use bindings::{BindingAction, handle_keybinding};
+
 pub struct SeatInterface {
     pub seat: Rc<RefCell<Seat>>,
     /// Maps the OS File Descriptor to the libseat Device ID
@@ -115,35 +118,16 @@ impl Input {
                         wayland_server::protocol::wl_keyboard::KeyState::Released
                     };
 
-                    if key == 125 || key == 126 {
-                        state.super_held =
-                            key_state == wayland_server::protocol::wl_keyboard::KeyState::Pressed;
-                        continue;
-                    }
-
                     let xkb_keycode = key + 8;
                     let keysym = state.xkb_state.key_get_one_sym(xkb_keycode.into());
 
-                    if keysym.raw() == xkbcommon::xkb::keysyms::KEY_q && state.super_held {
-                        if key_state == wayland_server::protocol::wl_keyboard::KeyState::Pressed {
-                            if let Some(active_window) = state.windows.last() {
-                                println!("[pattern]: Super+Q pressed. Asking window to close...");
-                                active_window.close();
-                            } else {
-                                println!("[pattern]: Super+Q pressed, but no windows are open.");
-                            }
-                        }
-                        continue;
-                    }
-
-                    if keysym.raw() == xkbcommon::xkb::keysyms::KEY_e && state.super_held {
-                        if key_state == wayland_server::protocol::wl_keyboard::KeyState::Pressed {
-                            println!(
-                                "[pattern]: Super+E pressed. Safely shutting down the Wayland server..."
-                            );
+                    match handle_keybinding(state, key, key_state, keysym) {
+                        BindingAction::Handled => continue,
+                        BindingAction::Exit => {
                             should_exit = true;
+                            continue;
                         }
-                        continue;
+                        BindingAction::None => {}
                     }
 
                     if let Some(focused_surface) = &state.input_focus {
@@ -238,7 +222,7 @@ impl Input {
                             if let Some(surf) = &hit_surface {
                                 state.wm.focus_window(&surf.id());
 
-                                // Tell the old window it lost focus!
+                                // Tell the old window it lost focus
                                 if state.input_focus.as_ref() != Some(surf) {
                                     if let Some(old_focus) = &state.input_focus {
                                         if let Some(old_client) = old_focus.client() {

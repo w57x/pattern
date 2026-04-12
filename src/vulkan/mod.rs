@@ -282,9 +282,9 @@ impl VulkanContext {
         device: &ash::Device,
         render_pass: vk::RenderPass,
     ) -> (vk::DescriptorSetLayout, vk::PipelineLayout, vk::Pipeline) {
-        // Loading the embedded shaders
-        let vert_shader_code = include_bytes!("../shaders/cursor.vert.spv");
-        let frag_shader_code = include_bytes!("../shaders/cursor.frag.spv");
+        // Loading the embedded shaders from the Cargo output directory
+        let vert_shader_code = include_bytes!(concat!(env!("OUT_DIR"), "/quad.vert.spv"));
+        let frag_shader_code = include_bytes!(concat!(env!("OUT_DIR"), "/quad.frag.spv"));
 
         let vert_shader_module = unsafe { Self::create_shader_module(device, vert_shader_code) };
         let frag_shader_module = unsafe { Self::create_shader_module(device, frag_shader_code) };

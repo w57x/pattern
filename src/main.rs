@@ -14,6 +14,7 @@ use pattern::{
     vulkan::{VulkanContext, frame::VulkanFrame},
 };
 use wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
+use wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase;
 use wayland_server::protocol::wl_data_device_manager::WlDataDeviceManager;
 use wayland_server::{
     Display, ListeningSocket, Resource,
@@ -94,14 +95,19 @@ fn main() {
     dh.create_global::<ServerState, WlOutput, ()>(4, ());
     dh.create_global::<ServerState, WlSeat, ()>(5, ());
     dh.create_global::<ServerState, WlDataDeviceManager, ()>(3, ());
-    dh.create_global::<ServerState, wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase, ()>(3, ());
+    dh.create_global::<ServerState, XdgWmBase, ()>(3, ());
     dh.create_global::<ServerState, ZwpLinuxDmabufV1, ()>(4, ());
 
     let socket = ListeningSocket::bind_auto("wayland", 0..32).unwrap();
-    println!(
-        "[pattern]: Wayland socket created: {}",
-        socket.socket_name().unwrap().to_string_lossy()
-    );
+    let socket_name = socket.socket_name().unwrap().to_string_lossy().into_owned();
+    println!("[pattern]: Wayland socket created: {}", socket_name);
+
+    unsafe {
+        std::env::set_var("WAYLAND_DISPLAY", &socket_name);
+        std::env::set_var("XDG_CURRENT_DESKTOP", "pattern");
+        std::env::set_var("DESKTOP", "pattern");
+        std::env::set_var("DISPLAY", ":0");
+    }
 
     println!("[pattern]: Booting Vulkan Context...");
     let vkctx = Rc::new(VulkanContext::new());
