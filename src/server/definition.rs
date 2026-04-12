@@ -76,6 +76,7 @@ pub struct ServerState {
 
     pub window_surfaces: Vec<WlSurface>,
     pub wm: Box<dyn crate::wm::WindowManager>,
+    pub styler: Box<dyn crate::styler::Styler>,
     pub cursor_pos: (f64, f64),
 
     pub frame_callbacks: Vec<wayland_server::protocol::wl_callback::WlCallback>,
@@ -153,6 +154,7 @@ impl ServerState {
 
             window_surfaces: Vec::new(),
             wm: Box::new(crate::wm::FloatingWm::new()),
+            styler: Box::new(crate::styler::DefaultStyler::new()),
             cursor_pos: (0., 0.),
             xdg_to_surface: HashMap::new(),
 

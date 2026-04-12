@@ -19,7 +19,9 @@ pub struct VulkanContext {
 
     pub render_pass: vk::RenderPass,
     pub pipeline_layout: vk::PipelineLayout,
+    pub color_pipeline_layout: vk::PipelineLayout,
     pub graphics_pipeline: vk::Pipeline,
+    pub color_pipeline: vk::Pipeline,
 
     pub descriptor_set_layout: vk::DescriptorSetLayout,
 }
@@ -107,8 +109,13 @@ impl VulkanContext {
         };
 
         let render_pass = unsafe { Self::create_render_pass(&device) };
-        let (descriptor_set_layout, pipeline_layout, graphics_pipeline) =
-            unsafe { Self::create_graphics_pipeline(&device, render_pass) };
+        let (
+            descriptor_set_layout,
+            pipeline_layout,
+            color_pipeline_layout,
+            graphics_pipeline,
+            color_pipeline,
+        ) = unsafe { Self::create_graphics_pipeline(&device, render_pass) };
 
         Self {
             entry,
@@ -121,7 +128,9 @@ impl VulkanContext {
             fence,
             render_pass,
             pipeline_layout,
+            color_pipeline_layout,
             graphics_pipeline,
+            color_pipeline,
             descriptor_set_layout,
         }
     }
@@ -281,18 +290,26 @@ impl VulkanContext {
     pub unsafe fn create_graphics_pipeline(
         device: &ash::Device,
         render_pass: vk::RenderPass,
-    ) -> (vk::DescriptorSetLayout, vk::PipelineLayout, vk::Pipeline) {
+    ) -> (
+        vk::DescriptorSetLayout,
+        vk::PipelineLayout,
+        vk::PipelineLayout,
+        vk::Pipeline,
+        vk::Pipeline,
+    ) {
         // Loading the embedded shaders from the Cargo output directory
         let vert_shader_code = include_bytes!(concat!(env!("OUT_DIR"), "/quad.vert.spv"));
         let frag_shader_code = include_bytes!(concat!(env!("OUT_DIR"), "/quad.frag.spv"));
+        let solid_shader_code = include_bytes!(concat!(env!("OUT_DIR"), "/solid.frag.spv"));
 
         let vert_shader_module = unsafe { Self::create_shader_module(device, vert_shader_code) };
         let frag_shader_module = unsafe { Self::create_shader_module(device, frag_shader_code) };
+        let solid_shader_module = unsafe { Self::create_shader_module(device, solid_shader_code) };
 
         let main_function_name =
             unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"main\0") };
 
-        let shader_stages = [
+        let mut shader_stages = [
             vk::PipelineShaderStageCreateInfo::default()
                 .stage(vk::ShaderStageFlags::VERTEX)
                 .module(vert_shader_module)
@@ -364,7 +381,7 @@ impl VulkanContext {
 
         // Push Constants Layout
         let push_constant_range = vk::PushConstantRange::default()
-            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
             .size(std::mem::size_of::<PushConstants>() as u32);
 
@@ -376,6 +393,15 @@ impl VulkanContext {
             device
                 .create_pipeline_layout(&pipeline_layout_info, None)
                 .expect("Failed to create Pipeline Layout")
+        };
+
+        let color_pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
+            .push_constant_ranges(std::slice::from_ref(&push_constant_range));
+
+        let color_pipeline_layout = unsafe {
+            device
+                .create_pipeline_layout(&color_pipeline_layout_info, None)
+                .expect("Failed to create Color Pipeline Layout")
         };
 
         // Finally, baking the Pipeline object
@@ -402,13 +428,48 @@ impl VulkanContext {
                 .expect("Failed to create Graphics Pipeline")[0]
         };
 
+        shader_stages[1] = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(solid_shader_module)
+            .name(main_function_name);
+
+        let solid_pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input_info)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisampling)
+            .color_blend_state(&color_blending)
+            .dynamic_state(&dynamic_state_info)
+            .layout(color_pipeline_layout)
+            .render_pass(render_pass)
+            .subpass(0);
+
+        let color_pipeline = unsafe {
+            device
+                .create_graphics_pipelines(
+                    vk::PipelineCache::null(),
+                    std::slice::from_ref(&solid_pipeline_info),
+                    None,
+                )
+                .expect("Failed to create Solid Graphics Pipeline")[0]
+        };
+
         // Cleanup the temporary shader modules now that the pipeline has digested them
         unsafe {
             device.destroy_shader_module(vert_shader_module, None);
             device.destroy_shader_module(frag_shader_module, None);
+            device.destroy_shader_module(solid_shader_module, None);
         }
 
-        (descriptor_set_layout, pipeline_layout, graphics_pipeline)
+        (
+            descriptor_set_layout,
+            pipeline_layout,
+            color_pipeline_layout,
+            graphics_pipeline,
+            color_pipeline,
+        )
     }
 
     pub unsafe fn create_vk_framebuffer(
@@ -459,7 +520,7 @@ impl VulkanContext {
         vk_fb: vk::Framebuffer,
         screen_w: u32,
         screen_h: u32,
-        quads: &[RenderQuad],
+        quads: &[DrawCommand],
     ) {
         unsafe {
             self.device.reset_fences(&[self.fence]).unwrap();
@@ -508,15 +569,6 @@ impl VulkanContext {
             );
         }
 
-        // Bind our Shader Pipeline
-        unsafe {
-            self.device.cmd_bind_pipeline(
-                cmd_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.graphics_pipeline,
-            );
-        }
-
         // Set dynamic viewport/scissor
         let viewport = vk::Viewport {
             x: 0.0,
@@ -546,43 +598,99 @@ impl VulkanContext {
         }
 
         // PAINTER LOGIC
-        for quad in quads {
-            unsafe {
-                self.device.cmd_bind_descriptor_sets(
-                    cmd_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.pipeline_layout,
-                    0,
-                    std::slice::from_ref(&quad.set),
-                    &[],
-                );
-            }
+        let mut current_pipeline = vk::Pipeline::null();
 
-            let push_constants = PushConstants {
-                pos: [quad.x, quad.y],
-                screen_size: [screen_w as f32, screen_h as f32],
-                quad_size: [quad.w, quad.h],
-            };
+        for cmd in quads {
+            match cmd {
+                DrawCommand::Texture(quad) => {
+                    if current_pipeline != self.graphics_pipeline {
+                        unsafe {
+                            self.device.cmd_bind_pipeline(
+                                cmd_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                self.graphics_pipeline,
+                            );
+                        }
+                        current_pipeline = self.graphics_pipeline;
+                    }
 
-            let push_bytes = unsafe {
-                std::slice::from_raw_parts(
-                    &push_constants as *const _ as *const u8,
-                    std::mem::size_of::<PushConstants>(),
-                )
-            };
+                    unsafe {
+                        self.device.cmd_bind_descriptor_sets(
+                            cmd_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            self.pipeline_layout,
+                            0,
+                            std::slice::from_ref(&quad.set),
+                            &[],
+                        );
+                    }
 
-            unsafe {
-                // to the Vertex Shader
-                self.device.cmd_push_constants(
-                    cmd_buffer,
-                    self.pipeline_layout,
-                    vk::ShaderStageFlags::VERTEX,
-                    0,
-                    push_bytes,
-                );
+                    let push_constants = PushConstants {
+                        pos: [quad.x, quad.y],
+                        screen_size: [screen_w as f32, screen_h as f32],
+                        quad_size: [quad.w, quad.h],
+                        _padding: [0.0, 0.0],
+                        color: [1.0, 1.0, 1.0, 1.0], // Default color, unused by quad.frag
+                    };
 
-                // Draw the quad
-                self.device.cmd_draw(cmd_buffer, 6, 1, 0, 0);
+                    let push_bytes = unsafe {
+                        std::slice::from_raw_parts(
+                            &push_constants as *const _ as *const u8,
+                            std::mem::size_of::<PushConstants>(),
+                        )
+                    };
+
+                    unsafe {
+                        self.device.cmd_push_constants(
+                            cmd_buffer,
+                            self.pipeline_layout,
+                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                            0,
+                            push_bytes,
+                        );
+
+                        self.device.cmd_draw(cmd_buffer, 6, 1, 0, 0);
+                    }
+                }
+                DrawCommand::Color(quad) => {
+                    if current_pipeline != self.color_pipeline {
+                        unsafe {
+                            self.device.cmd_bind_pipeline(
+                                cmd_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                self.color_pipeline,
+                            );
+                        }
+                        current_pipeline = self.color_pipeline;
+                    }
+
+                    let push_constants = PushConstants {
+                        pos: [quad.x, quad.y],
+                        screen_size: [screen_w as f32, screen_h as f32],
+                        quad_size: [quad.w, quad.h],
+                        _padding: [0.0, 0.0],
+                        color: quad.color,
+                    };
+
+                    let push_bytes = unsafe {
+                        std::slice::from_raw_parts(
+                            &push_constants as *const _ as *const u8,
+                            std::mem::size_of::<PushConstants>(),
+                        )
+                    };
+
+                    unsafe {
+                        self.device.cmd_push_constants(
+                            cmd_buffer,
+                            self.color_pipeline_layout,
+                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                            0,
+                            push_bytes,
+                        );
+
+                        self.device.cmd_draw(cmd_buffer, 6, 1, 0, 0);
+                    }
+                }
             }
         }
 
@@ -999,15 +1107,32 @@ pub struct PushConstants {
     pub pos: [f32; 2],
     pub screen_size: [f32; 2],
     pub quad_size: [f32; 2],
+    pub _padding: [f32; 2],
+    pub color: [f32; 4],
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct RenderQuad {
     pub set: ash::vk::DescriptorSet,
     pub x: f32,
     pub y: f32,
     pub w: f32,
     pub h: f32,
+}
+
+#[derive(Default, Debug)]
+pub struct ColorQuad {
+    pub color: [f32; 4],
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+#[derive(Debug)]
+pub enum DrawCommand {
+    Texture(RenderQuad),
+    Color(ColorQuad),
 }
 
 impl RenderQuad {

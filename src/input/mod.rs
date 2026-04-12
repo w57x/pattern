@@ -309,24 +309,15 @@ impl Input {
     }
 
     fn route_pointer_motion(cursor: Vec2, state: &mut ServerState, time: u32) {
-        let mut target_surface = None;
-        let mut local_x = 0.0;
-        let mut local_y = 0.0;
-
-        for win in state.wm.get_render_list().iter().rev() {
-            if let Some(tex) = state.surface_textures.get(&win.surface.id()) {
-                if cursor.x >= win.x
-                    && cursor.x <= win.x + (tex.w as f64)
-                    && cursor.y >= win.y
-                    && cursor.y <= win.y + (tex.h as f64)
-                {
-                    target_surface = Some(win.surface.clone());
-                    local_x = cursor.x - win.x;
-                    local_y = cursor.y - win.y;
-                    break;
-                }
-            }
-        }
+        let hit = state.styler.hit_test(
+            cursor.x,
+            cursor.y,
+            &state.wm.get_render_list(),
+            &state.surface_textures,
+        );
+        let target_surface = hit.surface;
+        let local_x = hit.local_x;
+        let local_y = hit.local_y;
 
         if target_surface.as_ref() != state.pointer_focus.as_ref() {
             if let Some(old_focus) = &state.pointer_focus {

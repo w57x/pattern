@@ -4,6 +4,7 @@ layout(push_constant) uniform PushConstants {
     vec2 pos;         // Quad X, Y
     vec2 screen_size; // Screen Width, Height
     vec2 quad_size;   // Size of the quad in pixels
+    vec4 color;       // Color for solid quads
 } push;
 
 

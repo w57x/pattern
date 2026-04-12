@@ -314,43 +314,35 @@ fn main() {
                 }
             }
 
-            let mut draw_list = Vec::new();
+            let mut draw_list = state
+                .styler
+                .generate_draw_list(&state.wm.get_render_list(), &state.surface_textures);
 
-            for win_state in state.wm.get_render_list() {
-                if let Some(tex) = state.surface_textures.get(&win_state.surface.id()) {
-                    draw_list.push(RenderQuad {
-                        set: tex.set,
-                        x: win_state.x as f32,
-                        y: win_state.y as f32,
-                        w: tex.w,
-                        h: tex.h,
-                    });
-                }
-            }
+            println!("{draw_list:?}");
 
             let mut cursor_drawn = false;
 
             if let Some((cursor_surf, hot_x, hot_y)) = &state.cursor_surface {
                 if let Some(tex) = state.surface_textures.get(&cursor_surf.id()) {
-                    draw_list.push(RenderQuad {
+                    draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
                         set: tex.set,
                         x: input.cursor.x as f32 - *hot_x as f32,
                         y: input.cursor.y as f32 - *hot_y as f32,
                         w: tex.w,
                         h: tex.h,
-                    });
+                    }));
                     cursor_drawn = true;
                 }
             }
 
             if !cursor_drawn {
-                draw_list.push(RenderQuad {
+                draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
                     set: desc_set,
                     x: input.cursor.x as f32 - hot_x,
                     y: input.cursor.y as f32 - hot_y,
                     w: cur_w,
                     h: cur_h,
-                });
+                }));
             }
 
             unsafe {
@@ -396,9 +388,13 @@ fn main() {
             .device
             .destroy_descriptor_set_layout(vkctx.descriptor_set_layout, None);
         vkctx.device.destroy_pipeline(vkctx.graphics_pipeline, None);
+        vkctx.device.destroy_pipeline(vkctx.color_pipeline, None);
         vkctx
             .device
             .destroy_pipeline_layout(vkctx.pipeline_layout, None);
+        vkctx
+            .device
+            .destroy_pipeline_layout(vkctx.color_pipeline_layout, None);
         vkctx.device.destroy_render_pass(vkctx.render_pass, None);
 
         vkctx.device.destroy_fence(vkctx.fence, None);
