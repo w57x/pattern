@@ -69,7 +69,7 @@ impl Dispatch<WlSurface, ()> for ServerState {
                 }
             }
             wayland_server::protocol::wl_surface::Request::Commit => {
-                if let Some(buffer) = state.surface_buffers.get(&surface.id()) {
+                if let Some(buffer) = state.surface_buffers.remove(&surface.id()) {
                     if let Some(buffer_info) = state.buffers.get(&buffer.id()) {
                         if let Some((_, mmap)) = state.pools.get(&buffer_info.pool_id) {
                             let start = buffer_info.offset as usize;
@@ -130,12 +130,18 @@ impl Dispatch<WlSurface, ()> for ServerState {
                                 dmabuf.height,
                                 dmabuf.stride,
                                 dmabuf.modifier,
+                                dmabuf.format,
                             );
+
+                            let format = match dmabuf.format {
+                                0x34324241 | 0x34324258 => vk::Format::R8G8B8A8_UNORM,
+                                _ => vk::Format::B8G8R8A8_UNORM,
+                            };
 
                             let view_info = vk::ImageViewCreateInfo::default()
                                 .image(img)
                                 .view_type(vk::ImageViewType::TYPE_2D)
-                                .format(vk::Format::B8G8R8A8_UNORM)
+                                .format(format)
                                 .subresource_range(
                                     vk::ImageSubresourceRange::default()
                                         .aspect_mask(vk::ImageAspectFlags::COLOR)

@@ -48,8 +48,8 @@ impl Dispatch<ZwpLinuxDmabufV1, ()> for ServerState {
             | zwp_linux_dmabuf_v1::Request::GetSurfaceFeedback { id, .. } => {
                 let feedback = data_init.init(id, ());
 
-                // Send the sealed 32-byte format table first
-                feedback.format_table(state.dmabuf_table_fd.as_fd(), 32);
+                // Send the sealed 64-byte format table (Contains 4 formats)
+                feedback.format_table(state.dmabuf_table_fd.as_fd(), 64);
 
                 // Identify the compositor's core GPU
                 let dev_bytes = state.gpu_dev_t.to_ne_bytes().to_vec();
@@ -59,8 +59,8 @@ impl Dispatch<ZwpLinuxDmabufV1, ()> for ServerState {
                 feedback.tranche_target_device(dev_bytes);
                 feedback.tranche_flags(TrancheFlags::empty());
 
-                // Tell Mesa to look at the first entry in our table (ARGB8888)
-                let indices: [u8; 2] = [0, 0]; // Index 0 as u16 (LE)
+                // Tell Mesa to look at all 4 entries in our table
+                let indices: [u8; 8] = [0, 0, 1, 0, 2, 0, 3, 0]; // Indices 0, 1, 2, 3 as u16 (LE)
 
                 feedback.tranche_formats(indices.to_vec());
                 feedback.tranche_done();
@@ -89,11 +89,11 @@ impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for ServerState {
 impl Dispatch<ZwpLinuxBufferParamsV1, ()> for ServerState {
     fn request(
         state: &mut Self,
-        _client: &wayland_server::Client,
+        client: &wayland_server::Client,
         resource: &ZwpLinuxBufferParamsV1,
         request: zwp_linux_buffer_params_v1::Request,
         _data: &(),
-        _dhandle: &wayland_server::DisplayHandle,
+        dhandle: &wayland_server::DisplayHandle,
         data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
         match request {
@@ -120,6 +120,30 @@ impl Dispatch<ZwpLinuxBufferParamsV1, ()> for ServerState {
                     },
                 );
             }
+            zwp_linux_buffer_params_v1::Request::Create {
+                width,
+                height,
+                format,
+                ..
+            } => {
+                if let Some(mut data) = state.pending_dmabufs.remove(&resource.id()) {
+                    data.width = width as u32;
+                    data.height = height as u32;
+                    data.format = format;
+
+                    let wl_buffer = client.create_resource::<wayland_server::protocol::wl_buffer::WlBuffer, (), ServerState>(
+                        dhandle,
+                        resource.version(),
+                        (),
+                    ).expect("Failed to create wl_buffer resource");
+
+                    resource.created(&wl_buffer);
+                    state.dmabuffers.insert(wl_buffer.id(), data);
+                } else {
+                    resource.failed();
+                }
+            }
+
             zwp_linux_buffer_params_v1::Request::CreateImmed {
                 buffer_id,
                 width,

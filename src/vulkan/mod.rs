@@ -1009,11 +1009,20 @@ impl VulkanContext {
         height: u32,
         stride: u32,
         modifier: u64,
+        drm_format: u32,
     ) -> (vk::Image, vk::DeviceMemory) {
         let dup_fd = ofd.try_clone().expect("Failed to duplicate DMA-BUF FD");
         let raw_fd = dup_fd.into_raw_fd();
 
-        let format = vk::Format::B8G8R8A8_UNORM;
+        // DRM_FORMAT_ARGB8888 = 0x34325241
+        // DRM_FORMAT_XRGB8888 = 0x34325258
+        // DRM_FORMAT_ABGR8888 = 0x34324241
+        // DRM_FORMAT_XBGR8888 = 0x34324258
+
+        let format = match drm_format {
+            0x34324241 | 0x34324258 => vk::Format::R8G8B8A8_UNORM,
+            _ => vk::Format::B8G8R8A8_UNORM,
+        };
 
         let subresource_layout = vk::SubresourceLayout::default()
             .offset(0)

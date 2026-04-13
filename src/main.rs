@@ -58,8 +58,8 @@ fn main() {
     )
     .unwrap();
 
-    // We have 2 entries. 2 * 16 bytes = 32 bytes.
-    nix::unistd::ftruncate(&table_fd, 32).unwrap();
+    // We have 4 entries now. 4 * 16 bytes = 64 bytes.
+    nix::unistd::ftruncate(&table_fd, 64).unwrap();
 
     let mut table_data = Vec::new();
 
@@ -70,6 +70,16 @@ fn main() {
 
     // Entry 1: XRGB8888, LINEAR
     table_data.extend_from_slice(&0x34325258u32.to_ne_bytes());
+    table_data.extend_from_slice(&0u32.to_ne_bytes());
+    table_data.extend_from_slice(&0u64.to_ne_bytes());
+
+    // Entry 2: ABGR8888, LINEAR
+    table_data.extend_from_slice(&0x34324241u32.to_ne_bytes());
+    table_data.extend_from_slice(&0u32.to_ne_bytes());
+    table_data.extend_from_slice(&0u64.to_ne_bytes());
+
+    // Entry 3: XBGR8888, LINEAR
+    table_data.extend_from_slice(&0x34324258u32.to_ne_bytes());
     table_data.extend_from_slice(&0u32.to_ne_bytes());
     table_data.extend_from_slice(&0u64.to_ne_bytes());
 

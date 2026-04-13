@@ -88,8 +88,10 @@ impl Dispatch<XdgSurface, ()> for ServerState {
 
                 let state_val = xdg_toplevel::State::Activated as u32;
                 let states_bytes = state_val.to_ne_bytes().to_vec();
-                toplevel.configure(800, 600, states_bytes);
-                resource.configure(1);
+
+                state.serial += 1;
+                toplevel.configure(0, 0, states_bytes);
+                resource.configure(state.serial);
             }
             xdg_surface::Request::GetPopup {
                 id,
