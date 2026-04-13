@@ -1,4 +1,4 @@
-use crate::server::definition::SubsurfaceData;
+use crate::server::SubsurfaceData;
 use crate::vulkan::{DrawCommand, RenderQuad, SurfaceTexture};
 use crate::wm::{PopupState, WindowState};
 use std::collections::HashMap;

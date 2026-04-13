@@ -1,0 +1,85 @@
+use crate::server::ServerState;
+use wayland_protocols::xdg::decoration::zv1::server::{
+    zxdg_decoration_manager_v1::{self, ZxdgDecorationManagerV1},
+    zxdg_toplevel_decoration_v1::{self, ZxdgToplevelDecorationV1},
+};
+use wayland_server::{Dispatch, GlobalDispatch, Resource};
+
+impl GlobalDispatch<ZxdgDecorationManagerV1, ()> for ServerState {
+    fn bind(
+        _state: &mut Self,
+        _handle: &wayland_server::DisplayHandle,
+        _client: &wayland_server::Client,
+        resource: wayland_server::New<ZxdgDecorationManagerV1>,
+        _global_data: &(),
+        data_init: &mut wayland_server::DataInit<'_, Self>,
+    ) {
+        data_init.init(resource, ());
+    }
+}
+
+impl Dispatch<ZxdgDecorationManagerV1, ()> for ServerState {
+    fn request(
+        state: &mut Self,
+        _client: &wayland_server::Client,
+        _resource: &ZxdgDecorationManagerV1,
+        request: zxdg_decoration_manager_v1::Request,
+        _data: &(),
+        _dhandle: &wayland_server::DisplayHandle,
+        data_init: &mut wayland_server::DataInit<'_, Self>,
+    ) {
+        match request {
+            zxdg_decoration_manager_v1::Request::GetToplevelDecoration { id, toplevel } => {
+                let decoration: ZxdgToplevelDecorationV1 = data_init.init(id, ());
+                state
+                    .decoration_to_toplevel
+                    .insert(decoration.id(), toplevel.id());
+
+                if state.styler.supports_ssd() {
+                    decoration.configure(zxdg_toplevel_decoration_v1::Mode::ServerSide);
+                } else {
+                    decoration.configure(zxdg_toplevel_decoration_v1::Mode::ClientSide);
+                }
+            }
+            zxdg_decoration_manager_v1::Request::Destroy => {}
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZxdgToplevelDecorationV1, ()> for ServerState {
+    fn request(
+        state: &mut Self,
+        _client: &wayland_server::Client,
+        resource: &ZxdgToplevelDecorationV1,
+        request: zxdg_toplevel_decoration_v1::Request,
+        _data: &(),
+        _dhandle: &wayland_server::DisplayHandle,
+        _data_init: &mut wayland_server::DataInit<'_, Self>,
+    ) {
+        match request {
+            zxdg_toplevel_decoration_v1::Request::SetMode { mode } => {
+                if let Some(toplevel_id) = state.decoration_to_toplevel.get(&resource.id()).cloned()
+                {
+                    let enabled = match mode {
+                        wayland_server::WEnum::Value(
+                            zxdg_toplevel_decoration_v1::Mode::ServerSide,
+                        ) => true,
+                        _ => false,
+                    };
+                    state.wm.set_window_ssd(&toplevel_id, enabled);
+                }
+            }
+            zxdg_toplevel_decoration_v1::Request::UnsetMode => {
+                if let Some(toplevel_id) = state.decoration_to_toplevel.get(&resource.id()).cloned()
+                {
+                    state.wm.set_window_ssd(&toplevel_id, false);
+                }
+            }
+            zxdg_toplevel_decoration_v1::Request::Destroy => {
+                state.decoration_to_toplevel.remove(&resource.id());
+            }
+            _ => {}
+        }
+    }
+}

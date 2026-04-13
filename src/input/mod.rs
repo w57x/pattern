@@ -12,7 +12,7 @@ use std::path::Path;
 use std::rc::Rc;
 use wayland_server::Resource;
 
-use crate::server::definition::ServerState;
+use crate::server::ServerState;
 
 mod bindings;
 use bindings::{BindingAction, handle_keybinding};

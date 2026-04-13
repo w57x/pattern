@@ -1,4 +1,4 @@
-use crate::server::definition::ServerState;
+use crate::server::ServerState;
 use std::process::Command;
 use wayland_server::protocol::wl_keyboard::KeyState;
 use xkbcommon::xkb::Keysym;

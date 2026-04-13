@@ -9,7 +9,7 @@ use pattern::vulkan::RenderQuad;
 use pattern::{
     gpu::{Card, buffer::Buffer},
     input::Input,
-    server::definition::{ClientState, ServerState},
+    server::{ClientState, ServerState},
     utils,
     vulkan::{VulkanContext, frame::VulkanFrame},
 };
