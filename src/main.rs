@@ -14,6 +14,7 @@ use pattern::{
     vulkan::{VulkanContext, frame::VulkanFrame},
 };
 use wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
+use wayland_protocols::wp::primary_selection::zv1::server::zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1;
 use wayland_protocols::wp::viewporter::server::wp_viewporter::WpViewporter;
 use wayland_protocols::xdg::decoration::zv1::server::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1;
 use wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase;
@@ -112,6 +113,7 @@ fn main() {
     dh.create_global::<ServerState, WlOutput, ()>(4, ());
     dh.create_global::<ServerState, WlSeat, ()>(5, ());
     dh.create_global::<ServerState, WlDataDeviceManager, ()>(3, ());
+    dh.create_global::<ServerState, ZwpPrimarySelectionDeviceManagerV1, ()>(1, ());
     dh.create_global::<ServerState, XdgWmBase, ()>(3, ());
     dh.create_global::<ServerState, ZwpLinuxDmabufV1, ()>(4, ());
     dh.create_global::<ServerState, ZxdgDecorationManagerV1, ()>(1, ());
@@ -265,7 +267,7 @@ fn main() {
                     }
                 }
                 1 => {
-                    if input.dispatch(&mut state) {
+                    if input.dispatch(&mut state, &dh) {
                         running = false;
                     }
                 }

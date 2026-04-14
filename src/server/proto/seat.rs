@@ -2,7 +2,8 @@ use crate::server::ServerState;
 use std::os::fd::AsFd;
 use wayland_server::protocol::{
     wl_data_device::WlDataDevice, wl_data_device_manager::WlDataDeviceManager,
-    wl_data_source::WlDataSource, wl_keyboard::WlKeyboard, wl_pointer::WlPointer, wl_seat::WlSeat,
+    wl_data_offer::WlDataOffer, wl_data_source::WlDataSource, wl_keyboard::WlKeyboard,
+    wl_pointer::WlPointer, wl_seat::WlSeat,
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
@@ -132,7 +133,7 @@ impl GlobalDispatch<WlDataDeviceManager, ()> for ServerState {
 
 impl Dispatch<WlDataDeviceManager, ()> for ServerState {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _client: &wayland_server::Client,
         _resource: &WlDataDeviceManager,
         request: wayland_server::protocol::wl_data_device_manager::Request,
@@ -144,10 +145,36 @@ impl Dispatch<WlDataDeviceManager, ()> for ServerState {
             wayland_server::protocol::wl_data_device_manager::Request::GetDataDevice {
                 id, ..
             } => {
-                data_init.init(id, ());
+                let device = data_init.init(id, ());
+                state.data_devices.push(device.clone());
+
+                if let Some(focused_surface) = &state.input_focus {
+                    if let Some(focused_client) = focused_surface.client() {
+                        if focused_client.id() == _client.id() {
+                            if let Some(source) = &state.selection {
+                                let offer = _client
+                                    .create_resource::<WlDataOffer, (), Self>(
+                                        _dhandle,
+                                        device.version(),
+                                        (),
+                                    )
+                                    .expect("Failed to create WlDataOffer");
+                                device.data_offer(&offer);
+
+                                if let Some(mime_types) = state.data_sources.get(&source.id()) {
+                                    for mime in mime_types {
+                                        offer.offer(mime.clone());
+                                    }
+                                }
+                                device.selection(Some(&offer));
+                            }
+                        }
+                    }
+                }
             }
             wayland_server::protocol::wl_data_device_manager::Request::CreateDataSource { id } => {
-                data_init.init(id, ());
+                let source = data_init.init(id, ());
+                state.data_sources.insert(source.id(), Vec::new());
             }
             _ => {}
         }
@@ -156,26 +183,119 @@ impl Dispatch<WlDataDeviceManager, ()> for ServerState {
 
 impl Dispatch<WlDataDevice, ()> for ServerState {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _client: &wayland_server::Client,
-        _resource: &WlDataDevice,
-        _request: wayland_server::protocol::wl_data_device::Request,
+        resource: &WlDataDevice,
+        request: wayland_server::protocol::wl_data_device::Request,
         _data: &(),
-        _dhandle: &wayland_server::DisplayHandle,
+        dhandle: &wayland_server::DisplayHandle,
         _data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
+        match request {
+            wayland_server::protocol::wl_data_device::Request::SetSelection { source, .. } => {
+                if let Some(old_source) = state.selection.take() {
+                    old_source.cancelled();
+                }
+
+                if let Some(new_source) = source {
+                    state.selection = Some(new_source.clone());
+
+                    if let Some(focused_surface) = &state.input_focus {
+                        if let Some(focused_client) = focused_surface.client() {
+                            for device in &state.data_devices {
+                                if device.client().map(|c| c.id()) == Some(focused_client.id()) {
+                                    let offer = focused_client
+                                        .create_resource::<WlDataOffer, (), Self>(
+                                            dhandle,
+                                            device.version(),
+                                            (),
+                                        )
+                                        .expect("Failed to create WlDataOffer");
+                                    device.data_offer(&offer);
+
+                                    if let Some(mime_types) =
+                                        state.data_sources.get(&new_source.id())
+                                    {
+                                        for mime in mime_types {
+                                            offer.offer(mime.clone());
+                                        }
+                                    }
+                                    device.selection(Some(&offer));
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    state.selection = None;
+                    if let Some(focused_surface) = &state.input_focus {
+                        if let Some(focused_client) = focused_surface.client() {
+                            for device in &state.data_devices {
+                                if device.client().map(|c| c.id()) == Some(focused_client.id()) {
+                                    device.selection(None);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            wayland_server::protocol::wl_data_device::Request::Release => {
+                state.data_devices.retain(|d| d.id() != resource.id());
+            }
+            _ => {}
+        }
     }
 }
 
 impl Dispatch<WlDataSource, ()> for ServerState {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _client: &wayland_server::Client,
-        _resource: &WlDataSource,
-        _request: wayland_server::protocol::wl_data_source::Request,
+        resource: &WlDataSource,
+        request: wayland_server::protocol::wl_data_source::Request,
         _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
         _data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
+        match request {
+            wayland_server::protocol::wl_data_source::Request::Offer { mime_type } => {
+                if let Some(mime_types) = state.data_sources.get_mut(&resource.id()) {
+                    mime_types.push(mime_type);
+                }
+            }
+            wayland_server::protocol::wl_data_source::Request::Destroy => {
+                if state.selection.as_ref().map(|s| s.id()) == Some(resource.id()) {
+                    state.selection = None;
+                }
+                state.data_sources.remove(&resource.id());
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<WlDataOffer, ()> for ServerState {
+    fn request(
+        state: &mut Self,
+        _client: &wayland_server::Client,
+        _resource: &WlDataOffer,
+        request: wayland_server::protocol::wl_data_offer::Request,
+        _data: &(),
+        _dhandle: &wayland_server::DisplayHandle,
+        _data_init: &mut wayland_server::DataInit<'_, Self>,
+    ) {
+        match request {
+            wayland_server::protocol::wl_data_offer::Request::Accept { mime_type, .. } => {
+                if let Some(source) = &state.selection {
+                    source.target(mime_type);
+                }
+            }
+            wayland_server::protocol::wl_data_offer::Request::Receive { mime_type, fd } => {
+                if let Some(source) = &state.selection {
+                    source.send(mime_type, fd.as_fd());
+                }
+            }
+            wayland_server::protocol::wl_data_offer::Request::Destroy => {}
+            _ => {}
+        }
     }
 }

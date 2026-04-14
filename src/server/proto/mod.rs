@@ -2,6 +2,7 @@ pub mod compositor;
 pub mod decoration;
 pub mod dmabuf;
 pub mod output;
+pub mod primary_selection;
 pub mod seat;
 pub mod shm;
 pub mod subcompositor;

@@ -108,6 +108,14 @@ pub struct ServerState {
     pub pending_scales: HashMap<ObjectId, i32>,
     pub viewports: HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
     pub surface_to_viewport: HashMap<ObjectId, ObjectId>,
+
+    pub data_sources: HashMap<ObjectId, Vec<String>>,
+    pub selection: Option<wayland_server::protocol::wl_data_source::WlDataSource>,
+    pub data_devices: Vec<wayland_server::protocol::wl_data_device::WlDataDevice>,
+
+    pub primary_selection_sources: HashMap<ObjectId, Vec<String>>,
+    pub primary_selection: Option<wayland_protocols::wp::primary_selection::zv1::server::zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1>,
+    pub primary_selection_devices: Vec<wayland_protocols::wp::primary_selection::zv1::server::zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1>,
 }
 
 #[derive(Clone)]
@@ -202,10 +210,18 @@ impl ServerState {
             pending_scales: HashMap::new(),
             viewports: HashMap::new(),
             surface_to_viewport: HashMap::new(),
+
+            data_sources: HashMap::new(),
+            selection: None,
+            data_devices: Vec::new(),
+
+            primary_selection_sources: HashMap::new(),
+            primary_selection: None,
+            primary_selection_devices: Vec::new(),
         }
     }
 
-    pub fn set_input_focus(&mut self, surface: WlSurface) {
+    pub fn set_input_focus(&mut self, surface: WlSurface, dh: &wayland_server::DisplayHandle) {
         if self.input_focus.as_ref() == Some(&surface) {
             return;
         }
@@ -246,6 +262,50 @@ impl ServerState {
                     .xkb_state
                     .serialize_layout(xkbcommon::xkb::STATE_LAYOUT_EFFECTIVE);
                 keyboard.modifiers(self.serial, depressed, latched, locked, group);
+            }
+
+            // Send selection offer to the newly focused client
+            if let Some(source) = &self.selection {
+                for device in &self.data_devices {
+                    if device.client().map(|c| c.id()) == Some(client.id()) {
+                        use wayland_server::protocol::wl_data_offer::WlDataOffer;
+                        let offer = client
+                            .create_resource::<WlDataOffer, (), Self>(dh, device.version(), ())
+                            .expect("Failed to create WlDataOffer");
+                        device.data_offer(&offer);
+
+                        if let Some(mime_types) = self.data_sources.get(&source.id()) {
+                            for mime in mime_types {
+                                offer.offer(mime.clone());
+                            }
+                        }
+                        device.selection(Some(&offer));
+                    }
+                }
+            }
+
+            // Send primary selection offer to the newly focused client
+            if let Some(source) = &self.primary_selection {
+                for device in &self.primary_selection_devices {
+                    if device.client().map(|c| c.id()) == Some(client.id()) {
+                        use wayland_protocols::wp::primary_selection::zv1::server::zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1;
+                        let offer = client
+                            .create_resource::<ZwpPrimarySelectionOfferV1, (), Self>(
+                                dh,
+                                device.version(),
+                                (),
+                            )
+                            .expect("Failed to create ZwpPrimarySelectionOfferV1");
+                        device.data_offer(&offer);
+
+                        if let Some(mime_types) = self.primary_selection_sources.get(&source.id()) {
+                            for mime in mime_types {
+                                offer.offer(mime.clone());
+                            }
+                        }
+                        device.selection(Some(&offer));
+                    }
+                }
             }
         }
     }

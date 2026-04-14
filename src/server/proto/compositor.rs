@@ -56,7 +56,7 @@ impl Dispatch<WlSurface, ()> for ServerState {
         surface: &WlSurface,
         request: wayland_server::protocol::wl_surface::Request,
         _data: &(),
-        _dhandle: &wayland_server::DisplayHandle,
+        dhandle: &wayland_server::DisplayHandle,
         data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
         use crate::vulkan::SurfaceTexture;
@@ -223,7 +223,7 @@ impl Dispatch<WlSurface, ()> for ServerState {
 
                 if is_focused {
                     if let Some(next_window) = state.wm.get_render_list().last() {
-                        state.set_input_focus(next_window.surface.clone());
+                        state.set_input_focus(next_window.surface.clone(), dhandle);
                     }
                 }
             }

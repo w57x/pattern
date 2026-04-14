@@ -89,7 +89,11 @@ impl Input {
         }
     }
 
-    pub fn dispatch(&mut self, state: &mut ServerState) -> bool {
+    pub fn dispatch(
+        &mut self,
+        state: &mut ServerState,
+        dh: &wayland_server::DisplayHandle,
+    ) -> bool {
         self.context.dispatch().unwrap();
 
         let mut should_exit = false;
@@ -241,7 +245,7 @@ impl Input {
                                     .cloned()
                                     .unwrap_or_else(|| surf.clone());
 
-                                state.set_input_focus(target_surf.clone());
+                                state.set_input_focus(target_surf.clone(), dh);
 
                                 if state.super_held {
                                     state.wm.begin_drag(

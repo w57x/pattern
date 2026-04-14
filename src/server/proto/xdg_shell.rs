@@ -55,7 +55,7 @@ impl Dispatch<XdgSurface, ()> for ServerState {
         resource: &XdgSurface,
         request: xdg_surface::Request,
         _data: &(),
-        _dhandle: &wayland_server::DisplayHandle,
+        dhandle: &wayland_server::DisplayHandle,
         data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
         match request {
@@ -69,7 +69,7 @@ impl Dispatch<XdgSurface, ()> for ServerState {
                         .wm
                         .assign_toplevel(&surface.id(), toplevel.clone(), resource.clone());
                     state.wm.focus_window(&surface.id());
-                    state.set_input_focus(surface.clone());
+                    state.set_input_focus(surface.clone(), dhandle);
 
                     let (cx, cy) = state.cursor_pos;
                     let hit = state.styler.hit_test(
