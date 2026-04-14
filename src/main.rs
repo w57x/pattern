@@ -337,6 +337,13 @@ fn main() {
             state.pointers.retain(|p| p.is_alive());
             state.keyboards.retain(|k| k.is_alive());
 
+            state.data_devices.retain(|d| d.is_alive());
+            state.primary_selection_devices.retain(|d| d.is_alive());
+            state.data_sources.retain(|_, (s, _)| s.is_alive());
+            state
+                .primary_selection_sources
+                .retain(|_, (s, _)| s.is_alive());
+
             if let Some(focus) = &state.input_focus {
                 if !focus.is_alive() {
                     state.input_focus = None;

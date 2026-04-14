@@ -10,10 +10,15 @@ use nix::sys::memfd::{MFdFlags, memfd_create};
 use wayland_server::{
     Resource, WEnum,
     backend::{ClientData, ClientId, DisconnectReason, ObjectId},
-    protocol::wl_surface::WlSurface,
+    protocol::{wl_data_device, wl_data_source, wl_surface::WlSurface},
 };
 
-use wayland_protocols::xdg::shell::server::{xdg_positioner, xdg_toplevel::XdgToplevel};
+use wayland_protocols::{
+    wp::primary_selection::zv1::server::{
+        zwp_primary_selection_device_v1, zwp_primary_selection_source_v1,
+    },
+    xdg::shell::server::{xdg_positioner, xdg_toplevel::XdgToplevel},
+};
 
 use crate::vulkan::{SurfaceTexture, VulkanContext};
 
@@ -109,13 +114,20 @@ pub struct ServerState {
     pub viewports: HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
     pub surface_to_viewport: HashMap<ObjectId, ObjectId>,
 
-    pub data_sources: HashMap<ObjectId, Vec<String>>,
-    pub selection: Option<wayland_server::protocol::wl_data_source::WlDataSource>,
-    pub data_devices: Vec<wayland_server::protocol::wl_data_device::WlDataDevice>,
+    pub data_sources: HashMap<ObjectId, (wl_data_source::WlDataSource, Vec<String>)>,
+    pub selection: Option<wl_data_source::WlDataSource>,
+    pub data_devices: Vec<wl_data_device::WlDataDevice>,
 
-    pub primary_selection_sources: HashMap<ObjectId, Vec<String>>,
-    pub primary_selection: Option<wayland_protocols::wp::primary_selection::zv1::server::zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1>,
-    pub primary_selection_devices: Vec<wayland_protocols::wp::primary_selection::zv1::server::zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1>,
+    pub primary_selection_sources: HashMap<
+        ObjectId,
+        (
+            zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1,
+            Vec<String>,
+        ),
+    >,
+    pub primary_selection: Option<zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1>,
+    pub primary_selection_devices:
+        Vec<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1>,
 }
 
 #[derive(Clone)]
@@ -274,12 +286,18 @@ impl ServerState {
                             .expect("Failed to create WlDataOffer");
                         device.data_offer(&offer);
 
-                        if let Some(mime_types) = self.data_sources.get(&source.id()) {
+                        if let Some((_, mime_types)) = self.data_sources.get(&source.id()) {
                             for mime in mime_types {
                                 offer.offer(mime.clone());
                             }
                         }
                         device.selection(Some(&offer));
+                    }
+                }
+            } else {
+                for device in &self.data_devices {
+                    if device.client().map(|c| c.id()) == Some(client.id()) {
+                        device.selection(None);
                     }
                 }
             }
@@ -298,12 +316,20 @@ impl ServerState {
                             .expect("Failed to create ZwpPrimarySelectionOfferV1");
                         device.data_offer(&offer);
 
-                        if let Some(mime_types) = self.primary_selection_sources.get(&source.id()) {
+                        if let Some((_, mime_types)) =
+                            self.primary_selection_sources.get(&source.id())
+                        {
                             for mime in mime_types {
                                 offer.offer(mime.clone());
                             }
                         }
                         device.selection(Some(&offer));
+                    }
+                }
+            } else {
+                for device in &self.primary_selection_devices {
+                    if device.client().map(|c| c.id()) == Some(client.id()) {
+                        device.selection(None);
                     }
                 }
             }

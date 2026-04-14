@@ -36,7 +36,7 @@ impl Dispatch<ZwpPrimarySelectionDeviceManagerV1, ()> for ServerState {
                 let source = data_init.init(id, ());
                 state
                     .primary_selection_sources
-                    .insert(source.id(), Vec::new());
+                    .insert(source.id(), (source.clone(), Vec::new()));
             }
             zwp_primary_selection_device_manager_v1::Request::GetDevice { id, .. } => {
                 let device = data_init.init(id, ());
@@ -55,7 +55,7 @@ impl Dispatch<ZwpPrimarySelectionDeviceManagerV1, ()> for ServerState {
                                     .expect("Failed to create ZwpPrimarySelectionOfferV1");
                                 device.data_offer(&offer);
 
-                                if let Some(mime_types) =
+                                if let Some((_, mime_types)) =
                                     state.primary_selection_sources.get(&source.id())
                                 {
                                     for mime in mime_types {
@@ -63,6 +63,8 @@ impl Dispatch<ZwpPrimarySelectionDeviceManagerV1, ()> for ServerState {
                                     }
                                 }
                                 device.selection(Some(&offer));
+                            } else {
+                                device.selection(None);
                             }
                         }
                     }
@@ -106,7 +108,7 @@ impl Dispatch<ZwpPrimarySelectionDeviceV1, ()> for ServerState {
                                         .expect("Failed to create ZwpPrimarySelectionOfferV1");
                                     device.data_offer(&offer);
 
-                                    if let Some(mime_types) =
+                                    if let Some((_, mime_types)) =
                                         state.primary_selection_sources.get(&new_source.id())
                                     {
                                         for mime in mime_types {
@@ -153,7 +155,9 @@ impl Dispatch<ZwpPrimarySelectionSourceV1, ()> for ServerState {
     ) {
         match request {
             zwp_primary_selection_source_v1::Request::Offer { mime_type } => {
-                if let Some(mime_types) = state.primary_selection_sources.get_mut(&resource.id()) {
+                if let Some((_, mime_types)) =
+                    state.primary_selection_sources.get_mut(&resource.id())
+                {
                     mime_types.push(mime_type);
                 }
             }

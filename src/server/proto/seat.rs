@@ -161,12 +161,15 @@ impl Dispatch<WlDataDeviceManager, ()> for ServerState {
                                     .expect("Failed to create WlDataOffer");
                                 device.data_offer(&offer);
 
-                                if let Some(mime_types) = state.data_sources.get(&source.id()) {
+                                if let Some((_, mime_types)) = state.data_sources.get(&source.id())
+                                {
                                     for mime in mime_types {
                                         offer.offer(mime.clone());
                                     }
                                 }
                                 device.selection(Some(&offer));
+                            } else {
+                                device.selection(None);
                             }
                         }
                     }
@@ -174,7 +177,9 @@ impl Dispatch<WlDataDeviceManager, ()> for ServerState {
             }
             wayland_server::protocol::wl_data_device_manager::Request::CreateDataSource { id } => {
                 let source = data_init.init(id, ());
-                state.data_sources.insert(source.id(), Vec::new());
+                state
+                    .data_sources
+                    .insert(source.id(), (source.clone(), Vec::new()));
             }
             _ => {}
         }
@@ -213,7 +218,7 @@ impl Dispatch<WlDataDevice, ()> for ServerState {
                                         .expect("Failed to create WlDataOffer");
                                     device.data_offer(&offer);
 
-                                    if let Some(mime_types) =
+                                    if let Some((_, mime_types)) =
                                         state.data_sources.get(&new_source.id())
                                     {
                                         for mime in mime_types {
@@ -258,7 +263,7 @@ impl Dispatch<WlDataSource, ()> for ServerState {
     ) {
         match request {
             wayland_server::protocol::wl_data_source::Request::Offer { mime_type } => {
-                if let Some(mime_types) = state.data_sources.get_mut(&resource.id()) {
+                if let Some((_, mime_types)) = state.data_sources.get_mut(&resource.id()) {
                     mime_types.push(mime_type);
                 }
             }
