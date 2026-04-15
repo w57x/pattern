@@ -27,6 +27,11 @@ pub struct WindowState {
     pub title: Option<String>,
     pub app_id: Option<String>,
     pub ssd: bool,
+
+    pub maximized: bool,
+    pub fullscreen: bool,
+    pub minimized: bool,
+    pub saved_geometry: Option<(f64, f64, i32, i32)>,
 }
 
 #[derive(Clone)]
@@ -37,6 +42,7 @@ pub struct PopupState {
     pub parent_surface_id: ObjectId,
     pub x: i32,
     pub y: i32,
+    pub geometry: Rect,
 }
 
 pub trait WindowManager {
@@ -58,6 +64,7 @@ pub trait WindowManager {
 
     fn map_popup(&mut self, popup: PopupState);
     fn unmap_popup(&mut self, popup_surface_id: &ObjectId);
+    fn update_popup_position(&mut self, popup_surface_id: &ObjectId, x: i32, y: i32);
 
     fn set_window_title(&mut self, toplevel_id: &ObjectId, title: String);
     fn set_window_app_id(&mut self, toplevel_id: &ObjectId, app_id: String);
@@ -65,17 +72,34 @@ pub trait WindowManager {
     fn set_window_ssd(&mut self, toplevel_id: &ObjectId, enabled: bool);
     fn set_window_geometry(&mut self, surface_id: &ObjectId, geometry: Rect);
 
-    fn begin_interactive_move(&mut self, toplevel_id: &ObjectId, cursor_x: f64, cursor_y: f64);
+    fn set_maximized(&mut self, toplevel_id: &ObjectId, maximized: bool, screen_size: (u16, u16));
+    fn set_fullscreen(&mut self, toplevel_id: &ObjectId, fullscreen: bool, screen_size: (u16, u16));
+    fn set_minimized(&mut self, toplevel_id: &ObjectId);
+
+    fn begin_interactive_move(
+        &mut self,
+        toplevel_id: &ObjectId,
+        cursor_x: f64,
+        cursor_y: f64,
+        screen_size: (u16, u16),
+    );
     fn begin_interactive_resize(
         &mut self,
         toplevel_id: &ObjectId,
         edges: u32,
         cursor_x: f64,
         cursor_y: f64,
+        screen_size: (u16, u16),
     );
 
     /// Starts dragging a specific window
-    fn begin_drag(&mut self, surface_id: &ObjectId, cursor_x: f64, cursor_y: f64);
+    fn begin_drag(
+        &mut self,
+        surface_id: &ObjectId,
+        cursor_x: f64,
+        cursor_y: f64,
+        screen_size: (u16, u16),
+    );
 
     /// Updates the dragged window's position
     fn update_drag(&mut self, cursor_x: f64, cursor_y: f64);
@@ -111,8 +135,8 @@ pub struct FloatingWm {
     // Tracks: (Window ID, Grab Offset X, Grab Offset Y)
     pub drag_state: Option<(ObjectId, f64, f64)>,
 
-    // Tracks: (Window ID, Edges, Start Cursor X, Start Cursor Y, Start Win X, Start Win Y, Start Win W, Start Win H)
-    pub resize_state: Option<(ObjectId, u32, f64, f64, f64, f64, i32, i32)>,
+    // Tracks: (Window ID, Edges, Start Cursor X, Start Cursor Y, Start Surface X, Start Surface Y, Start Geometry W, Start Geometry H, Start Geometry X, Start Geometry Y)
+    pub resize_state: Option<(ObjectId, u32, f64, f64, f64, f64, i32, i32, i32, i32)>,
 }
 
 impl FloatingWm {
@@ -147,6 +171,10 @@ impl WindowManager for FloatingWm {
             title: None,
             app_id: None,
             ssd: false,
+            maximized: false,
+            fullscreen: false,
+            minimized: false,
+            saved_geometry: None,
         });
     }
 
@@ -158,7 +186,7 @@ impl WindowManager for FloatingWm {
                 self.drag_state = None;
             }
         }
-        if let Some((resize_id, _, _, _, _, _, _, _)) = &self.resize_state {
+        if let Some((resize_id, ..)) = &self.resize_state {
             if resize_id == surface_id {
                 self.resize_state = None;
             }
@@ -219,6 +247,17 @@ impl WindowManager for FloatingWm {
 
     fn unmap_popup(&mut self, popup_surface_id: &ObjectId) {
         self.popups.retain(|p| &p.surface.id() != popup_surface_id);
+    }
+
+    fn update_popup_position(&mut self, popup_surface_id: &ObjectId, x: i32, y: i32) {
+        if let Some(popup) = self
+            .popups
+            .iter_mut()
+            .find(|p| &p.surface.id() == popup_surface_id)
+        {
+            popup.x = x;
+            popup.y = y;
+        }
     }
 
     fn set_window_title(&mut self, toplevel_id: &ObjectId, title: String) {
@@ -297,11 +336,146 @@ impl WindowManager for FloatingWm {
             .iter_mut()
             .find(|w| &w.surface.id() == surface_id)
         {
+            // According to xdg-shell spec, if the geometry offset changes,
+            // we must adjust the surface position to keep the window geometry top-left corner stable.
+            window.x += (window.geometry.x - geometry.x) as f64;
+            window.y += (window.geometry.y - geometry.y) as f64;
             window.geometry = geometry;
+        }
+
+        if let Some(popup) = self
+            .popups
+            .iter_mut()
+            .find(|p| &p.surface.id() == surface_id)
+        {
+            popup.geometry = geometry;
         }
     }
 
-    fn begin_interactive_move(&mut self, toplevel_id: &ObjectId, cursor_x: f64, cursor_y: f64) {
+    fn set_maximized(&mut self, toplevel_id: &ObjectId, maximized: bool, screen_size: (u16, u16)) {
+        if let Some(window) = self
+            .windows
+            .iter_mut()
+            .find(|w| w.toplevel.as_ref().map(|t| t.id()) == Some(toplevel_id.clone()))
+        {
+            if window.maximized == maximized {
+                return;
+            }
+
+            let (target_w, target_h) = if maximized {
+                (screen_size.0 as i32, screen_size.1 as i32)
+            } else {
+                if let Some((_, _, w, h)) = window.saved_geometry {
+                    (w, h)
+                } else {
+                    (window.w, window.h)
+                }
+            };
+
+            if maximized && !window.maximized {
+                window.saved_geometry = Some((window.x, window.y, window.w, window.h));
+                window.x = -window.geometry.x as f64;
+                window.y = -window.geometry.y as f64;
+                window.maximized = true;
+            } else if !maximized && window.maximized {
+                if let Some((x, y, w, h)) = window.saved_geometry.take() {
+                    window.x = x;
+                    window.y = y;
+                    window.w = w;
+                    window.h = h;
+                }
+                window.maximized = false;
+            }
+
+            if let (Some(toplevel), Some(xdg_surface)) = (&window.toplevel, &window.xdg_surface) {
+                use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+                let mut states = Vec::new();
+                states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
+                if window.maximized {
+                    states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
+                }
+                if window.fullscreen {
+                    states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
+                }
+                toplevel.configure(target_w, target_h, states);
+                xdg_surface.configure(0);
+            }
+        }
+    }
+
+    fn set_fullscreen(
+        &mut self,
+        toplevel_id: &ObjectId,
+        fullscreen: bool,
+        screen_size: (u16, u16),
+    ) {
+        if let Some(window) = self
+            .windows
+            .iter_mut()
+            .find(|w| w.toplevel.as_ref().map(|t| t.id()) == Some(toplevel_id.clone()))
+        {
+            if window.fullscreen == fullscreen {
+                return;
+            }
+
+            let (target_w, target_h) = if fullscreen {
+                (screen_size.0 as i32, screen_size.1 as i32)
+            } else {
+                if let Some((_, _, w, h)) = window.saved_geometry {
+                    (w, h)
+                } else {
+                    (window.w, window.h)
+                }
+            };
+
+            if fullscreen && !window.fullscreen {
+                window.saved_geometry = Some((window.x, window.y, window.w, window.h));
+                window.x = -window.geometry.x as f64;
+                window.y = -window.geometry.y as f64;
+                window.fullscreen = true;
+            } else if !fullscreen && window.fullscreen {
+                if let Some((x, y, w, h)) = window.saved_geometry.take() {
+                    window.x = x;
+                    window.y = y;
+                    window.w = w;
+                    window.h = h;
+                }
+                window.fullscreen = false;
+            }
+
+            if let (Some(toplevel), Some(xdg_surface)) = (&window.toplevel, &window.xdg_surface) {
+                use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+                let mut states = Vec::new();
+                states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
+                if window.maximized {
+                    states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
+                }
+                if window.fullscreen {
+                    states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
+                }
+                toplevel.configure(target_w, target_h, states);
+                xdg_surface.configure(0);
+            }
+        }
+    }
+
+    fn set_minimized(&mut self, toplevel_id: &ObjectId) {
+        if let Some(window) = self
+            .windows
+            .iter_mut()
+            .find(|w| w.toplevel.as_ref().map(|t| t.id()) == Some(toplevel_id.clone()))
+        {
+            window.minimized = true;
+        }
+    }
+
+    fn begin_interactive_move(
+        &mut self,
+        toplevel_id: &ObjectId,
+        cursor_x: f64,
+        cursor_y: f64,
+        screen_size: (u16, u16),
+    ) {
         let target_surface_id = self.windows.iter().find_map(|w| {
             if let Some(top) = &w.toplevel {
                 if &top.id() == toplevel_id {
@@ -312,7 +486,11 @@ impl WindowManager for FloatingWm {
         });
 
         if let Some(surface_id) = target_surface_id {
-            self.begin_drag(&surface_id, cursor_x, cursor_y);
+            // Un-fullscreen and un-maximize if needed when moving
+            self.set_fullscreen(&toplevel_id, false, screen_size);
+            self.set_maximized(&toplevel_id, false, screen_size);
+
+            self.begin_drag(&surface_id, cursor_x, cursor_y, screen_size);
         }
     }
 
@@ -322,7 +500,20 @@ impl WindowManager for FloatingWm {
         edges: u32,
         cursor_x: f64,
         cursor_y: f64,
+        screen_size: (u16, u16),
     ) {
+        if let Some(_window) = self
+            .windows
+            .iter_mut()
+            .find(|w| w.toplevel.as_ref().map(|t| t.id()) == Some(toplevel_id.clone()))
+        {
+            // If the window was maximized or fullscreen, we MUST un-maximize it before we start resizing
+            // otherwise our initial dimensions are the screen size, and if we then restore later
+            // we'll lose our resize progress.
+            self.set_fullscreen(&toplevel_id, false, screen_size);
+            self.set_maximized(&toplevel_id, false, screen_size);
+        }
+
         if let Some(window) = self
             .windows
             .iter()
@@ -335,18 +526,36 @@ impl WindowManager for FloatingWm {
                 cursor_y,
                 window.x,
                 window.y,
-                window.w,
-                window.h,
+                window.geometry.w,
+                window.geometry.h,
+                window.geometry.x,
+                window.geometry.y,
             ));
+            self.drag_state = None; // Mutually exclusive with resize
             self.focus_window(&window.surface.id());
         }
     }
 
-    fn begin_drag(&mut self, surface_id: &ObjectId, cursor_x: f64, cursor_y: f64) {
+    fn begin_drag(
+        &mut self,
+        surface_id: &ObjectId,
+        cursor_x: f64,
+        cursor_y: f64,
+        screen_size: (u16, u16),
+    ) {
+        if let Some(window) = self.windows.iter().find(|w| &w.surface.id() == surface_id) {
+            if let Some(toplevel) = &window.toplevel {
+                let toplevel_id = toplevel.id();
+                self.set_fullscreen(&toplevel_id, false, screen_size);
+                self.set_maximized(&toplevel_id, false, screen_size);
+            }
+        }
+
         if let Some(window) = self.windows.iter().find(|w| &w.surface.id() == surface_id) {
             let offset_x = cursor_x - window.x;
             let offset_y = cursor_y - window.y;
             self.drag_state = Some((surface_id.clone(), offset_x, offset_y));
+            self.resize_state = None; // Mutually exclusive with drag
             self.focus_window(surface_id);
         }
     }
@@ -365,48 +574,59 @@ impl WindowManager for FloatingWm {
     }
 
     fn update_resize(&mut self, cursor_x: f64, cursor_y: f64, serial: u32) {
-        if let Some((id, edges, start_cx, start_cy, start_x, start_y, start_w, start_h)) =
-            self.resize_state.clone()
+        if let Some((
+            id,
+            edges,
+            start_cx,
+            start_cy,
+            start_sx,
+            start_sy,
+            start_gw,
+            start_gh,
+            start_gx,
+            start_gy,
+        )) = self.resize_state.clone()
         {
             if let Some(window) = self.windows.iter_mut().find(|w| w.surface.id() == id) {
                 let dx = cursor_x - start_cx;
                 let dy = cursor_y - start_cy;
 
-                let mut new_x = start_x;
-                let mut new_y = start_y;
-                let mut new_w = start_w as f64;
-                let mut new_h = start_h as f64;
+                // new_gx and new_gy are the new geometry top-left in screen space
+                let mut new_gx = start_sx + start_gx as f64;
+                let mut new_gy = start_sy + start_gy as f64;
+                let mut new_gw = start_gw as f64;
+                let mut new_gh = start_gh as f64;
 
                 if (edges & 4) != 0 {
                     // Left
-                    new_x += dx;
-                    new_w -= dx;
+                    new_gx += dx;
+                    new_gw -= dx;
                 } else if (edges & 8) != 0 {
                     // Right
-                    new_w += dx;
+                    new_gw += dx;
                 }
 
                 if (edges & 1) != 0 {
                     // Top
-                    new_y += dy;
-                    new_h -= dy;
+                    new_gy += dy;
+                    new_gh -= dy;
                 } else if (edges & 2) != 0 {
                     // Bottom
-                    new_h += dy;
+                    new_gh += dy;
                 }
 
-                if new_w < 100.0 {
-                    new_w = 100.0;
+                if new_gw < 100.0 {
+                    new_gw = 100.0;
                 }
-                if new_h < 100.0 {
-                    new_h = 100.0;
+                if new_gh < 100.0 {
+                    new_gh = 100.0;
                 }
 
-                window.x = new_x;
-                window.y = new_y;
-                window.w = new_w as i32;
-                window.h = new_h as i32;
+                // Update surface position based on new geometry position and CURRENT geometry offset
+                window.x = new_gx - window.geometry.x as f64;
+                window.y = new_gy - window.geometry.y as f64;
 
+                // Configure is in window geometry coordinates
                 if let (Some(toplevel), Some(xdg_surface)) = (&window.toplevel, &window.xdg_surface)
                 {
                     let state_val =
@@ -417,7 +637,7 @@ impl WindowManager for FloatingWm {
                             as u32;
                     states_bytes.extend_from_slice(&act_val.to_ne_bytes());
 
-                    toplevel.configure(window.w, window.h, states_bytes);
+                    toplevel.configure(new_gw as i32, new_gh as i32, states_bytes);
                     xdg_surface.configure(serial);
                 }
             }
@@ -425,7 +645,7 @@ impl WindowManager for FloatingWm {
     }
 
     fn end_resize(&mut self) {
-        if let Some((id, _, _, _, _, _, _, _)) = self.resize_state.take() {
+        if let Some((id, ..)) = self.resize_state.take() {
             if let Some(window) = self.windows.iter_mut().find(|w| w.surface.id() == id) {
                 if let (Some(toplevel), Some(xdg_surface)) = (&window.toplevel, &window.xdg_surface)
                 {
@@ -433,7 +653,7 @@ impl WindowManager for FloatingWm {
                         wayland_protocols::xdg::shell::server::xdg_toplevel::State::Activated
                             as u32;
                     let states_bytes = act_val.to_ne_bytes().to_vec();
-                    toplevel.configure(window.w, window.h, states_bytes);
+                    toplevel.configure(0, 0, states_bytes);
                     // Just a dummy serial for end_resize, real one handled by client response
                     xdg_surface.configure(1);
                 }
@@ -466,12 +686,12 @@ impl WindowManager for FloatingWm {
 
     fn get_absolute_position(&self, surface_id: &ObjectId) -> (f64, f64) {
         if let Some(win) = self.windows.iter().find(|w| &w.surface.id() == surface_id) {
-            return (win.x, win.y);
+            return (win.x + win.geometry.x as f64, win.y + win.geometry.y as f64);
         }
 
         if let Some(popup) = self.popups.iter().find(|p| &p.surface.id() == surface_id) {
-            let (parent_x, parent_y) = self.get_absolute_position(&popup.parent_surface_id);
-            return (parent_x + popup.x as f64, parent_y + popup.y as f64);
+            let (parent_abs_x, parent_abs_y) = self.get_absolute_position(&popup.parent_surface_id);
+            return (parent_abs_x + popup.x as f64, parent_abs_y + popup.y as f64);
         }
 
         (0.0, 0.0)

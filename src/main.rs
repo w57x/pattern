@@ -261,8 +261,18 @@ fn main() {
                 0 => {
                     let drm_events = card.receive_events().unwrap();
                     for event in drm_events {
-                        if let drm::control::Event::PageFlip(_) = event {
-                            waiting_for_flip = false;
+                        match event {
+                            drm::control::Event::PageFlip(_vblank) => {
+                                waiting_for_flip = false;
+
+                                let ts = clock_gettime(ClockId::CLOCK_MONOTONIC).unwrap();
+                                let now = (ts.tv_sec() * 1000 + ts.tv_nsec() / 1_000_000) as u32;
+
+                                for cb in state.frame_callbacks.drain(..) {
+                                    cb.done(now);
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -362,6 +372,7 @@ fn main() {
                 &state.surface_textures,
                 &state.viewports,
                 &state.surface_to_viewport,
+                &state.surface_opaque_region,
                 state.wm.as_ref(),
             );
 
@@ -411,13 +422,6 @@ fn main() {
                 None, // No user data for now
             )
             .expect("Failed to page flip");
-
-            let ts = clock_gettime(ClockId::CLOCK_MONOTONIC).unwrap();
-            let now = (ts.tv_sec() * 1000 + ts.tv_nsec() / 1_000_000) as u32;
-
-            for cb in state.frame_callbacks.drain(..) {
-                cb.done(now);
-            }
 
             waiting_for_flip = true;
             frame_index += 1;

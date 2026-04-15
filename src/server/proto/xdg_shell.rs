@@ -42,10 +42,96 @@ impl Dispatch<XdgWmBase, ()> for ServerState {
             } => {
                 data_init.init(id, ());
             }
+            wayland_protocols::xdg::shell::server::xdg_wm_base::Request::Pong { serial: _ } => {}
             wayland_protocols::xdg::shell::server::xdg_wm_base::Request::Destroy => {}
             _ => {}
         }
     }
+}
+
+fn compute_popup_position(
+    state: &ServerState,
+    parent_surface_id: &wayland_server::backend::ObjectId,
+    positioner_data: &crate::server::PositionerData,
+) -> (i32, i32) {
+    use xdg_positioner::{Anchor, Gravity};
+
+    let mut x = positioner_data.anchor_rect.0 + positioner_data.offset.0;
+    let mut y = positioner_data.anchor_rect.1 + positioner_data.offset.1;
+
+    match positioner_data.anchor {
+        wayland_server::WEnum::Value(Anchor::TopRight)
+        | wayland_server::WEnum::Value(Anchor::Right)
+        | wayland_server::WEnum::Value(Anchor::BottomRight) => {
+            x += positioner_data.anchor_rect.2;
+        }
+        wayland_server::WEnum::Value(Anchor::Top)
+        | wayland_server::WEnum::Value(Anchor::Bottom) => {
+            x += positioner_data.anchor_rect.2 / 2;
+        }
+        _ => {}
+    }
+
+    match positioner_data.anchor {
+        wayland_server::WEnum::Value(Anchor::BottomLeft)
+        | wayland_server::WEnum::Value(Anchor::Bottom)
+        | wayland_server::WEnum::Value(Anchor::BottomRight) => {
+            y += positioner_data.anchor_rect.3;
+        }
+        wayland_server::WEnum::Value(Anchor::Left)
+        | wayland_server::WEnum::Value(Anchor::Right) => {
+            y += positioner_data.anchor_rect.3 / 2;
+        }
+        _ => {}
+    }
+
+    match positioner_data.gravity {
+        wayland_server::WEnum::Value(Gravity::TopLeft)
+        | wayland_server::WEnum::Value(Gravity::Left)
+        | wayland_server::WEnum::Value(Gravity::BottomLeft) => {
+            x -= positioner_data.size.0;
+        }
+        wayland_server::WEnum::Value(Gravity::None)
+        | wayland_server::WEnum::Value(Gravity::Top)
+        | wayland_server::WEnum::Value(Gravity::Bottom) => {
+            x -= positioner_data.size.0 / 2;
+        }
+        _ => {}
+    }
+
+    match positioner_data.gravity {
+        wayland_server::WEnum::Value(Gravity::TopLeft)
+        | wayland_server::WEnum::Value(Gravity::Top)
+        | wayland_server::WEnum::Value(Gravity::TopRight) => {
+            y -= positioner_data.size.1;
+        }
+        wayland_server::WEnum::Value(Gravity::None)
+        | wayland_server::WEnum::Value(Gravity::Left)
+        | wayland_server::WEnum::Value(Gravity::Right) => {
+            y -= positioner_data.size.1 / 2;
+        }
+        _ => {}
+    }
+
+    let (sw, sh) = state.mode.size();
+    let (px, py) = state.wm.get_absolute_position(parent_surface_id);
+    let abs_x = px + x as f64;
+    let abs_y = py + y as f64;
+
+    if abs_x + positioner_data.size.0 as f64 > sw as f64 {
+        x -= (abs_x + positioner_data.size.0 as f64 - sw as f64) as i32;
+    }
+    if abs_x < 0.0 {
+        x -= abs_x as i32;
+    }
+    if abs_y + positioner_data.size.1 as f64 > sh as f64 {
+        y -= (abs_y + positioner_data.size.1 as f64 - sh as f64) as i32;
+    }
+    if abs_y < 0.0 {
+        y -= abs_y as i32;
+    }
+
+    (x, y)
 }
 
 impl Dispatch<XdgSurface, ()> for ServerState {
@@ -81,6 +167,7 @@ impl Dispatch<XdgSurface, ()> for ServerState {
                         &state.surface_textures,
                         &state.viewports,
                         &state.surface_to_viewport,
+                        &state.surface_input_region,
                         state.wm.as_ref(),
                     );
                     state.set_pointer_focus(hit.surface, hit.local_x, hit.local_y, 0);
@@ -108,91 +195,11 @@ impl Dispatch<XdgSurface, ()> for ServerState {
                 if let Some(surface) = state.xdg_to_surface.get(&resource.id()) {
                     if let Some(parent_xdg) = parent {
                         if let Some(parent_surface) = state.xdg_to_surface.get(&parent_xdg.id()) {
-                            let parent_geom = state
-                                .wm
-                                .get_render_list()
-                                .iter()
-                                .find(|w| w.surface.id() == parent_surface.id())
-                                .map(|w| w.geometry)
-                                .unwrap_or_default();
-
-                            let mut x = parent_geom.x
-                                + positioner_data.anchor_rect.0
-                                + positioner_data.offset.0;
-                            let mut y = parent_geom.y
-                                + positioner_data.anchor_rect.1
-                                + positioner_data.offset.1;
-
-                            use xdg_positioner::{Anchor, Gravity};
-                            match positioner_data.anchor {
-                                wayland_server::WEnum::Value(Anchor::TopRight)
-                                | wayland_server::WEnum::Value(Anchor::Right)
-                                | wayland_server::WEnum::Value(Anchor::BottomRight) => {
-                                    x += positioner_data.anchor_rect.2;
-                                }
-                                wayland_server::WEnum::Value(Anchor::Top)
-                                | wayland_server::WEnum::Value(Anchor::Bottom) => {
-                                    x += positioner_data.anchor_rect.2 / 2;
-                                }
-                                _ => {}
-                            }
-
-                            match positioner_data.anchor {
-                                wayland_server::WEnum::Value(Anchor::BottomLeft)
-                                | wayland_server::WEnum::Value(Anchor::Bottom)
-                                | wayland_server::WEnum::Value(Anchor::BottomRight) => {
-                                    y += positioner_data.anchor_rect.3;
-                                }
-                                wayland_server::WEnum::Value(Anchor::Left)
-                                | wayland_server::WEnum::Value(Anchor::Right) => {
-                                    y += positioner_data.anchor_rect.3 / 2;
-                                }
-                                _ => {}
-                            }
-
-                            match positioner_data.gravity {
-                                wayland_server::WEnum::Value(Gravity::TopRight)
-                                | wayland_server::WEnum::Value(Gravity::Right)
-                                | wayland_server::WEnum::Value(Gravity::BottomRight) => {
-                                    x -= positioner_data.size.0;
-                                }
-                                wayland_server::WEnum::Value(Gravity::Top)
-                                | wayland_server::WEnum::Value(Gravity::Bottom) => {
-                                    x -= positioner_data.size.0 / 2;
-                                }
-                                _ => {}
-                            }
-
-                            match positioner_data.gravity {
-                                wayland_server::WEnum::Value(Gravity::BottomLeft)
-                                | wayland_server::WEnum::Value(Gravity::Bottom)
-                                | wayland_server::WEnum::Value(Gravity::BottomRight) => {
-                                    y -= positioner_data.size.1;
-                                }
-                                wayland_server::WEnum::Value(Gravity::Left)
-                                | wayland_server::WEnum::Value(Gravity::Right) => {
-                                    y -= positioner_data.size.1 / 2;
-                                }
-                                _ => {}
-                            }
-
-                            let (sw, sh) = state.mode.size();
-                            let (px, py) = state.wm.get_absolute_position(&parent_surface.id());
-                            let abs_x = px + x as f64;
-                            let abs_y = py + y as f64;
-
-                            if abs_x + positioner_data.size.0 as f64 > sw as f64 {
-                                x -= (abs_x + positioner_data.size.0 as f64 - sw as f64) as i32;
-                            }
-                            if abs_x < 0.0 {
-                                x -= abs_x as i32;
-                            }
-                            if abs_y + positioner_data.size.1 as f64 > sh as f64 {
-                                y -= (abs_y + positioner_data.size.1 as f64 - sh as f64) as i32;
-                            }
-                            if abs_y < 0.0 {
-                                y -= abs_y as i32;
-                            }
+                            let (x, y) = compute_popup_position(
+                                state,
+                                &parent_surface.id(),
+                                &positioner_data,
+                            );
 
                             state.wm.map_popup(crate::wm::PopupState {
                                 surface: surface.clone(),
@@ -201,6 +208,7 @@ impl Dispatch<XdgSurface, ()> for ServerState {
                                 parent_surface_id: parent_surface.id(),
                                 x,
                                 y,
+                                geometry: crate::wm::Rect::default(),
                             });
 
                             state.serial += 1;
@@ -258,7 +266,38 @@ impl Dispatch<XdgPopup, ()> for ServerState {
                 }
             }
             xdg_popup::Request::Grab { .. } => {}
-            xdg_popup::Request::Reposition { .. } => {}
+            xdg_popup::Request::Reposition { positioner, token } => {
+                let positioner_data = state
+                    .pending_positioners
+                    .get(&positioner.id())
+                    .cloned()
+                    .unwrap_or_default();
+
+                let mut popup_to_update = None;
+                for popup in state.wm.get_popups() {
+                    if popup.xdg_popup.id() == resource.id() {
+                        let (x, y) = compute_popup_position(
+                            state,
+                            &popup.parent_surface_id,
+                            &positioner_data,
+                        );
+                        popup_to_update = Some((popup.surface.id(), x, y));
+                        break;
+                    }
+                }
+
+                if let Some((id, x, y)) = popup_to_update {
+                    state.wm.update_popup_position(&id, x, y);
+                    resource.repositioned(token);
+                    resource.configure(x, y, positioner_data.size.0, positioner_data.size.1);
+                    // Also need to configure the underlying xdg_surface
+                    if let Some(popup) = state.wm.get_popups().iter().find(|p| p.surface.id() == id)
+                    {
+                        state.serial += 1;
+                        popup.xdg_surface.configure(state.serial);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -292,8 +331,10 @@ impl Dispatch<XdgToplevel, ()> for ServerState {
                     &resource.id(),
                     state.cursor_pos.0,
                     state.cursor_pos.1,
+                    state.mode.size(),
                 );
             }
+
             xdg_toplevel::Request::Resize {
                 seat: _,
                 serial: _,
@@ -304,7 +345,31 @@ impl Dispatch<XdgToplevel, ()> for ServerState {
                     edges.into(),
                     state.cursor_pos.0,
                     state.cursor_pos.1,
+                    state.mode.size(),
                 );
+            }
+            xdg_toplevel::Request::SetMaximized => {
+                state
+                    .wm
+                    .set_maximized(&resource.id(), true, state.mode.size());
+            }
+            xdg_toplevel::Request::UnsetMaximized => {
+                state
+                    .wm
+                    .set_maximized(&resource.id(), false, state.mode.size());
+            }
+            xdg_toplevel::Request::SetFullscreen { output: _ } => {
+                state
+                    .wm
+                    .set_fullscreen(&resource.id(), true, state.mode.size());
+            }
+            xdg_toplevel::Request::UnsetFullscreen => {
+                state
+                    .wm
+                    .set_fullscreen(&resource.id(), false, state.mode.size());
+            }
+            xdg_toplevel::Request::SetMinimized => {
+                state.wm.set_minimized(&resource.id());
             }
             xdg_toplevel::Request::Destroy => {
                 if let Some(surface) = state.xdg_to_surface.get(&resource.id()) {

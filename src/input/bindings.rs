@@ -11,16 +11,16 @@ pub enum BindingAction {
 
 pub fn handle_keybinding(
     state: &mut ServerState,
-    key: u32,
+    _key: u32,
     key_state: KeyState,
     keysym: Keysym,
 ) -> BindingAction {
-    if key == 125 || key == 126 {
-        state.super_held = key_state == KeyState::Pressed;
-        return BindingAction::Handled;
-    }
+    let super_mod = state.xkb_state.mod_name_is_active(
+        &xkbcommon::xkb::MOD_NAME_LOGO,
+        xkbcommon::xkb::STATE_MODS_EFFECTIVE,
+    );
 
-    if key_state == KeyState::Pressed && state.super_held {
+    if key_state == KeyState::Pressed && super_mod {
         match keysym.raw() {
             xkbcommon::xkb::keysyms::KEY_q => {
                 if let Some(active_window) = state.windows.last() {

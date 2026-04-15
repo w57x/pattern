@@ -143,33 +143,31 @@ impl Input {
                         BindingAction::None => {}
                     }
 
+                    let direction =
+                        if key_state == wayland_server::protocol::wl_keyboard::KeyState::Pressed {
+                            xkbcommon::xkb::KeyDirection::Down
+                        } else {
+                            xkbcommon::xkb::KeyDirection::Up
+                        };
+
+                    state.xkb_state.update_key(xkb_keycode.into(), direction);
+
+                    let depressed = state
+                        .xkb_state
+                        .serialize_mods(xkbcommon::xkb::STATE_MODS_DEPRESSED);
+                    let latched = state
+                        .xkb_state
+                        .serialize_mods(xkbcommon::xkb::STATE_MODS_LATCHED);
+                    let locked = state
+                        .xkb_state
+                        .serialize_mods(xkbcommon::xkb::STATE_MODS_LOCKED);
+                    let group = state
+                        .xkb_state
+                        .serialize_layout(xkbcommon::xkb::STATE_LAYOUT_EFFECTIVE);
+
                     if let Some(focused_surface) = &state.input_focus {
                         if let Some(client) = focused_surface.client() {
                             state.serial += 1;
-
-                            let xkb_keycode = key + 8;
-                            let direction = if key_state
-                                == wayland_server::protocol::wl_keyboard::KeyState::Pressed
-                            {
-                                xkbcommon::xkb::KeyDirection::Down
-                            } else {
-                                xkbcommon::xkb::KeyDirection::Up
-                            };
-
-                            state.xkb_state.update_key(xkb_keycode.into(), direction);
-
-                            let depressed = state
-                                .xkb_state
-                                .serialize_mods(xkbcommon::xkb::STATE_MODS_DEPRESSED);
-                            let latched = state
-                                .xkb_state
-                                .serialize_mods(xkbcommon::xkb::STATE_MODS_LATCHED);
-                            let locked = state
-                                .xkb_state
-                                .serialize_mods(xkbcommon::xkb::STATE_MODS_LOCKED);
-                            let group = state
-                                .xkb_state
-                                .serialize_layout(xkbcommon::xkb::STATE_LAYOUT_EFFECTIVE);
 
                             for keyboard in state
                                 .keyboards
@@ -222,6 +220,11 @@ impl Input {
                         let is_left_click = button == 272;
                         let is_pressed = state_val == WlButtonState::Pressed;
 
+                        let super_mod = state.xkb_state.mod_name_is_active(
+                            &xkbcommon::xkb::MOD_NAME_LOGO,
+                            xkbcommon::xkb::STATE_MODS_EFFECTIVE,
+                        );
+
                         let hit = state.styler.hit_test(
                             self.cursor.x,
                             self.cursor.y,
@@ -231,6 +234,7 @@ impl Input {
                             &state.surface_textures,
                             &state.viewports,
                             &state.surface_to_viewport,
+                            &state.surface_input_region,
                             state.wm.as_ref(),
                         );
                         let hit_surface = hit.surface;
@@ -247,11 +251,12 @@ impl Input {
 
                                 state.set_input_focus(target_surf.clone(), dh);
 
-                                if state.super_held {
+                                if super_mod {
                                     state.wm.begin_drag(
                                         &target_surf.id(),
                                         self.cursor.x,
                                         self.cursor.y,
+                                        state.mode.size(),
                                     );
                                 }
                             }
@@ -260,7 +265,7 @@ impl Input {
                             state.wm.end_resize();
                         }
 
-                        if !state.super_held {
+                        if !super_mod {
                             if let Some(focused) = &state.pointer_focus {
                                 if let Some(client) = focused.client() {
                                     state.serial += 1;
@@ -341,6 +346,7 @@ impl Input {
             &state.surface_textures,
             &state.viewports,
             &state.surface_to_viewport,
+            &state.surface_input_region,
             state.wm.as_ref(),
         );
 

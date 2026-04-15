@@ -949,6 +949,150 @@ impl VulkanContext {
         (image, image_memory, image_view, sampler)
     }
 
+    pub unsafe fn update_texture(
+        &self,
+        image: vk::Image,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+        damage: &[crate::wm::Rect],
+    ) {
+        if damage.is_empty() {
+            return;
+        }
+
+        let image_size = (width * height * 4) as u64;
+
+        // Create Staging Buffer
+        let buffer_info = vk::BufferCreateInfo::default()
+            .size(image_size)
+            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let staging_buffer = unsafe { self.device.create_buffer(&buffer_info, None).unwrap() };
+        let mem_reqs = unsafe { self.device.get_buffer_memory_requirements(staging_buffer) };
+        let alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(mem_reqs.size)
+            .memory_type_index(self.find_memory_type_index(
+                mem_reqs.memory_type_bits,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            ));
+
+        let staging_memory = unsafe { self.device.allocate_memory(&alloc_info, None).unwrap() };
+        unsafe {
+            self.device
+                .bind_buffer_memory(staging_buffer, staging_memory, 0)
+                .unwrap();
+        }
+
+        // We map and copy ONLY the damaged regions for efficiency, or we just copy the whole thing to staging
+        // and let Vulkan handle the sub-region copy to GPU. For simplicity and correctness with stride,
+        // we copy the whole thing to staging but only tell Vulkan to copy damaged rects to the Image.
+        let data_ptr = unsafe {
+            self.device
+                .map_memory(staging_memory, 0, image_size, vk::MemoryMapFlags::empty())
+                .unwrap()
+        };
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(pixels.as_ptr(), data_ptr as *mut u8, pixels.len());
+            self.device.unmap_memory(staging_memory);
+        }
+
+        unsafe {
+            self.execute_one_time_commands(|cmd| {
+                let subresource_range = vk::ImageSubresourceRange::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .base_mip_level(0)
+                    .level_count(1)
+                    .base_array_layer(0)
+                    .layer_count(1);
+
+                // Transition to TRANSFER_DST
+                let barrier1 = vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .src_access_mask(vk::AccessFlags::SHADER_READ)
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .image(image)
+                    .subresource_range(subresource_range);
+                self.device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    std::slice::from_ref(&barrier1),
+                );
+
+                let mut regions = Vec::with_capacity(damage.len());
+                for rect in damage {
+                    // Clamp rect to image dimensions
+                    let x = rect.x.max(0) as i32;
+                    let y = rect.y.max(0) as i32;
+                    let w = rect.w.min(width as i32 - x).max(0) as u32;
+                    let h = rect.h.min(height as i32 - y).max(0) as u32;
+
+                    if w == 0 || h == 0 {
+                        continue;
+                    }
+
+                    regions.push(
+                        vk::BufferImageCopy::default()
+                            .buffer_offset((y as u64 * width as u64 + x as u64) * 4)
+                            .buffer_row_length(0)
+                            .buffer_image_height(0)
+                            .image_subresource(vk::ImageSubresourceLayers {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                mip_level: 0,
+                                base_array_layer: 0,
+                                layer_count: 1,
+                            })
+                            .image_offset(vk::Offset3D { x, y, z: 0 })
+                            .image_extent(vk::Extent3D {
+                                width: w,
+                                height: h,
+                                depth: 1,
+                            }),
+                    );
+                }
+
+                if !regions.is_empty() {
+                    self.device.cmd_copy_buffer_to_image(
+                        cmd,
+                        staging_buffer,
+                        image,
+                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        &regions,
+                    );
+                }
+
+                // Transition back to SHADER_READ_ONLY
+                let barrier2 = vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                    .image(image)
+                    .subresource_range(subresource_range);
+                self.device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    std::slice::from_ref(&barrier2),
+                );
+            });
+        }
+
+        unsafe {
+            self.device.destroy_buffer(staging_buffer, None);
+            self.device.free_memory(staging_memory, None);
+        }
+    }
+
     pub unsafe fn create_descriptor_set(
         &self,
         layout: vk::DescriptorSetLayout,
@@ -1189,5 +1333,5 @@ pub struct SurfaceTexture {
     pub set: vk::DescriptorSet,
     pub w: f32,
     pub h: f32,
-    pub scale: i32,
+    pub scale: f32,
 }

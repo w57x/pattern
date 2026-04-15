@@ -98,7 +98,6 @@ pub struct ServerState {
     pub outputs: Vec<wayland_server::protocol::wl_output::WlOutput>,
 
     pub serial: u32,
-    pub super_held: bool,
 
     pub pending_dmabufs: HashMap<ObjectId, DmabufData>,
     pub dmabuffers: HashMap<ObjectId, DmabufData>,
@@ -128,6 +127,14 @@ pub struct ServerState {
     pub primary_selection: Option<zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1>,
     pub primary_selection_devices:
         Vec<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1>,
+
+    pub regions: HashMap<ObjectId, Vec<crate::wm::Rect>>,
+    pub pending_damage: HashMap<ObjectId, Vec<crate::wm::Rect>>,
+    pub previous_damage: HashMap<ObjectId, Vec<crate::wm::Rect>>,
+    pub pending_input_region: HashMap<ObjectId, Vec<crate::wm::Rect>>,
+    pub pending_opaque_region: HashMap<ObjectId, Vec<crate::wm::Rect>>,
+    pub surface_input_region: HashMap<ObjectId, Vec<crate::wm::Rect>>,
+    pub surface_opaque_region: HashMap<ObjectId, Vec<crate::wm::Rect>>,
 }
 
 #[derive(Clone)]
@@ -208,7 +215,6 @@ impl ServerState {
             outputs: Vec::new(),
 
             serial: 1,
-            super_held: false,
 
             pending_dmabufs: HashMap::new(),
             dmabuffers: HashMap::new(),
@@ -230,6 +236,14 @@ impl ServerState {
             primary_selection_sources: HashMap::new(),
             primary_selection: None,
             primary_selection_devices: Vec::new(),
+
+            regions: HashMap::new(),
+            pending_damage: HashMap::new(),
+            previous_damage: HashMap::new(),
+            pending_input_region: HashMap::new(),
+            pending_opaque_region: HashMap::new(),
+            surface_input_region: HashMap::new(),
+            surface_opaque_region: HashMap::new(),
         }
     }
 

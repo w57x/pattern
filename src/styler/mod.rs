@@ -21,6 +21,7 @@ pub trait Styler {
         textures: &HashMap<ObjectId, SurfaceTexture>,
         viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
         surface_to_viewport: &HashMap<ObjectId, ObjectId>,
+        opaque_regions: &HashMap<ObjectId, Vec<crate::wm::Rect>>,
         wm: &dyn crate::wm::WindowManager,
     ) -> Vec<DrawCommand>;
 
@@ -34,6 +35,7 @@ pub trait Styler {
         textures: &HashMap<ObjectId, SurfaceTexture>,
         viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
         surface_to_viewport: &HashMap<ObjectId, ObjectId>,
+        input_regions: &HashMap<ObjectId, Vec<crate::wm::Rect>>,
         wm: &dyn crate::wm::WindowManager,
     ) -> HitResult;
 
@@ -147,6 +149,7 @@ impl DefaultStyler {
         textures: &HashMap<ObjectId, SurfaceTexture>,
         viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
         surface_to_viewport: &HashMap<ObjectId, ObjectId>,
+        input_regions: &HashMap<ObjectId, Vec<crate::wm::Rect>>,
     ) -> Option<HitResult> {
         for sub in subsurfaces.iter().rev() {
             if sub.parent.id() == surface.id() {
@@ -160,6 +163,7 @@ impl DefaultStyler {
                     textures,
                     viewports,
                     surface_to_viewport,
+                    input_regions,
                 ) {
                     return Some(hit);
                 }
@@ -174,10 +178,26 @@ impl DefaultStyler {
             && cursor_y >= abs_y
             && cursor_y <= abs_y + lh
         {
+            let local_x = cursor_x - abs_x;
+            let local_y = cursor_y - abs_y;
+
+            // If an input region is defined, the hit must be inside one of its rects
+            if let Some(rects) = input_regions.get(&surface.id()) {
+                let hit_region = rects.iter().any(|r| {
+                    local_x >= r.x as f64
+                        && local_x <= (r.x + r.w) as f64
+                        && local_y >= r.y as f64
+                        && local_y <= (r.y + r.h) as f64
+                });
+                if !hit_region {
+                    return None;
+                }
+            }
+
             return Some(HitResult {
                 surface: Some(surface.clone()),
-                local_x: cursor_x - abs_x,
-                local_y: cursor_y - abs_y,
+                local_x,
+                local_y,
             });
         }
 
@@ -194,6 +214,7 @@ impl Styler for DefaultStyler {
         textures: &HashMap<ObjectId, SurfaceTexture>,
         viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
         surface_to_viewport: &HashMap<ObjectId, ObjectId>,
+        _opaque_regions: &HashMap<ObjectId, Vec<crate::wm::Rect>>,
         wm: &dyn crate::wm::WindowManager,
     ) -> Vec<DrawCommand> {
         let mut draw_list = Vec::new();
@@ -215,10 +236,16 @@ impl Styler for DefaultStyler {
 
         for popup in popups {
             let (abs_x, abs_y) = wm.get_absolute_position(&popup.surface.id());
+            // abs_x/y is the origin of the GEOMETRY.
+            // draw_surface_recursive needs the origin of the SURFACE.
+            // Surface origin = geometry origin - geometry offset.
+            let surf_x = abs_x - popup.geometry.x as f64;
+            let surf_y = abs_y - popup.geometry.y as f64;
+
             self.draw_surface_recursive(
                 &popup.surface,
-                abs_x,
-                abs_y,
+                surf_x,
+                surf_y,
                 subsurfaces,
                 textures,
                 viewports,
@@ -241,20 +268,25 @@ impl Styler for DefaultStyler {
         textures: &HashMap<ObjectId, SurfaceTexture>,
         viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
         surface_to_viewport: &HashMap<ObjectId, ObjectId>,
+        input_regions: &HashMap<ObjectId, Vec<crate::wm::Rect>>,
         wm: &dyn crate::wm::WindowManager,
     ) -> HitResult {
         for popup in popups.iter().rev() {
             let (abs_x, abs_y) = wm.get_absolute_position(&popup.surface.id());
+            let surf_x = abs_x - popup.geometry.x as f64;
+            let surf_y = abs_y - popup.geometry.y as f64;
+
             if let Some(hit) = self.hit_test_recursive(
                 &popup.surface,
-                abs_x,
-                abs_y,
+                surf_x,
+                surf_y,
                 cursor_x,
                 cursor_y,
                 subsurfaces,
                 textures,
                 viewports,
                 surface_to_viewport,
+                input_regions,
             ) {
                 return hit;
             }
@@ -275,6 +307,7 @@ impl Styler for DefaultStyler {
                 textures,
                 viewports,
                 surface_to_viewport,
+                input_regions,
             ) {
                 if has_transient_child {
                     return HitResult {
