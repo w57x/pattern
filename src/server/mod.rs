@@ -35,6 +35,7 @@ pub struct DmabufData {
     pub fd: OwnedFd,
     pub width: u32,
     pub height: u32,
+    pub offset: u32,
     pub stride: u32,
     pub format: u32,
     pub modifier: u64,
@@ -77,6 +78,7 @@ pub struct ServerState {
 
     // Maps Surface ID -> WlBuffer
     pub surface_buffers: HashMap<ObjectId, wayland_server::protocol::wl_buffer::WlBuffer>,
+    pub active_dmabufs: HashMap<ObjectId, wayland_server::protocol::wl_buffer::WlBuffer>,
     pub surface_textures: HashMap<ObjectId, SurfaceTexture>,
     pub cursor_surface: Option<(WlSurface, i32, i32)>,
 
@@ -130,7 +132,6 @@ pub struct ServerState {
 
     pub regions: HashMap<ObjectId, Vec<crate::wm::Rect>>,
     pub pending_damage: HashMap<ObjectId, Vec<crate::wm::Rect>>,
-    pub previous_damage: HashMap<ObjectId, Vec<crate::wm::Rect>>,
     pub pending_input_region: HashMap<ObjectId, Vec<crate::wm::Rect>>,
     pub pending_opaque_region: HashMap<ObjectId, Vec<crate::wm::Rect>>,
     pub surface_input_region: HashMap<ObjectId, Vec<crate::wm::Rect>>,
@@ -194,6 +195,7 @@ impl ServerState {
             pools: HashMap::new(),
             buffers: HashMap::new(),
             surface_buffers: HashMap::new(),
+            active_dmabufs: HashMap::new(),
             surface_textures: HashMap::new(),
             cursor_surface: None,
 
@@ -239,7 +241,6 @@ impl ServerState {
 
             regions: HashMap::new(),
             pending_damage: HashMap::new(),
-            previous_damage: HashMap::new(),
             pending_input_region: HashMap::new(),
             pending_opaque_region: HashMap::new(),
             surface_input_region: HashMap::new(),

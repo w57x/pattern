@@ -5,56 +5,108 @@ use wayland_server::Resource;
 use wayland_server::backend::ObjectId;
 use wayland_server::protocol::wl_surface::WlSurface;
 
+/// A simple rectangle representing a region in 2D space.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Rect {
+    /// X-coordinate of the top-left corner.
     pub x: i32,
+    /// Y-coordinate of the top-left corner.
     pub y: i32,
+    /// Width of the rectangle.
     pub w: i32,
+    /// Height of the rectangle.
     pub h: i32,
 }
 
+/// Represents the complete state of a top-level window.
+///
+/// This struct tracks both the Wayland protocol objects and the compositor-side
+/// state (position, size, various flags) for each mapped window.
 #[derive(Clone)]
 pub struct WindowState {
+    /// The base Wayland surface.
     pub surface: WlSurface,
+    /// The XDG surface associated with this window, if any.
     pub xdg_surface: Option<XdgSurface>,
+    /// The XDG toplevel handle, providing window management controls.
     pub toplevel: Option<XdgToplevel>,
+    /// The ID of the parent window, if this is a transient child (e.g., a dialog).
     pub parent_id: Option<ObjectId>,
+    /// Current X position in global compositor coordinates.
     pub x: f64,
+    /// Current Y position in global compositor coordinates.
     pub y: f64,
+    /// Current width of the window surface.
     pub w: i32,
+    /// Current height of the window surface.
     pub h: i32,
+    /// The window geometry as defined by xdg-shell.
+    /// This defines the "logical" window area, excluding shadows or other decorations.
     pub geometry: Rect,
+    /// The window title string.
     pub title: Option<String>,
+    /// The application identifier (used for grouping, icon selection, etc.).
     pub app_id: Option<String>,
+    /// Whether server-side decorations (SSD) are enabled for this window.
     pub ssd: bool,
 
+    /// Whether the window is currently in a maximized state.
     pub maximized: bool,
+    /// Whether the window is currently in fullscreen mode.
     pub fullscreen: bool,
+    /// Whether the window is currently minimized (hidden from view).
     pub minimized: bool,
+    /// Stores the geometry (x, y, w, h) prior to maximization or fullscreen for restoration.
     pub saved_geometry: Option<(f64, f64, i32, i32)>,
 }
 
+/// Represents the state of a popup surface (e.g., context menus, tooltips).
+///
+/// Popups are always relative to a parent surface and follow xdg-popup semantics.
 #[derive(Clone)]
 pub struct PopupState {
+    /// The base Wayland surface.
     pub surface: WlSurface,
+    /// The XDG surface associated with this popup.
     pub xdg_surface: XdgSurface,
+    /// The XDG popup handle.
     pub xdg_popup: XdgPopup,
+    /// The ID of the parent surface this popup is positioned relative to.
     pub parent_surface_id: ObjectId,
+    /// X position relative to the parent surface's top-left corner.
     pub x: i32,
+    /// Y position relative to the parent surface's top-left corner.
     pub y: i32,
+    /// The popup's geometry within its own surface.
     pub geometry: Rect,
 }
 
+/// Interface for a window management system.
+///
+/// This trait abstracts the logic for window layout, focus management,
+/// and interactive operations (moving, resizing, tiling). It allows the compositor
+/// to support different window management paradigms (e.g., floating vs. tiling).
 pub trait WindowManager {
-    /// Called when a new XDG Toplevel is created
+    /// Called when a new Wayland surface is first mapped.
+    ///
+    /// This initiates management of the surface and assigns initial positioning.
     fn map_window(&mut self, surface: WlSurface);
 
-    /// Called when a window is destroyed
+    /// Called when a managed surface is destroyed or unmapped.
+    ///
+    /// This removes the window from management and cleans up any associated resources.
     fn unmap_window(&mut self, surface_id: &ObjectId);
 
-    /// Brings a window to the front and grants it focus. Returns the ID of the focused window (may be different if redirected).
+    /// Brings a window to the front and grants it focus.
+    ///
+    /// Returns the ID of the surface that actually received focus. This might be different
+    /// if the target surface has transient children (e.g., focusing a parent redirects to its child dialog).
     fn focus_window(&mut self, surface_id: &ObjectId) -> ObjectId;
 
+    /// Associates an XDG toplevel interface with a previously mapped base surface.
+    ///
+    /// This transition allows the surface to support window management operations
+    /// like maximization, fullscreen, and window titles.
     fn assign_toplevel(
         &mut self,
         surface_id: &ObjectId,
@@ -62,20 +114,48 @@ pub trait WindowManager {
         xdg_surface: XdgSurface,
     );
 
+    /// Maps a new popup surface (e.g., a menu) to the display.
     fn map_popup(&mut self, popup: PopupState);
+
+    /// Removes a popup surface from the display.
     fn unmap_popup(&mut self, popup_surface_id: &ObjectId);
+
+    /// Updates the relative position of a popup surface.
     fn update_popup_position(&mut self, popup_surface_id: &ObjectId, x: i32, y: i32);
 
+    /// Sets the human-readable title for a window.
     fn set_window_title(&mut self, toplevel_id: &ObjectId, title: String);
+
+    /// Sets the application identifier for a window.
     fn set_window_app_id(&mut self, toplevel_id: &ObjectId, app_id: String);
+
+    /// Sets the parent relationship for transient windows (e.g., dialogs).
+    ///
+    /// The window manager may use this to center the child over the parent
+    /// or ensure the child always stays above the parent.
     fn set_window_parent(&mut self, toplevel_id: &ObjectId, parent_id: Option<ObjectId>);
+
+    /// Enables or disables server-side decorations (SSD) for a window.
     fn set_window_ssd(&mut self, toplevel_id: &ObjectId, enabled: bool);
+
+    /// Updates the logical geometry of a window as reported by the client.
+    ///
+    /// This adjustment ensures that the visible portion of the window remains stable
+    /// even if the client changes the offsets of its internal buffers (e.g., for shadows).
     fn set_window_geometry(&mut self, surface_id: &ObjectId, geometry: Rect);
 
+    /// Toggles the maximization state of a window.
+    ///
+    /// If maximized, the window manager should expand the window to fill the provided screen size.
     fn set_maximized(&mut self, toplevel_id: &ObjectId, maximized: bool, screen_size: (u16, u16));
+
+    /// Toggles the fullscreen state of a window.
     fn set_fullscreen(&mut self, toplevel_id: &ObjectId, fullscreen: bool, screen_size: (u16, u16));
+
+    /// Requests that a window be minimized (typically hidden from the workspace).
     fn set_minimized(&mut self, toplevel_id: &ObjectId);
 
+    /// Initiates an interactive move operation (e.g., when the user drags the title bar).
     fn begin_interactive_move(
         &mut self,
         toplevel_id: &ObjectId,
@@ -83,6 +163,8 @@ pub trait WindowManager {
         cursor_y: f64,
         screen_size: (u16, u16),
     );
+
+    /// Initiates an interactive resize operation (e.g., dragging a window edge).
     fn begin_interactive_resize(
         &mut self,
         toplevel_id: &ObjectId,
@@ -92,7 +174,7 @@ pub trait WindowManager {
         screen_size: (u16, u16),
     );
 
-    /// Starts dragging a specific window
+    /// Low-level method to start a drag operation for a specific surface.
     fn begin_drag(
         &mut self,
         surface_id: &ObjectId,
@@ -101,45 +183,64 @@ pub trait WindowManager {
         screen_size: (u16, u16),
     );
 
-    /// Updates the dragged window's position
+    /// Updates the position of a window currently being dragged based on cursor movement.
     fn update_drag(&mut self, cursor_x: f64, cursor_y: f64);
 
-    /// Drops the window
+    /// Terminates the current drag operation, dropping the window at its current position.
     fn end_drag(&mut self);
 
-    /// Updates the resized window's dimensions
+    /// Updates the dimensions of a window currently being resized.
+    ///
+    /// Sends a configuration event to the client with the new suggested size.
     fn update_resize(&mut self, cursor_x: f64, cursor_y: f64, serial: u32);
+
+    /// Terminates the current resize operation.
     fn end_resize(&mut self);
 
-    /// Updates the window's dimensions based on the actual buffer size committed by the client
+    /// Informs the window manager that a client has committed new buffer dimensions.
+    ///
+    /// This should be called when the client acknowledges a configure event and commits its buffer.
     fn refresh_window_dimensions(&mut self, surface_id: &ObjectId, w: i32, h: i32);
 
-    /// Returns the windows in back-to-front drawing order
+    /// Returns a list of all visible windows in back-to-front drawing order.
     fn get_render_list(&self) -> Vec<WindowState>;
 
-    /// Returns all active popups
+    /// Returns a list of all active popup surfaces.
     fn get_popups(&self) -> Vec<PopupState>;
 
-    /// Returns the currently focused window (the one on top)
+    /// Returns the surface that currently has input focus (the one on top).
     fn get_focused_window(&self) -> Option<WlSurface>;
 
+    /// Calculates the absolute screen-space position of a surface, accounting for parent hierarchies.
     fn get_absolute_position(&self, surface_id: &ObjectId) -> (f64, f64);
 }
 
+/// A basic floating window manager implementation.
+///
+/// This window manager allows windows to be positioned anywhere on the screen,
+/// supports overlapping windows with a back-to-front Z-order, and provides
+/// interactive moving and resizing.
 pub struct FloatingWm {
-    // Windows are ordered back-to-front. The last element is the top/focused window.
+    /// List of managed windows, ordered from back to front.
+    /// The last element is considered the top-most and focused window.
     pub windows: Vec<WindowState>,
 
+    /// List of active popup surfaces.
     pub popups: Vec<PopupState>,
 
-    // Tracks: (Window ID, Grab Offset X, Grab Offset Y)
+    /// Tracks the state of a window currently being moved.
+    /// Stores: (Surface ID, Cursor Offset X, Cursor Offset Y).
     pub drag_state: Option<(ObjectId, f64, f64)>,
 
-    // Tracks: (Window ID, Edges, Start Cursor X, Start Cursor Y, Start Surface X, Start Surface Y, Start Geometry W, Start Geometry H, Start Geometry X, Start Geometry Y)
+    /// Tracks the state of a window currently being resized.
+    /// Stores: (Surface ID, Resize Edges, Start Cursor X, Start Cursor Y,
+    /// Start Surface X, Start Surface Y, Start Geometry W, Start Geometry H,
+    /// Start Geometry X, Start Geometry Y).
     pub resize_state: Option<(ObjectId, u32, f64, f64, f64, f64, i32, i32, i32, i32)>,
 }
 
 impl FloatingWm {
+    /// Creates a new instance of the floating window manager with an empty window list.
     pub fn new() -> Self {
         Self {
             windows: Vec::new(),
@@ -150,7 +251,9 @@ impl FloatingWm {
     }
 }
 
+/// Implementation of the WindowManager trait for a floating layout.
 impl WindowManager for FloatingWm {
+    /// Maps a new window with a cascading default position.
     fn map_window(&mut self, surface: WlSurface) {
         let offset = (self.windows.len() * 30) as f64;
         self.windows.push(WindowState {

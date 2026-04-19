@@ -223,6 +223,7 @@ fn main() {
         vkctx.upload_texture(
             cursor_image.width,
             cursor_image.height,
+            cursor_image.width * 4,
             &cursor_image.pixels_rgba,
         )
     };

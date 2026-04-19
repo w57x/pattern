@@ -6,13 +6,26 @@ use wayland_server::Resource;
 use wayland_server::backend::ObjectId;
 use wayland_server::protocol::wl_surface::WlSurface;
 
+/// The result of a hit-test operation.
 pub struct HitResult {
+    /// The surface that was hit, if any.
     pub surface: Option<WlSurface>,
+    /// The X coordinate relative to the surface's top-left corner.
     pub local_x: f64,
+    /// The Y coordinate relative to the surface's top-left corner.
     pub local_y: f64,
 }
 
+/// A trait that defines how surfaces are rendered and how hit-testing is performed.
+///
+/// The `Styler` is responsible for translating the window manager's state into
+/// concrete drawing commands for the renderer, and for mapping global cursor
+/// coordinates back to specific surfaces.
 pub trait Styler {
+    /// Generates a list of draw commands for the current frame.
+    ///
+    /// This method takes the complete state of the compositor and produces
+    /// the necessary commands to render the entire scene.
     fn generate_draw_list(
         &self,
         windows: &[WindowState],
@@ -25,6 +38,9 @@ pub trait Styler {
         wm: &dyn crate::wm::WindowManager,
     ) -> Vec<DrawCommand>;
 
+    /// Performs a hit-test to find the surface under the cursor.
+    ///
+    /// This should account for window Z-order, subsurfaces, and input regions.
     fn hit_test(
         &self,
         cursor_x: f64,
@@ -39,18 +55,24 @@ pub trait Styler {
         wm: &dyn crate::wm::WindowManager,
     ) -> HitResult;
 
+    /// Returns whether this styler supports server-side decorations (SSD).
     fn supports_ssd(&self) -> bool {
         false
     }
 }
 
+/// The default implementation of the `Styler` trait.
+///
+/// It provides a simple 2D rendering of surfaces and standard Wayland hit-testing.
 pub struct DefaultStyler;
 
 impl DefaultStyler {
+    /// Creates a new `DefaultStyler`.
     pub fn new() -> Self {
         Self
     }
 
+    /// Calculates the logical size of a surface, accounting for viewports and buffer scales.
     fn get_surface_size(
         &self,
         surface_id: &ObjectId,
@@ -76,6 +98,7 @@ impl DefaultStyler {
         (0.0, 0.0)
     }
 
+    /// Recursively generates draw commands for a surface and all its subsurfaces.
     fn draw_surface_recursive(
         &self,
         surface: &WlSurface,
@@ -138,6 +161,7 @@ impl DefaultStyler {
         }
     }
 
+    /// Recursively checks if the cursor is over a surface or any of its subsurfaces.
     fn hit_test_recursive(
         &self,
         surface: &WlSurface,

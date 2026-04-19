@@ -138,16 +138,10 @@ impl Dispatch<WlSurface, ()> for ServerState {
                 }
 
                 // Apply damage (and clear it for next frame)
-                let mut damage = state
+                let damage = state
                     .pending_damage
                     .remove(&surface.id())
                     .unwrap_or_default();
-
-                // To handle buffer swapping correctly, we must also apply the damage from the PREVIOUS
-                // commit to the new buffer, because the new buffer might not have those updates yet.
-                if let Some(prev) = state.previous_damage.get(&surface.id()) {
-                    damage.extend(prev.iter().cloned());
-                }
 
                 if let Some(buffer) = state.surface_buffers.remove(&surface.id()) {
                     if let Some(buffer_info) = state.buffers.get(&buffer.id()) {
@@ -174,6 +168,7 @@ impl Dispatch<WlSurface, ()> for ServerState {
                                         old.img,
                                         buffer_info.width as u32,
                                         buffer_info.height as u32,
+                                        buffer_info.stride as u32,
                                         pixels,
                                         &damage,
                                     );
@@ -190,6 +185,7 @@ impl Dispatch<WlSurface, ()> for ServerState {
                                     let (img, mem, view, samp) = state.vkctx.upload_texture(
                                         buffer_info.width as u32,
                                         buffer_info.height as u32,
+                                        buffer_info.stride as u32,
                                         pixels,
                                     );
 
@@ -218,6 +214,9 @@ impl Dispatch<WlSurface, ()> for ServerState {
                                 );
                             }
                         }
+
+                        // SHM buffers can be released immediately since their data has been copied to the GPU
+                        buffer.release();
                     } else if let Some(dmabuf) = state.dmabuffers.get(&buffer.id()) {
                         let scale = *state.pending_scales.get(&surface.id()).unwrap_or(&1);
                         unsafe {
@@ -233,6 +232,7 @@ impl Dispatch<WlSurface, ()> for ServerState {
                                 &dmabuf.fd,
                                 dmabuf.width,
                                 dmabuf.height,
+                                dmabuf.offset,
                                 dmabuf.stride,
                                 dmabuf.modifier,
                                 dmabuf.format,
@@ -299,13 +299,19 @@ impl Dispatch<WlSurface, ()> for ServerState {
                                 dmabuf.height as i32,
                             );
                         }
+
+                        // DMA-BUF buffers are not copied, they are directly read by the GPU.
+                        // We must hold onto the new buffer and only release the PREVIOUS one,
+                        // ensuring the client does not overwrite the buffer currently on screen.
+                        if let Some(old_buffer) =
+                            state.active_dmabufs.insert(surface.id(), buffer.clone())
+                        {
+                            if old_buffer.id() != buffer.id() {
+                                old_buffer.release();
+                            }
+                        }
                     }
-
-                    buffer.release();
                 }
-
-                // Store current damage as previous for the next commit
-                state.previous_damage.insert(surface.id(), damage);
             }
             wayland_server::protocol::wl_surface::Request::Frame { callback } => {
                 let cb = data_init.init(callback, ());
@@ -327,6 +333,10 @@ impl Dispatch<WlSurface, ()> for ServerState {
                 state.surfaces.retain(|s| s.id() != surface.id());
                 if let Some(vp_id) = state.surface_to_viewport.remove(&surface.id()) {
                     state.viewports.remove(&vp_id);
+                }
+
+                if let Some(active_buf) = state.active_dmabufs.remove(&surface.id()) {
+                    active_buf.release();
                 }
 
                 if is_focused {

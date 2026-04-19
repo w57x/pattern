@@ -7,7 +7,6 @@ use crate::gpu::buffer::Buffer;
 pub mod frame;
 
 pub struct VulkanContext {
-    #[allow(unused)]
     pub entry: Entry,
     pub instance: Instance,
     pub physical_device: vk::PhysicalDevice,
@@ -24,16 +23,6 @@ pub struct VulkanContext {
     pub color_pipeline: vk::Pipeline,
 
     pub descriptor_set_layout: vk::DescriptorSetLayout,
-}
-
-impl std::fmt::Display for VulkanContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "VkContext(.queue_family_index = {})",
-            self.queue_family_index
-        )
-    }
 }
 
 impl VulkanContext {
@@ -545,7 +534,7 @@ impl VulkanContext {
         // Begin the Render Pass
         let clear_values = [vk::ClearValue {
             color: vk::ClearColorValue {
-                float32: [0.1, 0.1, 0.12, 1.0],
+                float32: [1., 1., 1., 1.],
             },
         }];
 
@@ -771,9 +760,10 @@ impl VulkanContext {
         &self,
         width: u32,
         height: u32,
+        stride: u32,
         pixels: &[u8],
     ) -> (vk::Image, vk::DeviceMemory, vk::ImageView, vk::Sampler) {
-        let image_size = (width * height * 4) as u64; // RGBA = 4 bytes per pixel
+        let image_size = (stride * height) as u64;
 
         // Create Staging Buffer (CPU Visible)
         let buffer_info = vk::BufferCreateInfo::default()
@@ -807,7 +797,11 @@ impl VulkanContext {
         };
 
         unsafe {
-            std::ptr::copy_nonoverlapping(pixels.as_ptr(), data_ptr as *mut u8, pixels.len());
+            std::ptr::copy_nonoverlapping(
+                pixels.as_ptr(),
+                data_ptr as *mut u8,
+                pixels.len().min(image_size as usize),
+            );
             self.device.unmap_memory(staging_memory);
         }
 
@@ -874,7 +868,7 @@ impl VulkanContext {
                 // Copy Buffer to Image
                 let region = vk::BufferImageCopy::default()
                     .buffer_offset(0)
-                    .buffer_row_length(0)
+                    .buffer_row_length(stride / 4)
                     .buffer_image_height(0)
                     .image_subresource(vk::ImageSubresourceLayers {
                         aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -954,6 +948,7 @@ impl VulkanContext {
         image: vk::Image,
         width: u32,
         height: u32,
+        stride: u32,
         pixels: &[u8],
         damage: &[crate::wm::Rect],
     ) {
@@ -961,7 +956,7 @@ impl VulkanContext {
             return;
         }
 
-        let image_size = (width * height * 4) as u64;
+        let image_size = (stride * height) as u64;
 
         // Create Staging Buffer
         let buffer_info = vk::BufferCreateInfo::default()
@@ -984,9 +979,7 @@ impl VulkanContext {
                 .unwrap();
         }
 
-        // We map and copy ONLY the damaged regions for efficiency, or we just copy the whole thing to staging
-        // and let Vulkan handle the sub-region copy to GPU. For simplicity and correctness with stride,
-        // we copy the whole thing to staging but only tell Vulkan to copy damaged rects to the Image.
+        // We map and copy the entire buffer to staging for simplicity with stride
         let data_ptr = unsafe {
             self.device
                 .map_memory(staging_memory, 0, image_size, vk::MemoryMapFlags::empty())
@@ -994,7 +987,11 @@ impl VulkanContext {
         };
 
         unsafe {
-            std::ptr::copy_nonoverlapping(pixels.as_ptr(), data_ptr as *mut u8, pixels.len());
+            std::ptr::copy_nonoverlapping(
+                pixels.as_ptr(),
+                data_ptr as *mut u8,
+                pixels.len().min(image_size as usize),
+            );
             self.device.unmap_memory(staging_memory);
         }
 
@@ -1039,8 +1036,8 @@ impl VulkanContext {
 
                     regions.push(
                         vk::BufferImageCopy::default()
-                            .buffer_offset((y as u64 * width as u64 + x as u64) * 4)
-                            .buffer_row_length(0)
+                            .buffer_offset(y as u64 * stride as u64 + x as u64 * 4)
+                            .buffer_row_length(stride / 4)
                             .buffer_image_height(0)
                             .image_subresource(vk::ImageSubresourceLayers {
                                 aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -1151,12 +1148,29 @@ impl VulkanContext {
         ofd: &OwnedFd,
         width: u32,
         height: u32,
+        offset: u32,
         stride: u32,
         modifier: u64,
         drm_format: u32,
     ) -> (vk::Image, vk::DeviceMemory) {
         let dup_fd = ofd.try_clone().expect("Failed to duplicate DMA-BUF FD");
         let raw_fd = dup_fd.into_raw_fd();
+
+        // Wait for the client GPU to finish writing to the buffer (Implicit Synchronization)
+        let mut pollfd = libc::pollfd {
+            fd: raw_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        unsafe {
+            // Wait up to 1000ms for the fence to signal.
+            let ret = libc::poll(&mut pollfd, 1, 1000);
+            if ret == 0 {
+                println!("[pattern] WARNING: DMA-BUF poll timed out! Flickering might occur.");
+            } else if ret < 0 {
+                println!("[pattern] WARNING: DMA-BUF poll failed!");
+            }
+        }
 
         // DRM_FORMAT_ARGB8888 = 0x34325241
         // DRM_FORMAT_XRGB8888 = 0x34325258
@@ -1169,7 +1183,7 @@ impl VulkanContext {
         };
 
         let subresource_layout = vk::SubresourceLayout::default()
-            .offset(0)
+            .offset(offset as u64)
             .size(0)
             .row_pitch(stride as u64)
             .array_pitch(0)
@@ -1231,6 +1245,8 @@ impl VulkanContext {
         };
 
         unsafe {
+            // The memoryOffset parameter to bind_image_memory MUST be 0 when using DRM_FORMAT_MODIFIER_EXT.
+            // The actual offset is defined in the subresource_layout above.
             self.device.bind_image_memory(image, memory, 0).unwrap();
 
             self.execute_one_time_commands(|cmd| {
