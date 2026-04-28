@@ -28,10 +28,12 @@ void main() {
     vec2 p = (fragTexCoord - 0.5) * fragQuadSize;
     vec2 b = fragQuadSize * 0.5;
     
-    float d = sdRoundedBox(p, b, fragBorderRadius);
-    
-    // Antialiasing
-    float alpha = 1.0 - smoothstep(-1.0, 1.0, d);
+    float alpha = 1.0;
+    if (fragBorderRadius > 0.0) {
+        float d = sdRoundedBox(p, b, fragBorderRadius);
+        // Antialiasing
+        alpha = 1.0 - smoothstep(-1.0, 1.0, d);
+    }
     
     outColor = push.color;
     outColor.a *= alpha;

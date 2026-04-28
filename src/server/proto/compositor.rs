@@ -340,8 +340,8 @@ impl Dispatch<WlSurface, ()> for ServerState {
                 }
 
                 if is_focused {
-                    if let Some(next_window) = state.wm.get_render_list().last() {
-                        state.set_input_focus(next_window.surface.clone(), dhandle);
+                    if let Some(next_window) = state.wm.get_focused_window() {
+                        state.set_input_focus(next_window, dhandle);
                     }
                 }
             }

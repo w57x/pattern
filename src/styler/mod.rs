@@ -1,18 +1,13 @@
 use crate::server::SubsurfaceData;
 use crate::vulkan::{DrawCommand, RenderQuad, SurfaceTexture};
-use crate::wm::{PopupState, WindowState};
 use std::collections::HashMap;
 use wayland_server::Resource;
 use wayland_server::backend::ObjectId;
 use wayland_server::protocol::wl_surface::WlSurface;
 
-/// The result of a hit-test operation.
 pub struct HitResult {
-    /// The surface that was hit, if any.
     pub surface: Option<WlSurface>,
-    /// The X coordinate relative to the surface's top-left corner.
     pub local_x: f64,
-    /// The Y coordinate relative to the surface's top-left corner.
     pub local_y: f64,
 }
 
@@ -28,8 +23,6 @@ pub trait Styler {
     /// the necessary commands to render the entire scene.
     fn generate_draw_list(
         &self,
-        windows: &[WindowState],
-        popups: &[PopupState],
         subsurfaces: &[SubsurfaceData],
         textures: &HashMap<ObjectId, SurfaceTexture>,
         viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
@@ -45,8 +38,6 @@ pub trait Styler {
         &self,
         cursor_x: f64,
         cursor_y: f64,
-        windows: &[WindowState],
-        popups: &[PopupState],
         subsurfaces: &[SubsurfaceData],
         textures: &HashMap<ObjectId, SurfaceTexture>,
         viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
@@ -61,18 +52,13 @@ pub trait Styler {
     }
 }
 
-/// The default implementation of the `Styler` trait.
-///
-/// It provides a simple 2D rendering of surfaces and standard Wayland hit-testing.
 pub struct DefaultStyler;
 
 impl DefaultStyler {
-    /// Creates a new `DefaultStyler`.
     pub fn new() -> Self {
         Self
     }
 
-    /// Calculates the logical size of a surface, accounting for viewports and buffer scales.
     fn get_surface_size(
         &self,
         surface_id: &ObjectId,
@@ -80,25 +66,20 @@ impl DefaultStyler {
         viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
         surface_to_viewport: &HashMap<ObjectId, ObjectId>,
     ) -> (f64, f64) {
-        // If viewport destination size is set, use it.
         if let Some(vp_id) = surface_to_viewport.get(surface_id) {
             if let Some((_, Some(dst))) = viewports.get(vp_id) {
                 return (dst.0 as f64, dst.1 as f64);
             }
         }
-
-        // Otherwise use buffer size / scale
         if let Some(tex) = textures.get(surface_id) {
             return (
                 tex.w as f64 / tex.scale as f64,
                 tex.h as f64 / tex.scale as f64,
             );
         }
-
         (0.0, 0.0)
     }
 
-    /// Recursively generates draw commands for a surface and all its subsurfaces.
     fn draw_surface_recursive(
         &self,
         surface: &WlSurface,
@@ -120,7 +101,6 @@ impl DefaultStyler {
             let mut src_w = 1.0;
             let mut src_h = 1.0;
 
-            // Handle viewport source (cropping)
             if let Some(vp_id) = surface_to_viewport.get(&surface.id()) {
                 if let Some((Some(src), _)) = viewports.get(vp_id) {
                     src_x = (src.0 / tex.w as f64) as f32;
@@ -205,7 +185,6 @@ impl DefaultStyler {
             let local_x = cursor_x - abs_x;
             let local_y = cursor_y - abs_y;
 
-            // If an input region is defined, the hit must be inside one of its rects
             if let Some(rects) = input_regions.get(&surface.id()) {
                 let hit_region = rects.iter().any(|r| {
                     local_x >= r.x as f64
@@ -224,7 +203,6 @@ impl DefaultStyler {
                 local_y,
             });
         }
-
         None
     }
 }
@@ -232,8 +210,6 @@ impl DefaultStyler {
 impl Styler for DefaultStyler {
     fn generate_draw_list(
         &self,
-        windows: &[WindowState],
-        popups: &[PopupState],
         subsurfaces: &[SubsurfaceData],
         textures: &HashMap<ObjectId, SurfaceTexture>,
         viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
@@ -243,26 +219,38 @@ impl Styler for DefaultStyler {
     ) -> Vec<DrawCommand> {
         let mut draw_list = Vec::new();
 
-        for win_state in windows {
-            let radius = if win_state.ssd { 20.0 } else { 0.0 };
-            self.draw_surface_recursive(
-                &win_state.surface,
-                win_state.x,
-                win_state.y,
-                subsurfaces,
-                textures,
-                viewports,
-                surface_to_viewport,
-                &mut draw_list,
-                radius,
-            );
+        let layers = vec![
+            wm.get_background(),
+            wm.get_bottom(),
+            wm.get_workspace_windows(),
+            wm.get_top(),
+            wm.get_overlay(),
+        ];
+
+        for layer in layers {
+            for win_state in layer {
+                // Do not apply SSD border radius to layer shell surfaces
+                let radius = if win_state.ssd && win_state.layer_surface.is_none() {
+                    20.0
+                } else {
+                    0.0
+                };
+                self.draw_surface_recursive(
+                    &win_state.surface,
+                    win_state.x,
+                    win_state.y,
+                    subsurfaces,
+                    textures,
+                    viewports,
+                    surface_to_viewport,
+                    &mut draw_list,
+                    radius,
+                );
+            }
         }
 
-        for popup in popups {
+        for popup in wm.get_popups() {
             let (abs_x, abs_y) = wm.get_absolute_position(&popup.surface.id());
-            // abs_x/y is the origin of the GEOMETRY.
-            // draw_surface_recursive needs the origin of the SURFACE.
-            // Surface origin = geometry origin - geometry offset.
             let surf_x = abs_x - popup.geometry.x as f64;
             let surf_y = abs_y - popup.geometry.y as f64;
 
@@ -286,8 +274,6 @@ impl Styler for DefaultStyler {
         &self,
         cursor_x: f64,
         cursor_y: f64,
-        windows: &[WindowState],
-        popups: &[PopupState],
         subsurfaces: &[SubsurfaceData],
         textures: &HashMap<ObjectId, SurfaceTexture>,
         viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
@@ -295,7 +281,7 @@ impl Styler for DefaultStyler {
         input_regions: &HashMap<ObjectId, Vec<crate::wm::Rect>>,
         wm: &dyn crate::wm::WindowManager,
     ) -> HitResult {
-        for popup in popups.iter().rev() {
+        for popup in wm.get_popups().iter().rev() {
             let (abs_x, abs_y) = wm.get_absolute_position(&popup.surface.id());
             let surf_x = abs_x - popup.geometry.x as f64;
             let surf_y = abs_y - popup.geometry.y as f64;
@@ -316,8 +302,17 @@ impl Styler for DefaultStyler {
             }
         }
 
-        for win in windows.iter().rev() {
-            let has_transient_child = windows
+        // Check layers in reverse order for hit testing
+        let mut all_windows = wm.get_background();
+        all_windows.extend(wm.get_bottom());
+        all_windows.extend(wm.get_workspace_windows());
+        all_windows.extend(wm.get_top());
+        all_windows.extend(wm.get_overlay());
+
+        let all_windows_cloned = all_windows.clone();
+
+        for win in all_windows.into_iter().rev() {
+            let has_transient_child = all_windows_cloned
                 .iter()
                 .any(|w| w.parent_id.as_ref() == Some(&win.surface.id()));
 

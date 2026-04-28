@@ -228,8 +228,6 @@ impl Input {
                         let hit = state.styler.hit_test(
                             self.cursor.x,
                             self.cursor.y,
-                            &state.wm.get_render_list(),
-                            &state.wm.get_popups(),
                             &state.subsurfaces,
                             &state.surface_textures,
                             &state.viewports,
@@ -340,8 +338,6 @@ impl Input {
         let hit = state.styler.hit_test(
             cursor.x,
             cursor.y,
-            &state.wm.get_render_list(),
-            &state.wm.get_popups(),
             &state.subsurfaces,
             &state.surface_textures,
             &state.viewports,

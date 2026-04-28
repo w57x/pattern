@@ -19,6 +19,10 @@ use wayland_protocols::wp::viewporter::server::wp_viewporter::WpViewporter;
 use wayland_protocols::xdg::decoration::zv1::server::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1;
 use wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase;
 use wayland_protocols::xdg::xdg_output::zv1::server::zxdg_output_manager_v1::ZxdgOutputManagerV1;
+use wayland_protocols::ext::workspace::v1::server::ext_workspace_manager_v1::ExtWorkspaceManagerV1;
+use wayland_protocols::xdg::dialog::v1::server::xdg_wm_dialog_v1::XdgWmDialogV1;
+use wayland_protocols::xdg::activation::v1::server::xdg_activation_v1::XdgActivationV1;
+use wayland_protocols_wlr::layer_shell::v1::server::zwlr_layer_shell_v1::ZwlrLayerShellV1;
 use wayland_server::protocol::wl_data_device_manager::WlDataDeviceManager;
 use wayland_server::{
     Display, ListeningSocket, Resource,
@@ -119,6 +123,10 @@ fn main() {
     dh.create_global::<ServerState, ZxdgDecorationManagerV1, ()>(1, ());
     dh.create_global::<ServerState, WpViewporter, ()>(1, ());
     dh.create_global::<ServerState, ZxdgOutputManagerV1, ()>(2, ());
+    dh.create_global::<ServerState, ZwlrLayerShellV1, ()>(4, ());
+    dh.create_global::<ServerState, ExtWorkspaceManagerV1, ()>(1, ());
+    dh.create_global::<ServerState, XdgWmDialogV1, ()>(1, ());
+    dh.create_global::<ServerState, XdgActivationV1, ()>(1, ());
 
     let socket = ListeningSocket::bind_auto("wayland", 0..32).unwrap();
     let socket_name = socket.socket_name().unwrap().to_string_lossy().into_owned();
@@ -306,7 +314,7 @@ fn main() {
 
             let mut dead_surface_ids = Vec::new();
 
-            for win in state.wm.get_render_list() {
+            for win in state.wm.all_windows() {
                 if !win.surface.is_alive() {
                     dead_surface_ids.push(win.surface.id());
                 }
@@ -367,8 +375,6 @@ fn main() {
             }
 
             let mut draw_list = state.styler.generate_draw_list(
-                &state.wm.get_render_list(),
-                &state.wm.get_popups(),
                 &state.subsurfaces,
                 &state.surface_textures,
                 &state.viewports,

@@ -161,8 +161,6 @@ impl Dispatch<XdgSurface, ()> for ServerState {
                     let hit = state.styler.hit_test(
                         cx,
                         cy,
-                        &state.wm.get_render_list(),
-                        &state.wm.get_popups(),
                         &state.subsurfaces,
                         &state.surface_textures,
                         &state.viewports,

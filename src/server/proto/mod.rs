@@ -1,10 +1,14 @@
 pub mod compositor;
 pub mod decoration;
 pub mod dmabuf;
+pub mod layer_shell;
 pub mod output;
 pub mod primary_selection;
 pub mod seat;
 pub mod shm;
 pub mod subcompositor;
 pub mod viewporter;
+pub mod workspace;
+pub mod xdg_activation;
+pub mod xdg_dialog;
 pub mod xdg_shell;
