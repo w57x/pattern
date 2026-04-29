@@ -1,0 +1,48 @@
+interface: 'wl_compositor',                              version:  5, name:  1
+interface: 'wl_shm',                                     version:  1, name:  2
+	formats (fourcc):
+	         0 = 'AR24'
+	         1 = 'XR24'
+interface: 'wl_subcompositor',                           version:  1, name:  3
+interface: 'wl_output',                                  version:  4, name:  4
+	name: WL-1
+	description: Pattern Display
+	x: 0, y: 0, scale: 1,
+	physical_width: 1920 mm, physical_height: 1200 mm,
+	make: 'Pattern', model: 'Virtual Display',
+	subpixel_orientation: unknown, output_transform: normal,
+	mode:
+		width: 1920 px, height: 1200 px, refresh: 60.000 Hz,
+		flags: current
+interface: 'wl_seat',                                    version:  5, name:  5
+	name: pattern-seat
+	capabilities: pointer keyboard
+	keyboard repeat rate: 35
+	keyboard repeat delay: 300
+interface: 'wl_data_device_manager',                     version:  3, name:  6
+interface: 'zwp_primary_selection_device_manager_v1',    version:  1, name:  7
+interface: 'xdg_wm_base',                                version:  3, name:  8
+interface: 'zwp_linux_dmabuf_v1',                        version:  4, name:  9
+	main device: 0xE201 (/dev/dri/card1 or /dev/dri/renderD128)
+	tranche
+		target device: 0xE201 (/dev/dri/card1 or /dev/dri/renderD128)
+		flags: none
+		formats (fourcc) and modifiers (names):
+		0x34325241 = 'AR24'; 0x0000000000000000 = LINEAR
+		0x34325258 = 'XR24'; 0x0000000000000000 = LINEAR
+		0x34324241 = 'AB24'; 0x0000000000000000 = LINEAR
+		0x34324258 = 'XB24'; 0x0000000000000000 = LINEAR
+interface: 'zxdg_decoration_manager_v1',                 version:  1, name: 10
+interface: 'wp_viewporter',                              version:  1, name: 11
+interface: 'zxdg_output_manager_v1',                     version:  2, name: 12
+	xdg_output_v1
+		output: 4
+		name: 'eDP-1'
+		description: 'Chimei Innolux Corporation 0x1457 (eDP-1)'
+		logical_x: 0, logical_y: 0
+		logical_width: 1920, logical_height: 1200
+interface: 'zwlr_layer_shell_v1',                        version:  4, name: 13
+interface: 'ext_workspace_manager_v1',                   version:  1, name: 14
+interface: 'xdg_wm_dialog_v1',                           version:  1, name: 15
+interface: 'xdg_activation_v1',                          version:  1, name: 16
+interface: 'zwp_pointer_gestures_v1',                    version:  3, name: 17

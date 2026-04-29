@@ -98,8 +98,8 @@ impl Dispatch<ZxdgOutputManagerV1, ()> for ServerState {
                 xdg_output.logical_position(0, 0);
                 xdg_output.logical_size(w as i32, h as i32);
                 if xdg_output.version() >= 2 {
-                    xdg_output.name("PatternDisplay".to_string());
-                    xdg_output.description("Pattern Virtual Output".to_string());
+                    xdg_output.name(state.card_info.name.clone());
+                    xdg_output.description(state.card_info.description.clone());
                 }
                 xdg_output.done();
             }

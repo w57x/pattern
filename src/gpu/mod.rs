@@ -1,3 +1,4 @@
+use libdisplay_info::info::Info;
 use std::{
     cell::RefCell,
     os::fd::{AsFd, BorrowedFd},
@@ -61,13 +62,13 @@ impl Card {
         None
     }
 
-    pub fn fetch_gpu_info(&self) -> GpuInfo {
+    pub fn fetch_card_info(&self) -> CardInfo {
         use drm::control::{self, Device};
         let resources = self
             .resource_handles()
             .expect("Failed to get DRM resource handles");
 
-        let mut resource: Option<GpuInfo> = None;
+        let mut resource: Option<CardInfo> = None;
 
         for &connector_handle in resources.connectors() {
             let connector = self
@@ -80,6 +81,63 @@ impl Card {
                     connector.interface()
                 );
 
+                let interface_name = match connector.interface() {
+                    control::connector::Interface::EmbeddedDisplayPort => "eDP",
+                    control::connector::Interface::DisplayPort => "DP",
+                    control::connector::Interface::HDMIA => "HDMI-A",
+                    control::connector::Interface::HDMIB => "HDMI-B",
+                    control::connector::Interface::VGA => "VGA",
+                    control::connector::Interface::DVID => "DVI-D",
+                    _ => "Unknown",
+                };
+                let output_name = format!("{}-{}", interface_name, connector.interface_id());
+
+                let mut output_description = format!("Generic Monitor ({})", output_name);
+
+                if let Ok(props) = self.get_properties(connector_handle) {
+                    let (prop_handles, prop_values) = props.as_props_and_values();
+
+                    for (&prop_handle, &prop_val) in prop_handles.iter().zip(prop_values.iter()) {
+                        if let Ok(prop_info) = self.get_property(prop_handle) {
+                            if prop_info.name().to_str() == Ok("EDID") {
+                                if let control::property::Value::Blob(blob_id) =
+                                    prop_info.value_type().convert_value(prop_val)
+                                {
+                                    if blob_id > 0 {
+                                        if let Ok(blob) = self.get_property_blob(blob_id) {
+                                            match Info::parse_edid(&blob) {
+                                                Ok(info) => {
+                                                    let make = info
+                                                        .make()
+                                                        .unwrap_or("Unknown".to_string());
+                                                    let model = info
+                                                        .model()
+                                                        .unwrap_or("Monitor".to_string());
+
+                                                    output_description = format!(
+                                                        "{} {} ({})",
+                                                        make, model, output_name
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    eprintln!(
+                                                        "[warn]: Failed to parse EDID for {}: {}",
+                                                        output_name, e
+                                                    );
+                                                    output_description = format!(
+                                                        "Generic Monitor ({})",
+                                                        output_name
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Pick a mode (the resolution)
                 // Usually, the first mode is the "preferred" native resolution
                 if let Some(mode) = connector.modes().get(0) {
@@ -89,10 +147,12 @@ impl Card {
                     let crtc_handle = find_crtc(self, &resources, &connector);
                     println!("[info]: Linked to CRTC: {:?}", crtc_handle);
 
-                    resource = Some(GpuInfo {
+                    resource = Some(CardInfo {
                         mode: mode.clone(),
                         crtc_handle,
                         connector_handle,
+                        name: output_name,
+                        description: output_description,
                     });
 
                     break;
@@ -121,11 +181,14 @@ impl std::fmt::Display for Card {
     }
 }
 
+#[derive(Clone)]
 #[allow(unused)]
-pub struct GpuInfo {
+pub struct CardInfo {
     pub mode: drm::control::Mode,
     pub crtc_handle: drm::control::crtc::Handle,
     pub connector_handle: drm::control::connector::Handle,
+    pub name: String,
+    pub description: String,
 }
 
 fn find_crtc(

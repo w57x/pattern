@@ -3,6 +3,7 @@ pub mod decoration;
 pub mod dmabuf;
 pub mod layer_shell;
 pub mod output;
+pub mod pointer_gestures;
 pub mod primary_selection;
 pub mod seat;
 pub mod shm;

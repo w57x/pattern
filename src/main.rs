@@ -19,6 +19,7 @@ use wayland_protocols::wp::viewporter::server::wp_viewporter::WpViewporter;
 use wayland_protocols::xdg::decoration::zv1::server::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1;
 use wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase;
 use wayland_protocols::xdg::xdg_output::zv1::server::zxdg_output_manager_v1::ZxdgOutputManagerV1;
+use wayland_protocols::wp::pointer_gestures::zv1::server::zwp_pointer_gestures_v1::ZwpPointerGesturesV1;
 use wayland_protocols::ext::workspace::v1::server::ext_workspace_manager_v1::ExtWorkspaceManagerV1;
 use wayland_protocols::xdg::dialog::v1::server::xdg_wm_dialog_v1::XdgWmDialogV1;
 use wayland_protocols::xdg::activation::v1::server::xdg_activation_v1::XdgActivationV1;
@@ -52,7 +53,7 @@ fn main() {
     println!("[info]: {card}");
     println!("[info]: {:?}", card.get_driver().unwrap());
 
-    let info = card.fetch_gpu_info();
+    let info = card.fetch_card_info();
 
     let stat = nix::sys::stat::fstat(card.as_fd()).unwrap();
     let gpu_dev_t = stat.st_rdev as libc::dev_t;
@@ -127,6 +128,7 @@ fn main() {
     dh.create_global::<ServerState, ExtWorkspaceManagerV1, ()>(1, ());
     dh.create_global::<ServerState, XdgWmDialogV1, ()>(1, ());
     dh.create_global::<ServerState, XdgActivationV1, ()>(1, ());
+    dh.create_global::<ServerState, ZwpPointerGesturesV1, ()>(3, ());
 
     let socket = ListeningSocket::bind_auto("wayland", 0..32).unwrap();
     let socket_name = socket.socket_name().unwrap().to_string_lossy().into_owned();
@@ -144,7 +146,13 @@ fn main() {
     let vkctx = Rc::new(VulkanContext::new());
     println!("[pattern]: Vulkan Ready. Entering the void.");
 
-    let mut state = ServerState::new(vkctx.clone(), info.mode.clone(), gpu_dev_t, table_fd);
+    let mut state = ServerState::new(
+        vkctx.clone(),
+        info.mode.clone(),
+        info.clone(),
+        gpu_dev_t,
+        table_fd,
+    );
     let mut input = Input::new(shared_seat.clone(), width as f64, height as f64);
     input.natural_scroll = true; // Change this to false to disable natural scroll
 

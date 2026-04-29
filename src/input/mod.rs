@@ -1,4 +1,5 @@
 use input::event::EventTrait;
+use input::event::gesture::GestureHoldEvent;
 use input::event::keyboard::KeyboardEventTrait;
 use input::event::pointer::PointerEventTrait;
 use input::{Libinput, LibinputInterface};
@@ -109,8 +110,11 @@ impl Input {
                     }
 
                     if device.config_tap_finger_count() > 0 {
-                        println!("[pattern]: Touchpad detected. Enabling Tap-to-Click!");
+                        println!(
+                            "[pattern]: Touchpad detected. Enabling Tap-to-Click and Two-Finger Scroll"
+                        );
                         let _ = device.config_tap_set_enabled(true);
+                        let _ = device.config_scroll_set_method(input::ScrollMethod::TwoFinger);
                     }
 
                     if device
@@ -281,13 +285,63 @@ impl Input {
                     }
 
                     input::event::PointerEvent::ScrollWheel(a) => {
-                        Self::handle_scroll(a, state);
+                        use input::event::pointer::Axis as LibinputAxis;
+                        use input::event::pointer::PointerScrollEvent;
+                        use wayland_server::protocol::wl_pointer::{Axis as WlAxis, AxisSource};
+
+                        if let Some(focused) = &state.pointer_focus {
+                            if let Some(client) = focused.client() {
+                                for pointer in state
+                                    .pointers
+                                    .iter()
+                                    .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                                {
+                                    pointer.axis_source(AxisSource::Wheel);
+
+                                    if a.has_axis(LibinputAxis::Vertical) {
+                                        let value = a.scroll_value(LibinputAxis::Vertical);
+                                        let v120 = a.scroll_value_v120(LibinputAxis::Vertical);
+                                        if value == 0.0 {
+                                            pointer.axis_stop(a.time(), WlAxis::VerticalScroll);
+                                        } else {
+                                            pointer.axis_discrete(
+                                                WlAxis::VerticalScroll,
+                                                (v120 / 120.0).round() as i32,
+                                            );
+                                            pointer.axis(a.time(), WlAxis::VerticalScroll, value);
+                                        }
+                                    }
+                                    if a.has_axis(LibinputAxis::Horizontal) {
+                                        let value = a.scroll_value(LibinputAxis::Horizontal);
+                                        let v120 = a.scroll_value_v120(LibinputAxis::Horizontal);
+                                        if value == 0.0 {
+                                            pointer.axis_stop(a.time(), WlAxis::HorizontalScroll);
+                                        } else {
+                                            pointer.axis_discrete(
+                                                WlAxis::HorizontalScroll,
+                                                (v120 / 120.0).round() as i32,
+                                            );
+                                            pointer.axis(a.time(), WlAxis::HorizontalScroll, value);
+                                        }
+                                    }
+                                    pointer.frame();
+                                }
+                            }
+                        }
                     }
                     input::event::PointerEvent::ScrollFinger(a) => {
-                        Self::handle_scroll(a, state);
+                        Self::handle_scroll(
+                            a,
+                            wayland_server::protocol::wl_pointer::AxisSource::Finger,
+                            state,
+                        );
                     }
                     input::event::PointerEvent::ScrollContinuous(a) => {
-                        Self::handle_scroll(a, state);
+                        Self::handle_scroll(
+                            a,
+                            wayland_server::protocol::wl_pointer::AxisSource::Continuous,
+                            state,
+                        );
                     }
 
                     _ => {}
@@ -295,7 +349,179 @@ impl Input {
                 input::Event::Touch(_) => {}
                 input::Event::Tablet(_) => {}
                 input::Event::TabletPad(_) => {}
-                input::Event::Gesture(_) => {}
+                input::Event::Gesture(g) => {
+                    use input::event::gesture::GestureEvent;
+                    use input::event::gesture::{
+                        GestureEndEvent, GestureEventCoordinates, GestureEventTrait,
+                        GesturePinchEventTrait,
+                    };
+                    use input::event::gesture::{GesturePinchEvent, GestureSwipeEvent};
+
+                    let serial = state.serial;
+
+                    if let Some(focused) = &state.pointer_focus {
+                        let focused_clone = focused.clone();
+                        if let Some(client) = focused.client() {
+                            match g {
+                                GestureEvent::Swipe(GestureSwipeEvent::Begin(e)) => {
+                                    for pointer in state
+                                        .pointers
+                                        .iter()
+                                        .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                                    {
+                                        if let Some(swipes) =
+                                            state.swipe_gestures.get(&pointer.id())
+                                        {
+                                            for swipe in swipes {
+                                                swipe.begin(
+                                                    serial,
+                                                    e.time(),
+                                                    &focused_clone,
+                                                    e.finger_count() as u32,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                GestureEvent::Swipe(GestureSwipeEvent::Update(e)) => {
+                                    for pointer in state
+                                        .pointers
+                                        .iter()
+                                        .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                                    {
+                                        if let Some(swipes) =
+                                            state.swipe_gestures.get(&pointer.id())
+                                        {
+                                            for swipe in swipes {
+                                                swipe.update(e.time(), e.dx(), e.dy());
+                                                pointer.frame();
+                                            }
+                                        }
+                                    }
+                                }
+                                GestureEvent::Swipe(GestureSwipeEvent::End(e)) => {
+                                    for pointer in state
+                                        .pointers
+                                        .iter()
+                                        .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                                    {
+                                        if let Some(swipes) =
+                                            state.swipe_gestures.get(&pointer.id())
+                                        {
+                                            for swipe in swipes {
+                                                swipe.end(
+                                                    serial,
+                                                    e.time(),
+                                                    if e.cancelled() { 1 } else { 0 },
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                GestureEvent::Pinch(GesturePinchEvent::Begin(e)) => {
+                                    for pointer in state
+                                        .pointers
+                                        .iter()
+                                        .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                                    {
+                                        if let Some(pinches) =
+                                            state.pinch_gestures.get(&pointer.id())
+                                        {
+                                            for pinch in pinches {
+                                                pinch.begin(
+                                                    serial,
+                                                    e.time(),
+                                                    &focused_clone,
+                                                    e.finger_count() as u32,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                GestureEvent::Pinch(GesturePinchEvent::Update(e)) => {
+                                    for pointer in state
+                                        .pointers
+                                        .iter()
+                                        .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                                    {
+                                        if let Some(pinches) =
+                                            state.pinch_gestures.get(&pointer.id())
+                                        {
+                                            for pinch in pinches {
+                                                pinch.update(
+                                                    e.time(),
+                                                    e.dx(),
+                                                    e.dy(),
+                                                    e.scale(),
+                                                    e.angle_delta(),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                GestureEvent::Pinch(GesturePinchEvent::End(e)) => {
+                                    for pointer in state
+                                        .pointers
+                                        .iter()
+                                        .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                                    {
+                                        if let Some(pinches) =
+                                            state.pinch_gestures.get(&pointer.id())
+                                        {
+                                            for pinch in pinches {
+                                                pinch.end(
+                                                    serial,
+                                                    e.time(),
+                                                    if e.cancelled() { 1 } else { 0 },
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                GestureEvent::Hold(GestureHoldEvent::Begin(e)) => {
+                                    for pointer in state
+                                        .pointers
+                                        .iter()
+                                        .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                                    {
+                                        if let Some(holds) = state.hold_gestures.get(&pointer.id())
+                                        {
+                                            for hold in holds {
+                                                hold.begin(
+                                                    serial,
+                                                    e.time(),
+                                                    &focused_clone,
+                                                    e.finger_count() as u32,
+                                                );
+                                                pointer.frame();
+                                            }
+                                        }
+                                    }
+                                }
+                                GestureEvent::Hold(GestureHoldEvent::End(e)) => {
+                                    for pointer in state
+                                        .pointers
+                                        .iter()
+                                        .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                                    {
+                                        if let Some(holds) = state.hold_gestures.get(&pointer.id())
+                                        {
+                                            for hold in holds {
+                                                hold.end(
+                                                    serial,
+                                                    e.time(),
+                                                    if e.cancelled() { 1 } else { 0 },
+                                                );
+                                                pointer.frame();
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
                 input::Event::Switch(_) => {}
                 _ => todo!(),
             }
@@ -308,6 +534,7 @@ impl Input {
         E: input::event::pointer::PointerScrollEvent + input::event::pointer::PointerEventTrait,
     >(
         event: E,
+        source: wayland_server::protocol::wl_pointer::AxisSource,
         state: &mut ServerState,
     ) {
         use input::event::pointer::Axis as LibinputAxis;
@@ -320,13 +547,23 @@ impl Input {
                     .iter()
                     .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
                 {
+                    pointer.axis_source(source);
+
                     if event.has_axis(LibinputAxis::Vertical) {
                         let value = event.scroll_value(LibinputAxis::Vertical);
-                        pointer.axis(event.time(), WlAxis::VerticalScroll, value);
+                        if value == 0.0 {
+                            pointer.axis_stop(event.time(), WlAxis::VerticalScroll);
+                        } else {
+                            pointer.axis(event.time(), WlAxis::VerticalScroll, value);
+                        }
                     }
                     if event.has_axis(LibinputAxis::Horizontal) {
                         let value = event.scroll_value(LibinputAxis::Horizontal);
-                        pointer.axis(event.time(), WlAxis::HorizontalScroll, value);
+                        if value == 0.0 {
+                            pointer.axis_stop(event.time(), WlAxis::HorizontalScroll);
+                        } else {
+                            pointer.axis(event.time(), WlAxis::HorizontalScroll, value);
+                        }
                     }
                     pointer.frame();
                 }

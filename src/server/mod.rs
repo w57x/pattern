@@ -21,7 +21,10 @@ use wayland_protocols::{
     xdg::shell::server::{xdg_positioner, xdg_toplevel::XdgToplevel},
 };
 
-use crate::vulkan::{SurfaceTexture, VulkanContext};
+use crate::{
+    gpu::CardInfo,
+    vulkan::{SurfaceTexture, VulkanContext},
+};
 
 #[derive(Clone)]
 pub struct ShmBuffer {
@@ -75,6 +78,7 @@ pub struct ServerState {
 
     pub input_focus: Option<WlSurface>,
     pub mode: drm::control::Mode,
+    pub card_info: CardInfo,
 
     pub pools: HashMap<ObjectId, (OwnedFd, memmap2::MmapMut)>,
     pub buffers: HashMap<ObjectId, ShmBuffer>,
@@ -99,6 +103,10 @@ pub struct ServerState {
 
     pub pointers: Vec<wayland_server::protocol::wl_pointer::WlPointer>,
     pub pointer_focus: Option<WlSurface>,
+
+    pub swipe_gestures: HashMap<ObjectId, Vec<wayland_protocols::wp::pointer_gestures::zv1::server::zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1>>,
+    pub pinch_gestures: HashMap<ObjectId, Vec<wayland_protocols::wp::pointer_gestures::zv1::server::zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1>>,
+    pub hold_gestures: HashMap<ObjectId, Vec<wayland_protocols::wp::pointer_gestures::zv1::server::zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1>>,
 
     pub outputs: Vec<wayland_server::protocol::wl_output::WlOutput>,
 
@@ -156,6 +164,7 @@ impl ServerState {
     pub fn new(
         vkctx: Rc<VulkanContext>,
         mode: drm::control::Mode,
+        card_info: CardInfo,
         gpu_dev_t: u64,
         dmabuf_table_fd: std::os::unix::io::OwnedFd,
     ) -> Self {
@@ -197,6 +206,7 @@ impl ServerState {
             vkctx,
             input_focus: None,
             mode,
+            card_info,
 
             pools: HashMap::new(),
             buffers: HashMap::new(),
@@ -218,6 +228,9 @@ impl ServerState {
             xkb_state,
 
             pointers: Vec::new(),
+            swipe_gestures: HashMap::new(),
+            pinch_gestures: HashMap::new(),
+            hold_gestures: HashMap::new(),
             pointer_focus: None,
 
             outputs: Vec::new(),
