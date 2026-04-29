@@ -34,6 +34,7 @@ pub struct WindowState {
     pub maximized: bool,
     pub fullscreen: bool,
     pub minimized: bool,
+    pub modal: bool,
     pub saved_geometry: Option<(f64, f64, i32, i32)>,
 
     // Layer Shell properties
@@ -70,12 +71,14 @@ impl LayerState {
 
 #[derive(Clone)]
 pub struct Workspace {
+    pub id: usize,
     pub windows: Vec<WindowState>,
 }
 
 impl Workspace {
-    pub fn new() -> Self {
+    pub fn new(id: usize) -> Self {
         Self {
+            id,
             windows: Vec::new(),
         }
     }
@@ -83,7 +86,8 @@ impl Workspace {
 
 #[derive(Clone)]
 pub struct OutputState {
-    pub workspaces: Vec<Workspace>,
+    pub id: usize,
+    pub workspaces: SlotVec<Workspace>,
     pub active_workspace: usize,
     pub background: LayerState,
     pub bottom: LayerState,
@@ -92,11 +96,12 @@ pub struct OutputState {
 }
 
 impl OutputState {
-    pub fn new() -> Self {
-        let mut workspaces = Vec::new();
-        workspaces.push(Workspace::new());
+    pub fn new(id: usize) -> Self {
+        let mut wx = SlotVec::new(10);
+        wx.insert_before(1, Workspace::new(0));
         Self {
-            workspaces,
+            id,
+            workspaces: wx,
             active_workspace: 0,
             background: LayerState::new(),
             bottom: LayerState::new(),
@@ -104,6 +109,12 @@ impl OutputState {
             overlay: LayerState::new(),
         }
     }
+}
+
+#[derive(Clone, Copy)]
+pub enum WorkspaceInsertPosition {
+    After(usize),
+    Before(usize),
 }
 
 /// A trait defining the core operations a window manager must provide to the compositor.
@@ -159,6 +170,9 @@ pub trait WindowManager {
 
     /// Minimizes the specified toplevel window.
     fn set_minimized(&mut self, toplevel_id: &ObjectId);
+
+    /// Sets or unsets the modal state for the specified toplevel.
+    fn set_modal(&mut self, toplevel_id: &ObjectId, modal: bool);
 
     /// Begins an interactive move operation for the specified toplevel.
     fn begin_interactive_move(
@@ -266,6 +280,144 @@ pub trait WindowManager {
 
     /// Calculates and returns the absolute global position (x, y) of the specified surface.
     fn get_absolute_position(&self, surface_id: &ObjectId) -> (f64, f64);
+
+    // Workspaces
+
+    /// Create a new workspace by specifying where to insert it
+    fn create_workspace(
+        &mut self,
+        output_id: usize,
+        insert_position: WorkspaceInsertPosition,
+    ) -> Option<usize>;
+
+    /// Delete a workspace
+    /// Return a boolean to confirm the deletion success
+    fn delete_workspace(&mut self, output_id: usize, id: usize) -> bool;
+
+    /// Move a window to a specific workspace on a specific output.
+    /// Returns true if successful, false otherwise.
+    fn move_window_to_workspace(
+        &mut self,
+        surface_id: &ObjectId,
+        output_id: usize,
+        workspace_id: usize,
+    ) -> bool;
+}
+
+#[derive(Clone, PartialEq)]
+pub enum Slot<T> {
+    Empty,
+    Occupied(T),
+}
+
+impl<T> Slot<T> {
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
+    }
+
+    pub fn unwrap_ref(&self) -> &T {
+        match self {
+            Slot::Empty => panic!("Unwrap on a empty slot"),
+            Slot::Occupied(v) => v,
+        }
+    }
+
+    pub fn unwrap_mut(&mut self) -> &mut T {
+        match self {
+            Slot::Empty => panic!("Unwrap on a empty slot"),
+            Slot::Occupied(v) => v,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct SlotVec<T> {
+    inner: Vec<Slot<T>>,
+}
+
+impl<T> SlotVec<T>
+where
+    T: Clone,
+{
+    pub fn new(slot_count: usize) -> Self {
+        Self {
+            inner: vec![Slot::Empty::<T>; slot_count],
+        }
+    }
+
+    pub fn get(&self, index: usize) -> Option<&Slot<T>> {
+        if index <= self.inner.len() - 1 {
+            return Some(&self.inner[index]);
+        }
+
+        return None;
+    }
+
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut Slot<T>> {
+        if index <= self.inner.len() - 1 {
+            return Some(&mut self.inner[index]);
+        }
+
+        if index == self.inner.len() {
+            self.inner.push(Slot::Empty);
+            return Some(&mut self.inner[index]);
+        }
+
+        if index > self.inner.len() {
+            let extended_with = vec![Slot::Empty::<T>; index - self.inner.len()];
+            self.inner.extend(extended_with);
+            return Some(&mut self.inner[index]);
+        }
+
+        return None;
+    }
+
+    pub fn insert_after(&mut self, index: usize, val: T) -> bool {
+        if self.get_mut(index + 1).unwrap().is_empty() {
+            self.inner[index + 1] = Slot::Occupied(val);
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    pub fn insert_before(&mut self, index: usize, val: T) -> bool {
+        if self.get_mut(index - 1).unwrap().is_empty() {
+            self.inner[index - 1] = Slot::Occupied(val);
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    pub fn remove(&mut self, index: usize) -> bool {
+        if !self.get(index).is_some() {
+            self.inner[index] = Slot::Empty;
+            return true;
+        }
+
+        return false;
+    }
+
+    pub fn flatten(&self) -> Vec<&T> {
+        self.inner
+            .iter()
+            .filter_map(|x| match x {
+                Slot::Empty => None,
+                Slot::Occupied(val) => Some(val),
+            })
+            .collect()
+    }
+
+    pub fn flatten_mut(&mut self) -> Vec<&mut T> {
+        self.inner
+            .iter_mut()
+            .filter_map(|x| match x {
+                Slot::Empty => None,
+                Slot::Occupied(val) => Some(val),
+            })
+            .collect()
+    }
 }
 
 pub struct FloatingWm {
@@ -278,7 +430,7 @@ pub struct FloatingWm {
 impl FloatingWm {
     pub fn new() -> Self {
         Self {
-            outputs: vec![OutputState::new()],
+            outputs: vec![OutputState::new(0)],
             popups: Vec::new(),
             drag_state: None,
             resize_state: None,
@@ -303,7 +455,7 @@ impl FloatingWm {
             {
                 return Some(w);
             }
-            for ws in &mut output.workspaces {
+            for ws in output.workspaces.flatten_mut() {
                 if let Some(w) = ws.windows.iter_mut().find(|w| &w.surface.id() == id) {
                     return Some(w);
                 }
@@ -341,7 +493,7 @@ impl FloatingWm {
             if let Some(w) = output.bottom.windows.iter().find(|w| &w.surface.id() == id) {
                 return Some(w);
             }
-            for ws in &output.workspaces {
+            for ws in output.workspaces.flatten() {
                 if let Some(w) = ws.windows.iter().find(|w| &w.surface.id() == id) {
                     return Some(w);
                 }
@@ -379,7 +531,7 @@ impl FloatingWm {
             {
                 return Some(w);
             }
-            for ws in &mut output.workspaces {
+            for ws in output.workspaces.flatten_mut() {
                 if let Some(w) = ws
                     .windows
                     .iter_mut()
@@ -413,7 +565,7 @@ impl FloatingWm {
         for output in &self.outputs {
             list.extend(output.background.windows.clone());
             list.extend(output.bottom.windows.clone());
-            for ws in &output.workspaces {
+            for ws in output.workspaces.flatten() {
                 list.extend(ws.windows.clone());
             }
             list.extend(output.top.windows.clone());
@@ -429,7 +581,7 @@ impl WindowManager for FloatingWm {
         for output in &self.outputs {
             list.extend(output.background.windows.clone());
             list.extend(output.bottom.windows.clone());
-            for ws in &output.workspaces {
+            for ws in output.workspaces.flatten() {
                 list.extend(ws.windows.clone());
             }
             list.extend(output.top.windows.clone());
@@ -444,8 +596,10 @@ impl WindowManager for FloatingWm {
             return;
         }
         let out = &mut self.outputs[0];
-        let ws = &mut out.workspaces[out.active_workspace];
+        let ws_slot = out.workspaces.get_mut(out.active_workspace).unwrap();
+        let ws = ws_slot.unwrap_mut();
         let offset = (ws.windows.len() * 30) as f64;
+
         ws.windows.push(WindowState {
             surface,
             xdg_surface: None,
@@ -468,6 +622,7 @@ impl WindowManager for FloatingWm {
             maximized: false,
             fullscreen: false,
             minimized: false,
+            modal: false,
             saved_geometry: None,
             layer: 0,
             anchor: 0,
@@ -483,7 +638,7 @@ impl WindowManager for FloatingWm {
                 .windows
                 .retain(|w| &w.surface.id() != surface_id);
             out.bottom.windows.retain(|w| &w.surface.id() != surface_id);
-            for ws in &mut out.workspaces {
+            for ws in out.workspaces.flatten_mut() {
                 ws.windows.retain(|w| &w.surface.id() != surface_id);
             }
             out.top.windows.retain(|w| &w.surface.id() != surface_id);
@@ -537,6 +692,7 @@ impl WindowManager for FloatingWm {
                 out.background.windows.push(w);
                 return target_id;
             }
+
             if let Some(idx) = out
                 .bottom
                 .windows
@@ -547,13 +703,15 @@ impl WindowManager for FloatingWm {
                 out.bottom.windows.push(w);
                 return target_id;
             }
-            for ws in &mut out.workspaces {
+
+            for ws in out.workspaces.flatten_mut() {
                 if let Some(idx) = ws.windows.iter().position(|w| w.surface.id() == target_id) {
                     let w = ws.windows.remove(idx);
                     ws.windows.push(w);
                     return target_id;
                 }
             }
+
             if let Some(idx) = out
                 .top
                 .windows
@@ -564,6 +722,7 @@ impl WindowManager for FloatingWm {
                 out.top.windows.push(w);
                 return target_id;
             }
+
             if let Some(idx) = out
                 .overlay
                 .windows
@@ -795,6 +954,12 @@ impl WindowManager for FloatingWm {
         }
     }
 
+    fn set_modal(&mut self, toplevel_id: &ObjectId, modal: bool) {
+        if let Some(window) = self.find_window_by_toplevel_mut(toplevel_id) {
+            window.modal = modal;
+        }
+    }
+
     fn begin_interactive_move(
         &mut self,
         toplevel_id: &ObjectId,
@@ -1009,6 +1174,7 @@ impl WindowManager for FloatingWm {
             maximized: false,
             fullscreen: false,
             minimized: false,
+            modal: false,
             saved_geometry: None,
             layer,
             anchor: 0,
@@ -1145,7 +1311,7 @@ impl WindowManager for FloatingWm {
             .and_then(|o| {
                 o.workspaces
                     .get(o.active_workspace)
-                    .map(|ws| ws.windows.clone())
+                    .map(|ws| ws.unwrap_ref().windows.clone())
             })
             .unwrap_or_default()
     }
@@ -1183,5 +1349,134 @@ impl WindowManager for FloatingWm {
         }
 
         (0.0, 0.0)
+    }
+
+    fn create_workspace(
+        &mut self,
+        output_id: usize,
+        insert_position: WorkspaceInsertPosition,
+    ) -> Option<usize> {
+        let output = self.outputs.iter_mut().find(|o| o.id == output_id)?;
+
+        match insert_position {
+            WorkspaceInsertPosition::After(i) => {
+                if output.workspaces.get(i).is_some()
+                    && output.workspaces.insert_after(i, Workspace::new(i + 1))
+                {
+                    Some(i + 1)
+                } else {
+                    None
+                }
+            }
+            WorkspaceInsertPosition::Before(i) => {
+                let target_index = if i > 0 { i - 1 } else { return None };
+                if output.workspaces.get(i).is_some()
+                    && output
+                        .workspaces
+                        .insert_before(i, Workspace::new(target_index))
+                {
+                    Some(target_index)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    fn delete_workspace(&mut self, output_id: usize, id: usize) -> bool {
+        if let Some(output) = self.outputs.iter_mut().find(|o| o.id == output_id) {
+            output.workspaces.remove(id)
+        } else {
+            false
+        }
+    }
+
+    fn move_window_to_workspace(
+        &mut self,
+        surface_id: &ObjectId,
+        output_id: usize,
+        workspace_id: usize,
+    ) -> bool {
+        // 1. Find and remove the window from its current location
+        let mut target_window = None;
+        for out in &mut self.outputs {
+            // Check background
+            if let Some(idx) = out
+                .background
+                .windows
+                .iter()
+                .position(|w| &w.surface.id() == surface_id)
+            {
+                target_window = Some(out.background.windows.remove(idx));
+                break;
+            }
+            // Check bottom
+            if let Some(idx) = out
+                .bottom
+                .windows
+                .iter()
+                .position(|w| &w.surface.id() == surface_id)
+            {
+                target_window = Some(out.bottom.windows.remove(idx));
+                break;
+            }
+            // Check workspaces
+            let mut found = false;
+            for ws in out.workspaces.flatten_mut() {
+                if let Some(idx) = ws
+                    .windows
+                    .iter()
+                    .position(|w| &w.surface.id() == surface_id)
+                {
+                    target_window = Some(ws.windows.remove(idx));
+                    found = true;
+                    break;
+                }
+            }
+            if found {
+                break;
+            }
+            // Check top
+            if let Some(idx) = out
+                .top
+                .windows
+                .iter()
+                .position(|w| &w.surface.id() == surface_id)
+            {
+                target_window = Some(out.top.windows.remove(idx));
+                break;
+            }
+            // Check overlay
+            if let Some(idx) = out
+                .overlay
+                .windows
+                .iter()
+                .position(|w| &w.surface.id() == surface_id)
+            {
+                target_window = Some(out.overlay.windows.remove(idx));
+                break;
+            }
+        }
+
+        // 2. If the window was found, insert it into the target workspace
+        if let Some(window) = target_window {
+            if let Some(output) = self.outputs.iter_mut().find(|o| o.id == output_id) {
+                if let Some(slot) = output.workspaces.get_mut(workspace_id) {
+                    if let Slot::Occupied(ws) = slot {
+                        ws.windows.push(window);
+                        return true;
+                    }
+                }
+            }
+            // Fallback: If target workspace/output doesn't exist, put it back in the current active workspace
+            // so we don't lose the window.
+            if !self.outputs.is_empty() {
+                let out = &mut self.outputs[0];
+                if let Some(Slot::Occupied(ws)) = out.workspaces.get_mut(out.active_workspace) {
+                    ws.windows.push(window);
+                }
+            }
+        }
+        false
     }
 }

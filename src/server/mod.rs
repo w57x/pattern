@@ -1,12 +1,13 @@
 pub mod proto;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     os::fd::{AsFd, OwnedFd},
     rc::Rc,
 };
 
 use nix::sys::memfd::{MFdFlags, memfd_create};
+use rand::prelude::*;
 use wayland_server::{
     Resource, WEnum,
     backend::{ClientData, ClientId, DisconnectReason, ObjectId},
@@ -65,6 +66,8 @@ impl Default for PositionerData {
 }
 
 pub struct ServerState {
+    rng: ThreadRng,
+
     pub surfaces: Vec<WlSurface>,
     pub windows: Vec<XdgToplevel>,
 
@@ -111,6 +114,8 @@ pub struct ServerState {
     pub pending_positioners: HashMap<ObjectId, PositionerData>,
     pub subsurfaces: Vec<SubsurfaceData>,
     pub decoration_to_toplevel: HashMap<ObjectId, ObjectId>,
+    pub dialog_to_toplevel: HashMap<ObjectId, ObjectId>,
+    pub activation_tokens: HashSet<String>,
     pub pending_scales: HashMap<ObjectId, i32>,
     pub viewports: HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
     pub surface_to_viewport: HashMap<ObjectId, ObjectId>,
@@ -186,6 +191,7 @@ impl ServerState {
         let xkb_state = xkb::State::new(&keymap);
 
         Self {
+            rng: ThreadRng::default(),
             surfaces: Vec::new(),
             windows: Vec::new(),
             vkctx,
@@ -227,6 +233,8 @@ impl ServerState {
             pending_positioners: HashMap::new(),
             subsurfaces: Vec::new(),
             decoration_to_toplevel: HashMap::new(),
+            dialog_to_toplevel: HashMap::new(),
+            activation_tokens: std::collections::HashSet::new(),
             pending_scales: HashMap::new(),
             viewports: HashMap::new(),
             surface_to_viewport: HashMap::new(),
