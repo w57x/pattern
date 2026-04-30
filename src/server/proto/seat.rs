@@ -88,6 +88,7 @@ impl Dispatch<WlPointer, ()> for ServerState {
                 hotspot_y,
                 ..
             } => {
+                state.cursor_shape = None;
                 if let Some(surf) = surface {
                     state.cursor_surface = Some((surf, hotspot_x, hotspot_y));
                 } else {

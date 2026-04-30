@@ -721,7 +721,6 @@ dependencies = [
  "rand",
  "resvg",
  "udev",
- "wayland-cursor",
  "wayland-protocols",
  "wayland-protocols-wlr",
  "wayland-server",
@@ -1349,29 +1348,6 @@ dependencies = [
  "scoped-tls",
  "smallvec",
  "wayland-sys",
-]
-
-[[package]]
-name = "wayland-client"
-version = "0.31.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "645c7c96bb74690c3189b5c9cb4ca1627062bb23693a4fad9d8c3de958260144"
-dependencies = [
- "bitflags",
- "rustix 1.1.4",
- "wayland-backend",
- "wayland-scanner",
-]
-
-[[package]]
-name = "wayland-cursor"
-version = "0.31.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a52d18780be9b1314328a3de5f930b73d2200112e3849ca6cb11822793fb34d"
-dependencies = [
- "rustix 1.1.4",
- "wayland-client",
- "xcursor",
 ]
 
 [[package]]

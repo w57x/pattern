@@ -1,3 +1,4 @@
+pub mod cursor_loader;
 pub mod proto;
 
 use std::{
@@ -15,14 +16,21 @@ use wayland_server::{
 };
 
 use wayland_protocols::{
-    wp::primary_selection::zv1::server::{
-        zwp_primary_selection_device_v1, zwp_primary_selection_source_v1,
+    wp::{
+        cursor_shape::v1::server::wp_cursor_shape_device_v1,
+        pointer_gestures::zv1::server::{
+            zwp_pointer_gesture_hold_v1, zwp_pointer_gesture_pinch_v1, zwp_pointer_gesture_swipe_v1,
+        },
+        primary_selection::zv1::server::{
+            zwp_primary_selection_device_v1, zwp_primary_selection_source_v1,
+        },
     },
     xdg::shell::server::{xdg_positioner, xdg_toplevel::XdgToplevel},
 };
 
 use crate::{
     gpu::CardInfo,
+    server::cursor_loader::CursorManager,
     vulkan::{SurfaceTexture, VulkanContext},
 };
 
@@ -87,7 +95,9 @@ pub struct ServerState {
     pub surface_buffers: HashMap<ObjectId, wayland_server::protocol::wl_buffer::WlBuffer>,
     pub active_dmabufs: HashMap<ObjectId, wayland_server::protocol::wl_buffer::WlBuffer>,
     pub surface_textures: HashMap<ObjectId, SurfaceTexture>,
+    pub cursor_manager: CursorManager,
     pub cursor_surface: Option<(WlSurface, i32, i32)>,
+    pub cursor_shape: Option<wp_cursor_shape_device_v1::Shape>,
 
     pub window_surfaces: Vec<WlSurface>,
     pub wm: Box<dyn crate::wm::WindowManager>,
@@ -104,9 +114,11 @@ pub struct ServerState {
     pub pointers: Vec<wayland_server::protocol::wl_pointer::WlPointer>,
     pub pointer_focus: Option<WlSurface>,
 
-    pub swipe_gestures: HashMap<ObjectId, Vec<wayland_protocols::wp::pointer_gestures::zv1::server::zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1>>,
-    pub pinch_gestures: HashMap<ObjectId, Vec<wayland_protocols::wp::pointer_gestures::zv1::server::zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1>>,
-    pub hold_gestures: HashMap<ObjectId, Vec<wayland_protocols::wp::pointer_gestures::zv1::server::zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1>>,
+    pub swipe_gestures:
+        HashMap<ObjectId, Vec<zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1>>,
+    pub pinch_gestures:
+        HashMap<ObjectId, Vec<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1>>,
+    pub hold_gestures: HashMap<ObjectId, Vec<zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1>>,
 
     pub outputs: Vec<wayland_server::protocol::wl_output::WlOutput>,
 
@@ -142,6 +154,8 @@ pub struct ServerState {
     pub primary_selection: Option<zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1>,
     pub primary_selection_devices:
         Vec<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1>,
+
+    pub last_enter_serial: HashMap<ClientId, u32>,
 
     pub regions: HashMap<ObjectId, Vec<crate::wm::Rect>>,
     pub pending_damage: HashMap<ObjectId, Vec<crate::wm::Rect>>,
@@ -213,7 +227,9 @@ impl ServerState {
             surface_buffers: HashMap::new(),
             active_dmabufs: HashMap::new(),
             surface_textures: HashMap::new(),
+            cursor_manager: CursorManager::new("Adwaita", 24),
             cursor_surface: None,
+            cursor_shape: None,
 
             window_surfaces: Vec::new(),
             wm: Box::new(crate::wm::FloatingWm::new()),
@@ -260,6 +276,8 @@ impl ServerState {
             primary_selection: None,
             primary_selection_devices: Vec::new(),
 
+            last_enter_serial: HashMap::new(),
+
             regions: HashMap::new(),
             pending_damage: HashMap::new(),
             pending_input_region: HashMap::new(),
@@ -267,6 +285,13 @@ impl ServerState {
             surface_input_region: HashMap::new(),
             surface_opaque_region: HashMap::new(),
         }
+    }
+
+    pub fn load_cursor_shape(
+        &mut self,
+        shape: wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_device_v1::Shape,
+    ) -> Option<ash::vk::DescriptorSet> {
+        self.cursor_manager.get_or_load(shape, &self.vkctx)
     }
 
     pub fn set_input_focus(&mut self, surface: WlSurface, dh: &wayland_server::DisplayHandle) {
@@ -413,6 +438,7 @@ impl ServerState {
         if let Some(surf) = surface {
             if let Some(client) = surf.client() {
                 self.serial += 1;
+                self.last_enter_serial.insert(client.id(), self.serial);
                 for pointer in self
                     .pointers
                     .iter()

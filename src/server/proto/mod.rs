@@ -1,4 +1,6 @@
 pub mod compositor;
+pub mod cursor_shape;
+pub mod cursor_shape_utils;
 pub mod decoration;
 pub mod dmabuf;
 pub mod layer_shell;

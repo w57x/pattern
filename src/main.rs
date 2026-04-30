@@ -10,9 +10,10 @@ use pattern::{
     gpu::{Card, buffer::Buffer},
     input::Input,
     server::{ClientState, ServerState},
-    utils,
     vulkan::{VulkanContext, frame::VulkanFrame},
 };
+use wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_device_v1;
+use wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
 use wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use wayland_protocols::wp::primary_selection::zv1::server::zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1;
 use wayland_protocols::wp::viewporter::server::wp_viewporter::WpViewporter;
@@ -129,6 +130,7 @@ fn main() {
     dh.create_global::<ServerState, XdgWmDialogV1, ()>(1, ());
     dh.create_global::<ServerState, XdgActivationV1, ()>(1, ());
     dh.create_global::<ServerState, ZwpPointerGesturesV1, ()>(3, ());
+    dh.create_global::<ServerState, WpCursorShapeManagerV1, ()>(2, ());
 
     let socket = ListeningSocket::bind_auto("wayland", 0..32).unwrap();
     let socket_name = socket.socket_name().unwrap().to_string_lossy().into_owned();
@@ -214,44 +216,6 @@ fn main() {
             vk_fb,
         });
     }
-
-    println!("[pattern]: cursor trick");
-    let cursor_path = utils::desktop::find_cursor("Adwaita", "left_ptr")
-        .or_else(|| utils::desktop::find_cursor("default", "left_ptr"))
-        .expect("Could not find a system cursor!");
-
-    let cursor_content = std::fs::read(cursor_path).unwrap();
-    let cursor_images = xcursor::parser::parse_xcursor(&cursor_content).unwrap();
-
-    let target_size = 24;
-
-    let cursor_image = cursor_images
-        .iter()
-        .min_by_key(|img| (img.width as i32 - target_size).abs())
-        .unwrap_or(&cursor_images[0]); // Fallback to the first one just in case
-
-    println!(
-        "[pattern]: Selected cursor size {}x{}",
-        cursor_image.width, cursor_image.height
-    );
-
-    let (cursor_vk_img, cursor_vk_mem, cursor_view, cursor_sampler) = unsafe {
-        vkctx.upload_texture(
-            cursor_image.width,
-            cursor_image.height,
-            cursor_image.width * 4,
-            &cursor_image.pixels_rgba,
-        )
-    };
-
-    let (desc_pool, desc_set) = unsafe {
-        vkctx.create_descriptor_set(vkctx.descriptor_set_layout, cursor_view, cursor_sampler)
-    };
-
-    let hot_x = cursor_image.xhot as f32;
-    let hot_y = cursor_image.yhot as f32;
-    let cur_w = cursor_image.width as f32;
-    let cur_h = cursor_image.height as f32;
 
     let mut frame_index = 0;
 
@@ -391,8 +355,6 @@ fn main() {
                 state.wm.as_ref(),
             );
 
-            let mut cursor_drawn = false;
-
             if let Some((cursor_surf, hot_x, hot_y)) = &state.cursor_surface {
                 if let Some(tex) = state.surface_textures.get(&cursor_surf.id()) {
                     draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
@@ -407,23 +369,33 @@ fn main() {
                         src_h: 1.0,
                         border_radius: 0.0,
                     }));
-                    cursor_drawn = true;
                 }
-            }
+            } else {
+                let shape = state
+                    .cursor_shape
+                    .unwrap_or(wp_cursor_shape_device_v1::Shape::Default);
+                if let Some(shape_set) = state.load_cursor_shape(shape) {
+                    let tex = state.cursor_manager.textures.get(&shape).unwrap();
+                    let (hot_x, hot_y) = state
+                        .cursor_manager
+                        .hotspots
+                        .get(&shape)
+                        .copied()
+                        .unwrap_or((0.0, 0.0));
 
-            if !cursor_drawn {
-                draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
-                    set: desc_set,
-                    x: (input.cursor.x as f32 - hot_x).round(),
-                    y: (input.cursor.y as f32 - hot_y).round(),
-                    w: cur_w,
-                    h: cur_h,
-                    src_x: 0.0,
-                    src_y: 0.0,
-                    src_w: 1.0,
-                    src_h: 1.0,
-                    border_radius: 0.0,
-                }));
+                    draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
+                        set: shape_set,
+                        x: (input.cursor.x as f32 - hot_x).round(),
+                        y: (input.cursor.y as f32 - hot_y).round(),
+                        w: tex.w,
+                        h: tex.h,
+                        src_x: 0.0,
+                        src_y: 0.0,
+                        src_w: 1.0,
+                        src_h: 1.0,
+                        border_radius: 0.0,
+                    }));
+                }
             }
 
             unsafe {
@@ -460,14 +432,9 @@ fn main() {
         }
     }
 
+    state.cursor_manager.clear(&vkctx);
+
     unsafe {
-        vkctx.device.destroy_sampler(cursor_sampler, None);
-        vkctx.device.destroy_image_view(cursor_view, None);
-        vkctx.device.destroy_image(cursor_vk_img, None);
-        vkctx.device.free_memory(cursor_vk_mem, None);
-
-        vkctx.device.destroy_descriptor_pool(desc_pool, None);
-
         vkctx
             .device
             .destroy_descriptor_set_layout(vkctx.descriptor_set_layout, None);

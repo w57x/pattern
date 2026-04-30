@@ -20,7 +20,6 @@ nix = { version = "0.31.2", features = ["event", "fs", "time"] }
 rand = "0.10.1"
 resvg = "0.47.0"
 udev = "0.9.3"
-wayland-cursor = "0.31.14"
 wayland-protocols = { version = "0.32.12", features = ["server", "unstable", "staging"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["server"] }
 wayland-server = "0.31.13"
