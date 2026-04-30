@@ -4,7 +4,6 @@ use std::{cell::RefCell, os::fd::AsFd, rc::Rc, sync::Arc};
 use drm::control::Device as _;
 use gbm::{BufferObjectFlags, Device, Format};
 use libseat::Seat;
-use nix::time::{ClockId, clock_gettime};
 use nix::{poll::PollTimeout, sys::epoll};
 use pattern::vulkan::RenderQuad;
 use pattern::{
@@ -16,6 +15,8 @@ use pattern::{
 use tracing::{debug, info};
 use wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_device_v1;
 use wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
+use wayland_protocols::wp::pointer_constraints::zv1::server::zwp_pointer_constraints_v1::ZwpPointerConstraintsV1;
+use wayland_protocols::wp::relative_pointer::zv1::server::zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1;
 use wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use wayland_protocols::wp::pointer_warp::v1::server::wp_pointer_warp_v1::WpPointerWarpV1;
 use wayland_protocols::wp::primary_selection::zv1::server::zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1;
@@ -140,6 +141,8 @@ fn main() {
     dh.create_global::<ServerState, ZwpPointerGesturesV1, ()>(3, ());
     dh.create_global::<ServerState, WpCursorShapeManagerV1, ()>(2, ());
     dh.create_global::<ServerState, WpPointerWarpV1, ()>(1, ());
+    dh.create_global::<ServerState, ZwpPointerConstraintsV1, ()>(1, ());
+    dh.create_global::<ServerState, ZwpRelativePointerManagerV1, ()>(1, ());
 
     let socket = ListeningSocket::bind_auto("wayland", 0..32).unwrap();
     let socket_name = socket.socket_name().unwrap().to_string_lossy().into_owned();
@@ -252,8 +255,7 @@ fn main() {
                             drm::control::Event::PageFlip(_vblank) => {
                                 waiting_for_flip = false;
 
-                                let ts = clock_gettime(ClockId::CLOCK_MONOTONIC).unwrap();
-                                let now = (ts.tv_sec() * 1000 + ts.tv_nsec() / 1_000_000) as u32;
+                                let now = pattern::utils::time::gettime();
 
                                 for cb in state.frame_callbacks.drain(..) {
                                     cb.done(now);
@@ -349,6 +351,28 @@ fn main() {
                     state.pointer_focus = None;
                 }
             }
+            if let Some(grab) = state.pointer_grab.clone() {
+                if !grab.is_alive() {
+                    let mut shifted = false;
+                    if let Some(sub) = state
+                        .subsurfaces
+                        .iter()
+                        .find(|s| s.surface.id() == grab.id())
+                    {
+                        if sub.parent.is_alive() {
+                            state.pointer_grab = Some(sub.parent.clone());
+                            shifted = true;
+                        }
+                    }
+                    if !shifted {
+                        state.pointer_grab = None;
+                    }
+                }
+            }
+
+            state
+                .subsurfaces
+                .retain(|s| s.surface.is_alive() && s.parent.is_alive());
 
             let mut draw_list = state.styler.generate_draw_list(
                 &state.subsurfaces,
@@ -359,47 +383,67 @@ fn main() {
                 state.wm.as_ref(),
             );
 
-            if let Some((cursor_surf, hot_x, hot_y)) = &state.cursor_surface {
-                if let Some(tex) = state.surface_textures.get(&cursor_surf.id()) {
-                    draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
-                        set: tex.set,
-                        x: (input.cursor.x as f32 - *hot_x as f32).round(),
-                        y: (input.cursor.y as f32 - *hot_y as f32).round(),
-                        w: tex.w,
-                        h: tex.h,
-                        src_x: 0.0,
-                        src_y: 0.0,
-                        src_w: 1.0,
-                        src_h: 1.0,
-                        border_radius: 0.0,
-                    }));
-                }
-            } else {
-                let shape = state
-                    .cursor_shape
-                    .unwrap_or(wp_cursor_shape_device_v1::Shape::Default);
+            if state.pointer_lock.is_none() {
+                if let Some((cursor_surf, hot_x, hot_y)) = &state.cursor_surface {
+                    if let Some(tex) = state.surface_textures.get(&cursor_surf.id()) {
+                        draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
+                            set: tex.set,
+                            x: (state.cursor_pos.0 as f32 - *hot_x as f32).round(),
+                            y: (state.cursor_pos.1 as f32 - *hot_y as f32).round(),
+                            w: tex.w / tex.scale,
+                            h: tex.h / tex.scale,
+                            src_x: 0.0,
+                            src_y: 0.0,
+                            src_w: 1.0,
+                            src_h: 1.0,
+                            border_radius: 0.0,
+                        }));
+                    }
+                } else if let Some(shape) = state.cursor_shape {
+                    state.load_cursor_shape(shape);
 
-                state.load_cursor_shape(shape);
+                    let now_ms = pattern::utils::time::gettime();
 
-                let ts = clock_gettime(ClockId::CLOCK_MONOTONIC).unwrap();
-                let now_ms = (ts.tv_sec() * 1000 + ts.tv_nsec() / 1_000_000) as u32;
+                    if let Some(frame) = state.cursor_manager.get_frame(shape, now_ms) {
+                        let tex = &frame.texture;
+                        let (hot_x, hot_y) = frame.hotspot;
 
-                if let Some(frame) = state.cursor_manager.get_frame(shape, now_ms) {
-                    let tex = &frame.texture;
-                    let (hot_x, hot_y) = frame.hotspot;
+                        draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
+                            set: tex.set,
+                            x: (state.cursor_pos.0 as f32 - hot_x).round(),
+                            y: (state.cursor_pos.1 as f32 - hot_y).round(),
+                            w: tex.w / tex.scale,
+                            h: tex.h / tex.scale,
+                            src_x: 0.0,
+                            src_y: 0.0,
+                            src_w: 1.0,
+                            src_h: 1.0,
+                            border_radius: 0.0,
+                        }));
+                    }
+                } else if state.pointer_focus.is_none() {
+                    let shape = wp_cursor_shape_device_v1::Shape::Default;
+                    state.load_cursor_shape(shape);
 
-                    draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
-                        set: tex.set,
-                        x: (input.cursor.x as f32 - hot_x).round(),
-                        y: (input.cursor.y as f32 - hot_y).round(),
-                        w: tex.w,
-                        h: tex.h,
-                        src_x: 0.0,
-                        src_y: 0.0,
-                        src_w: 1.0,
-                        src_h: 1.0,
-                        border_radius: 0.0,
-                    }));
+                    let now_ms = pattern::utils::time::gettime();
+
+                    if let Some(frame) = state.cursor_manager.get_frame(shape, now_ms) {
+                        let tex = &frame.texture;
+                        let (hot_x, hot_y) = frame.hotspot;
+
+                        draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
+                            set: tex.set,
+                            x: (state.cursor_pos.0 as f32 - hot_x).round(),
+                            y: (state.cursor_pos.1 as f32 - hot_y).round(),
+                            w: tex.w / tex.scale,
+                            h: tex.h / tex.scale,
+                            src_x: 0.0,
+                            src_y: 0.0,
+                            src_w: 1.0,
+                            src_h: 1.0,
+                            border_radius: 0.0,
+                        }));
+                    }
                 }
             }
 

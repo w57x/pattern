@@ -47,3 +47,6 @@ interface: 'xdg_wm_dialog_v1',                           version:  1, name: 15
 interface: 'xdg_activation_v1',                          version:  1, name: 16
 interface: 'zwp_pointer_gestures_v1',                    version:  3, name: 17
 interface: 'wp_cursor_shape_manager_v1',                 version:  2, name: 18
+interface: 'wp_pointer_warp_v1',                         version:  1, name: 19
+interface: 'zwp_pointer_constraints_v1',                 version:  1, name: 20
+interface: 'zwp_relative_pointer_manager_v1',            version:  1, name: 21

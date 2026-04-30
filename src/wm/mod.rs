@@ -278,7 +278,10 @@ pub trait WindowManager {
     /// Retrieves the currently focused surface, if any.
     fn get_focused_window(&self) -> Option<WlSurface>;
 
-    /// Calculates and returns the absolute global position (x, y) of the specified surface.
+    /// Calculates and returns the absolute global position (x, y) of the specified surface's origin.
+    fn get_surface_position(&self, surface_id: &ObjectId) -> Option<(f64, f64)>;
+
+    /// Calculates and returns the absolute global position (x, y) of the specified surface's logical window origin.
     fn get_absolute_position(&self, surface_id: &ObjectId) -> (f64, f64);
 
     // Workspaces
@@ -1336,6 +1339,22 @@ impl WindowManager for FloatingWm {
 
     fn get_focused_window(&self) -> Option<WlSurface> {
         self.all_windows().last().map(|w| w.surface.clone())
+    }
+
+    fn get_surface_position(&self, surface_id: &ObjectId) -> Option<(f64, f64)> {
+        if let Some(win) = self.find_window(surface_id) {
+            return Some((win.x, win.y));
+        }
+
+        if let Some(popup) = self.popups.iter().find(|p| &p.surface.id() == surface_id) {
+            // Popup x/y are relative to parent surface's window geometry
+            let (parent_abs_x, parent_abs_y) = self.get_absolute_position(&popup.parent_surface_id);
+            let surf_x = parent_abs_x + popup.x as f64 - popup.geometry.x as f64;
+            let surf_y = parent_abs_y + popup.y as f64 - popup.geometry.y as f64;
+            return Some((surf_x, surf_y));
+        }
+
+        None
     }
 
     fn get_absolute_position(&self, surface_id: &ObjectId) -> (f64, f64) {

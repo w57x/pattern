@@ -115,6 +115,12 @@ pub struct ServerState {
 
     pub pointers: Vec<wayland_server::protocol::wl_pointer::WlPointer>,
     pub pointer_focus: Option<WlSurface>,
+    pub pointer_grab: Option<WlSurface>,
+
+    pub relative_pointers: Vec<wayland_protocols::wp::relative_pointer::zv1::server::zwp_relative_pointer_v1::ZwpRelativePointerV1>,
+    pub pointer_lock: Option<wayland_protocols::wp::pointer_constraints::zv1::server::zwp_locked_pointer_v1::ZwpLockedPointerV1>,
+    pub pointer_confine: Option<wayland_protocols::wp::pointer_constraints::zv1::server::zwp_confined_pointer_v1::ZwpConfinedPointerV1>,
+    pub cursor_pos_hint: Option<(f64, f64)>,
 
     pub swipe_gestures:
         HashMap<ObjectId, Vec<zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1>>,
@@ -250,6 +256,12 @@ impl ServerState {
             pinch_gestures: HashMap::new(),
             hold_gestures: HashMap::new(),
             pointer_focus: None,
+            pointer_grab: None,
+
+            relative_pointers: Vec::new(),
+            pointer_lock: None,
+            pointer_confine: None,
+            cursor_pos_hint: None,
 
             outputs: Vec::new(),
 
@@ -294,6 +306,25 @@ impl ServerState {
         shape: wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_device_v1::Shape,
     ) {
         self.cursor_manager.get_or_load(shape, &self.vkctx)
+    }
+
+    pub fn get_surface_position(&self, surface_id: &ObjectId) -> Option<(f64, f64)> {
+        // 1. Check if it's a toplevel or popup managed by WM
+        if let Some((wm_x, wm_y)) = self.wm.get_surface_position(surface_id) {
+            return Some((wm_x, wm_y));
+        }
+
+        // 2. Check if it's a subsurface
+        if let Some(sub) = self
+            .subsurfaces
+            .iter()
+            .find(|s| &s.surface.id() == surface_id)
+        {
+            let (parent_x, parent_y) = self.get_surface_position(&sub.parent.id())?;
+            return Some((parent_x + sub.x as f64, parent_y + sub.y as f64));
+        }
+
+        None
     }
 
     pub fn set_input_focus(&mut self, surface: WlSurface, dh: &wayland_server::DisplayHandle) {
@@ -466,6 +497,16 @@ impl ServerState {
                     pointer.leave(self.serial, &old_focus);
                     pointer.frame();
                 }
+
+                // Only clear cursor if moving to a different client
+                let new_client_id = surface.as_ref().and_then(|s| s.client().map(|c| c.id()));
+                if new_client_id != Some(old_client.id()) {
+                    self.cursor_surface = None;
+                    self.cursor_shape = None;
+                }
+            } else {
+                self.cursor_surface = None;
+                self.cursor_shape = None;
             }
         }
 

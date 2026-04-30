@@ -63,6 +63,7 @@ impl std::fmt::Display for Vec2 {
 pub struct Input {
     pub context: Libinput,
     pub cursor: Vec2,
+    pub absolute_offset: Vec2,
     pub dimension: Vec2,
     pub natural_scroll: bool,
 }
@@ -83,6 +84,7 @@ impl Input {
                 x: width / 2.0,
                 y: height / 2.0,
             },
+            absolute_offset: Vec2 { x: 0.0, y: 0.0 },
             dimension: Vec2 {
                 x: width,
                 y: height,
@@ -96,6 +98,16 @@ impl Input {
         state: &mut ServerState,
         dh: &wayland_server::DisplayHandle,
     ) -> bool {
+        // Synchronize with potential external warps (e.g. wp_pointer_warp)
+        if (self.cursor.x - state.cursor_pos.0).abs() > 0.1
+            || (self.cursor.y - state.cursor_pos.1).abs() > 0.1
+        {
+            self.absolute_offset.x += state.cursor_pos.0 - self.cursor.x;
+            self.absolute_offset.y += state.cursor_pos.1 - self.cursor.y;
+            self.cursor.x = state.cursor_pos.0;
+            self.cursor.y = state.cursor_pos.1;
+        }
+
         self.context.dispatch().unwrap();
 
         let mut should_exit = false;
@@ -186,27 +198,81 @@ impl Input {
                 input::Event::Keyboard(_) => {}
                 input::Event::Pointer(ev) => match ev {
                     input::event::PointerEvent::Motion(m) => {
-                        self.cursor.x = (self.cursor.x + m.dx()).clamp(0.0, self.dimension.x);
-                        self.cursor.y = (self.cursor.y + m.dy()).clamp(0.0, self.dimension.y);
+                        let dx = m.dx();
+                        let dy = m.dy();
 
-                        state.cursor_pos = (self.cursor.x, self.cursor.y);
-                        state.wm.update_drag(self.cursor.x, self.cursor.y);
-                        state
-                            .wm
-                            .update_resize(self.cursor.x, self.cursor.y, state.serial);
-                        Self::route_pointer_motion(self.cursor, state, m.time());
+                        let mut is_locked = false;
+
+                        if let Some(focused) = &state.pointer_focus {
+                            if let Some(client) = focused.client() {
+                                if let Some(lock) = &state.pointer_lock {
+                                    if lock.client().map(|c| c.id()) == Some(client.id()) {
+                                        is_locked = true;
+                                    }
+                                }
+
+                                for rp in &state.relative_pointers {
+                                    if rp.client().map(|c| c.id()) == Some(client.id()) {
+                                        let unaccel_dx = m.dx_unaccelerated();
+                                        let unaccel_dy = m.dy_unaccelerated();
+                                        let time_us = m.time_usec();
+                                        let time_us_high = (time_us >> 32) as u32;
+                                        let time_us_low = (time_us & 0xFFFFFFFF) as u32;
+
+                                        rp.relative_motion(
+                                            time_us_high,
+                                            time_us_low,
+                                            dx,
+                                            dy,
+                                            unaccel_dx,
+                                            unaccel_dy,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        if !is_locked {
+                            self.cursor.x = (self.cursor.x + dx).clamp(0.0, self.dimension.x);
+                            self.cursor.y = (self.cursor.y + dy).clamp(0.0, self.dimension.y);
+
+                            state.cursor_pos = (self.cursor.x, self.cursor.y);
+                            state.wm.update_drag(self.cursor.x, self.cursor.y);
+                            state
+                                .wm
+                                .update_resize(self.cursor.x, self.cursor.y, state.serial);
+                            Self::route_pointer_motion(self.cursor, state, m.time());
+                        }
                     }
 
                     input::event::PointerEvent::MotionAbsolute(m) => {
-                        self.cursor.x = m.absolute_x_transformed(self.dimension.x as u32);
-                        self.cursor.y = m.absolute_y_transformed(self.dimension.y as u32);
+                        let abs_x = m.absolute_x_transformed(self.dimension.x as u32);
+                        let abs_y = m.absolute_y_transformed(self.dimension.y as u32);
 
-                        state.cursor_pos = (self.cursor.x, self.cursor.y);
-                        state.wm.update_drag(self.cursor.x, self.cursor.y);
-                        state
-                            .wm
-                            .update_resize(self.cursor.x, self.cursor.y, state.serial);
-                        Self::route_pointer_motion(self.cursor, state, m.time());
+                        let mut is_locked = false;
+                        if let Some(focused) = &state.pointer_focus {
+                            if let Some(client) = focused.client() {
+                                if let Some(lock) = &state.pointer_lock {
+                                    if lock.client().map(|c| c.id()) == Some(client.id()) {
+                                        is_locked = true;
+                                    }
+                                }
+                            }
+                        }
+
+                        if !is_locked {
+                            self.cursor.x =
+                                (abs_x + self.absolute_offset.x).clamp(0.0, self.dimension.x);
+                            self.cursor.y =
+                                (abs_y + self.absolute_offset.y).clamp(0.0, self.dimension.y);
+
+                            state.cursor_pos = (self.cursor.x, self.cursor.y);
+                            state.wm.update_drag(self.cursor.x, self.cursor.y);
+                            state
+                                .wm
+                                .update_resize(self.cursor.x, self.cursor.y, state.serial);
+                            Self::route_pointer_motion(self.cursor, state, m.time());
+                        }
                     }
 
                     input::event::PointerEvent::Button(b) => {
@@ -251,6 +317,7 @@ impl Input {
                                     .unwrap_or_else(|| surf.clone());
 
                                 state.set_input_focus(target_surf.clone(), dh);
+                                state.pointer_grab = Some(surf.clone());
 
                                 if super_mod {
                                     state.wm.begin_drag(
@@ -264,6 +331,7 @@ impl Input {
                         } else if is_left_click && !is_pressed {
                             state.wm.end_drag();
                             state.wm.end_resize();
+                            state.pointer_grab = None;
                         }
 
                         if !super_mod {
@@ -571,6 +639,15 @@ impl Input {
     }
 
     fn route_pointer_motion(cursor: Vec2, state: &mut ServerState, time: u32) {
+        if let Some(grabbed_surface) = state.pointer_grab.clone() {
+            if let Some((abs_x, abs_y)) = state.get_surface_position(&grabbed_surface.id()) {
+                let local_x = cursor.x - abs_x;
+                let local_y = cursor.y - abs_y;
+                state.set_pointer_focus(Some(grabbed_surface), local_x, local_y, time);
+                return;
+            }
+        }
+
         let hit = state.styler.hit_test(
             cursor.x,
             cursor.y,
