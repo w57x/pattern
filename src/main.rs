@@ -17,6 +17,7 @@ use tracing::{debug, info};
 use wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_device_v1;
 use wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
 use wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
+use wayland_protocols::wp::pointer_warp::v1::server::wp_pointer_warp_v1::WpPointerWarpV1;
 use wayland_protocols::wp::primary_selection::zv1::server::zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1;
 use wayland_protocols::wp::viewporter::server::wp_viewporter::WpViewporter;
 use wayland_protocols::xdg::decoration::zv1::server::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1;
@@ -138,6 +139,7 @@ fn main() {
     dh.create_global::<ServerState, XdgActivationV1, ()>(1, ());
     dh.create_global::<ServerState, ZwpPointerGesturesV1, ()>(3, ());
     dh.create_global::<ServerState, WpCursorShapeManagerV1, ()>(2, ());
+    dh.create_global::<ServerState, WpPointerWarpV1, ()>(1, ());
 
     let socket = ListeningSocket::bind_auto("wayland", 0..32).unwrap();
     let socket_name = socket.socket_name().unwrap().to_string_lossy().into_owned();

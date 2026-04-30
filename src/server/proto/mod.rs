@@ -6,6 +6,7 @@ pub mod dmabuf;
 pub mod layer_shell;
 pub mod output;
 pub mod pointer_gestures;
+pub mod pointer_warp;
 pub mod primary_selection;
 pub mod seat;
 pub mod shm;
