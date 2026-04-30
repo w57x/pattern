@@ -29,23 +29,3 @@ pub fn find_cursor(theme_name: &str, cursor_name: &str) -> Option<PathBuf> {
 
     None
 }
-
-// pub fn extract_pngs(file_path: &std::path::Path) {
-//     use std::fs;
-//     use xcursor::parser::parse_xcursor;
-//
-//     let content = fs::read(file_path).expect("Failed to read cursor file");
-//
-//     if let Some(images) = parse_xcursor(&content) {
-//         for (index, image) in images.iter().enumerate() {
-//             println!(
-//                 "Image {} - Size: {}x{}, Hotspot: ({}, {})",
-//                 index, image.width, image.height, image.xhot, image.yhot
-//             );
-//
-//             // image.pixels_rgba contains the raw pixel data
-//         }
-//     } else {
-//         println!("Failed to parse as an Xcursor file.");
-//     }
-// }

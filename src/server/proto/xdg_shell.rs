@@ -33,7 +33,6 @@ impl Dispatch<XdgWmBase, ()> for ServerState {
                 id,
                 surface,
             } => {
-                println!("[pattern]: Client upgraded a WlSurface to an XdgSurface");
                 let xdg_surface = data_init.init(id, ());
                 state.xdg_to_surface.insert(xdg_surface.id(), surface);
             }
@@ -313,11 +312,9 @@ impl Dispatch<XdgToplevel, ()> for ServerState {
     ) {
         match request {
             xdg_toplevel::Request::SetTitle { title } => {
-                println!("[wm]: Window title set to: {}", title);
                 state.wm.set_window_title(&resource.id(), title);
             }
             xdg_toplevel::Request::SetAppId { app_id } => {
-                println!("[wm]: App ID set to: {}", app_id);
                 state.wm.set_window_app_id(&resource.id(), app_id);
             }
             xdg_toplevel::Request::SetParent { parent } => {

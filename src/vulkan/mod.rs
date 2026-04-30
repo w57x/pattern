@@ -2,6 +2,7 @@ use ash::{Device, Entry, Instance, vk};
 use drm::buffer::Buffer as _;
 use std::ffi::CStr;
 use std::os::fd::{IntoRawFd, OwnedFd};
+use tracing::warn;
 
 use crate::gpu::buffer::Buffer;
 pub mod frame;
@@ -1166,9 +1167,9 @@ impl VulkanContext {
             // Wait up to 1000ms for the fence to signal.
             let ret = libc::poll(&mut pollfd, 1, 1000);
             if ret == 0 {
-                println!("[pattern] WARNING: DMA-BUF poll timed out! Flickering might occur.");
+                warn!("DMA-BUF poll timed out! Flickering might occur.");
             } else if ret < 0 {
-                println!("[pattern] WARNING: DMA-BUF poll failed!");
+                warn!("DMA-BUF poll failed!");
             }
         }
 

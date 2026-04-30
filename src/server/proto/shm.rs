@@ -77,7 +77,6 @@ impl Dispatch<WlShmPool, ()> for ServerState {
             }
 
             wayland_server::protocol::wl_shm_pool::Request::Resize { size } => {
-                println!("[pattern]: Client requested resize of SHM pool to {}", size);
                 if let Some((fd, mmap)) = state.pools.get_mut(&resource.id()) {
                     *mmap = unsafe {
                         memmap2::MmapOptions::new()

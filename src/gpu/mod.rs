@@ -4,6 +4,7 @@ use std::{
     os::fd::{AsFd, BorrowedFd},
     rc::Rc,
 };
+use tracing::{info, warn};
 use udev::Enumerator;
 
 pub mod buffer;
@@ -76,10 +77,7 @@ impl Card {
                 .expect("Failed to get connector info");
 
             if connector.state() == control::connector::State::Connected {
-                println!(
-                    "[info]: Found connected connector: {:?}",
-                    connector.interface()
-                );
+                info!("Found connected connector: {:?}", connector.interface());
 
                 let interface_name = match connector.interface() {
                     control::connector::Interface::EmbeddedDisplayPort => "eDP",
@@ -120,8 +118,8 @@ impl Card {
                                                     );
                                                 }
                                                 Err(e) => {
-                                                    eprintln!(
-                                                        "[warn]: Failed to parse EDID for {}: {}",
+                                                    warn!(
+                                                        "Failed to parse EDID for {}: {}",
                                                         output_name, e
                                                     );
                                                     output_description = format!(
@@ -141,11 +139,11 @@ impl Card {
                 // Pick a mode (the resolution)
                 // Usually, the first mode is the "preferred" native resolution
                 if let Some(mode) = connector.modes().get(0) {
-                    println!("[info]: Selected mode: {:?}", mode.name());
+                    info!("Selected mode: {:?}", mode.name());
 
                     // Match this connector to a CRTC (The display controller)
                     let crtc_handle = find_crtc(self, &resources, &connector);
-                    println!("[info]: Linked to CRTC: {:?}", crtc_handle);
+                    info!("Linked to CRTC: {:?}", crtc_handle);
 
                     resource = Some(CardInfo {
                         mode: mode.clone(),

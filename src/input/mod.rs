@@ -11,6 +11,7 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::io::OwnedFd;
 use std::path::Path;
 use std::rc::Rc;
+use tracing::debug;
 use wayland_server::Resource;
 
 use crate::server::ServerState;
@@ -105,14 +106,12 @@ impl Input {
                     let mut device = evt.device();
 
                     if device.config_dwt_is_available() {
-                        println!("[pattern]: Disabling DWT (Palm Rejection) for device.");
+                        debug!("Disabling DWT (Palm Rejection) for device");
                         let _ = device.config_dwt_set_enabled(false);
                     }
 
                     if device.config_tap_finger_count() > 0 {
-                        println!(
-                            "[pattern]: Touchpad detected. Enabling Tap-to-Click and Two-Finger Scroll"
-                        );
+                        debug!("Touchpad detected. Enabling Tap-to-Click and Two-Finger Scroll");
                         let _ = device.config_tap_set_enabled(true);
                         let _ = device.config_scroll_set_method(input::ScrollMethod::TwoFinger);
                     }
@@ -121,7 +120,7 @@ impl Input {
                         .config_scroll_set_natural_scroll_enabled(self.natural_scroll)
                         .is_ok()
                     {
-                        println!("[pattern]: Natural scroll set to: {}", self.natural_scroll);
+                        debug!("Natural scroll set to: {}", self.natural_scroll);
                     }
                 }
                 input::Event::Device(_) => {}

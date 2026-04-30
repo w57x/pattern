@@ -31,7 +31,6 @@ impl Dispatch<WlCompositor, ()> for ServerState {
         match request {
             wayland_server::protocol::wl_compositor::Request::CreateSurface { id } => {
                 let surface = data_init.init(id, ());
-                println!("[pattern]: Client requested a new surface!");
 
                 for output in &state.outputs {
                     if surface.client().map(|c| c.id()) == output.client().map(|c| c.id()) {

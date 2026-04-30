@@ -1,4 +1,5 @@
 use crate::server::ServerState;
+use tracing::debug;
 use wayland_protocols_wlr::layer_shell::v1::server::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
@@ -33,8 +34,8 @@ impl Dispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, ()> for ServerState {
                 layer,
                 namespace,
             } => {
-                println!(
-                    "[pattern]: Client requested a layer surface (namespace: {})",
+                debug!(
+                    "Client requested a layer surface (namespace: {})",
                     namespace
                 );
                 let layer_surface = data_init.init(id, ());

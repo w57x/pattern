@@ -1,6 +1,5 @@
 use crate::server::proto::cursor_shape_utils::shape_to_name;
 use crate::vulkan::{SurfaceTexture, VulkanContext};
-use ash::vk;
 use std::collections::HashMap;
 use std::io::Read;
 use wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_device_v1::Shape;
@@ -9,11 +8,21 @@ use xcursor::{
     parser::{Image, parse_xcursor},
 };
 
+pub struct CursorFrame {
+    pub texture: SurfaceTexture,
+    pub hotspot: (f32, f32),
+    pub delay: u32, // in milliseconds
+}
+
+pub struct CursorAnimation {
+    pub frames: Vec<CursorFrame>,
+    pub total_delay: u32,
+}
+
 pub struct CursorManager {
     pub theme: String,
     pub size: u32,
-    pub textures: HashMap<Shape, SurfaceTexture>,
-    pub hotspots: HashMap<Shape, (f32, f32)>,
+    pub animations: HashMap<Shape, CursorAnimation>,
 }
 
 impl CursorManager {
@@ -21,8 +30,7 @@ impl CursorManager {
         Self {
             theme: theme.to_string(),
             size,
-            textures: HashMap::new(),
-            hotspots: HashMap::new(),
+            animations: HashMap::new(),
         }
     }
 
@@ -41,62 +49,105 @@ impl CursorManager {
     }
 
     pub fn clear(&mut self, vkctx: &VulkanContext) {
-        for tex in self.textures.values() {
-            unsafe {
-                vkctx.device.destroy_sampler(tex.samp, None);
-                vkctx.device.destroy_image_view(tex.view, None);
-                vkctx.device.destroy_image(tex.img, None);
-                vkctx.device.free_memory(tex.mem, None);
-                vkctx.device.destroy_descriptor_pool(tex.pool, None);
+        for anim in self.animations.values() {
+            for frame in &anim.frames {
+                let tex = &frame.texture;
+                unsafe {
+                    vkctx.device.destroy_sampler(tex.samp, None);
+                    vkctx.device.destroy_image_view(tex.view, None);
+                    vkctx.device.destroy_image(tex.img, None);
+                    vkctx.device.free_memory(tex.mem, None);
+                    vkctx.device.destroy_descriptor_pool(tex.pool, None);
+                }
             }
         }
-        self.textures.clear();
-        self.hotspots.clear();
+        self.animations.clear();
     }
 
-    pub fn get_or_load(
-        &mut self,
-        shape: Shape,
-        vkctx: &VulkanContext,
-    ) -> Option<vk::DescriptorSet> {
-        if let Some(tex) = self.textures.get(&shape) {
-            return Some(tex.set);
+    pub fn get_or_load(&mut self, shape: Shape, vkctx: &VulkanContext) {
+        if self.animations.contains_key(&shape) {
+            return;
         }
 
         let name = shape_to_name(shape);
-        let images = load_icon(&self.theme, name)?;
-        let image = select_nearest_image(&images, self.size);
-
-        let (cursor_vk_img, cursor_vk_mem, cursor_view, cursor_sampler) = unsafe {
-            vkctx.upload_texture(
-                image.width,
-                image.height,
-                image.width * 4,
-                &image.pixels_rgba,
-            )
+        let Some(images) = load_icon(&self.theme, name) else {
+            return;
         };
 
-        let (desc_pool, desc_set) = unsafe {
-            vkctx.create_descriptor_set(vkctx.descriptor_set_layout, cursor_view, cursor_sampler)
-        };
+        let nearest_size = images
+            .iter()
+            .min_by_key(|image| (self.size as i32 - image.size as i32).abs())
+            .map(|img| img.size)
+            .unwrap_or(self.size);
 
-        let tex = SurfaceTexture {
-            img: cursor_vk_img,
-            mem: cursor_vk_mem,
-            view: cursor_view,
-            samp: cursor_sampler,
-            pool: desc_pool,
-            set: desc_set,
-            w: image.width as f32,
-            h: image.height as f32,
-            scale: 1.0,
-        };
+        let mut frames = Vec::new();
+        let mut total_delay = 0;
 
-        self.hotspots
-            .insert(shape, (image.xhot as f32, image.yhot as f32));
-        self.textures.insert(shape, tex);
+        for image in images.iter().filter(|img| img.size == nearest_size) {
+            let (cursor_vk_img, cursor_vk_mem, cursor_view, cursor_sampler) = unsafe {
+                vkctx.upload_texture(
+                    image.width,
+                    image.height,
+                    image.width * 4,
+                    &image.pixels_rgba,
+                )
+            };
 
-        Some(desc_set)
+            let (desc_pool, desc_set) = unsafe {
+                vkctx.create_descriptor_set(
+                    vkctx.descriptor_set_layout,
+                    cursor_view,
+                    cursor_sampler,
+                )
+            };
+
+            let tex = SurfaceTexture {
+                img: cursor_vk_img,
+                mem: cursor_vk_mem,
+                view: cursor_view,
+                samp: cursor_sampler,
+                pool: desc_pool,
+                set: desc_set,
+                w: image.width as f32,
+                h: image.height as f32,
+                scale: 1.0,
+            };
+
+            frames.push(CursorFrame {
+                texture: tex,
+                hotspot: (image.xhot as f32, image.yhot as f32),
+                delay: image.delay,
+            });
+            total_delay += image.delay;
+        }
+
+        if !frames.is_empty() {
+            self.animations.insert(
+                shape,
+                CursorAnimation {
+                    frames,
+                    total_delay,
+                },
+            );
+        }
+    }
+
+    pub fn get_frame(&self, shape: Shape, mut millis: u32) -> Option<&CursorFrame> {
+        let anim = self.animations.get(&shape)?;
+        if anim.total_delay == 0 {
+            return anim.frames.first();
+        }
+
+        millis %= anim.total_delay;
+
+        for frame in &anim.frames {
+            if millis < frame.delay {
+                return Some(frame);
+            }
+            millis -= frame.delay;
+        }
+
+        anim.frames.first()
     }
 }
 
@@ -109,11 +160,4 @@ fn load_icon(theme_name: &str, cursor_name: &str) -> Option<Vec<Image>> {
     cursor_file.read_to_end(&mut cursor_data).ok()?;
 
     parse_xcursor(&cursor_data)
-}
-
-fn select_nearest_image(images: &[Image], target_size: u32) -> &Image {
-    images
-        .iter()
-        .min_by_key(|image| (target_size as i32 - image.size as i32).abs())
-        .unwrap_or(&images[0])
 }

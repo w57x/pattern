@@ -290,7 +290,7 @@ impl ServerState {
     pub fn load_cursor_shape(
         &mut self,
         shape: wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_device_v1::Shape,
-    ) -> Option<ash::vk::DescriptorSet> {
+    ) {
         self.cursor_manager.get_or_load(shape, &self.vkctx)
     }
 
