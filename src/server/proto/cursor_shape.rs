@@ -73,7 +73,7 @@ impl Dispatch<WpCursorShapeDeviceV1, ()> for ServerState {
                             match shape {
                                 wayland_server::WEnum::Value(s) => {
                                     state.cursor_shape = Some(s);
-                                    // Invalidate wl_pointer.set_cursor if any
+                                    // NOTE: Invalidate wl_pointer.set_cursor if any
                                     state.cursor_surface = None;
                                 }
                                 wayland_server::WEnum::Unknown(_) => {}
