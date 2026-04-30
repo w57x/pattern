@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::{cell::RefCell, os::fd::AsFd, rc::Rc, sync::Arc};
 
 use drm::control::Device as _;
@@ -36,9 +37,12 @@ use wayland_server::{
 };
 
 fn main() {
+    let is_tty = std::io::stdout().is_terminal();
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_thread_ids(true)
+        .with_ansi(is_tty)
         .with_timer(tracing_subscriber::fmt::time::time())
         .init();
 
