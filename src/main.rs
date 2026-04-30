@@ -12,6 +12,7 @@ use pattern::{
     server::{ClientState, ServerState},
     vulkan::{VulkanContext, frame::VulkanFrame},
 };
+use tracing::{debug, info};
 use wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_device_v1;
 use wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
 use wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
@@ -35,24 +36,26 @@ use wayland_server::{
 };
 
 fn main() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_thread_ids(true)
+        .with_timer(tracing_subscriber::fmt::time::time())
+        .init();
+
     let seat = Seat::open(|seat, event| match event {
-        libseat::SeatEvent::Enable => println!("[seat]: Acquired DRM Master"),
+        libseat::SeatEvent::Enable => info!("[seat]: Acquired DRM Master"),
         libseat::SeatEvent::Disable => {
-            println!("[seat]: Lost DRM Master (User switched TTY)");
+            info!("[seat]: Lost DRM Master (User switched TTY)");
             seat.disable().unwrap();
         }
     })
     .expect("Failed to open libseat. Is seatd or systemd-logind running?");
 
-    for (var, value) in std::env::vars() {
-        eprintln!("{var} :: {value}")
-    }
-
     let shared_seat = Rc::new(RefCell::new(seat));
 
     let card = Card::open(None, shared_seat.clone());
-    println!("[info]: {card}");
-    println!("[info]: {:?}", card.get_driver().unwrap());
+    info!("{card}");
+    info!("{:?}", card.get_driver().unwrap());
 
     let info = card.fetch_card_info();
 
@@ -107,9 +110,9 @@ fn main() {
     let gbm = Device::new(&card).expect("Failed to create GBM device");
     let (width, height) = info.mode.size();
 
-    println!("[info]: {:?}", info.mode);
+    info!("{:?}", info.mode);
 
-    println!("[pattern]: Booting Wayland Server...");
+    info!("Booting Wayland Server");
     let mut display: Display<ServerState> = Display::new().unwrap();
     let dh = display.handle();
 
@@ -134,7 +137,7 @@ fn main() {
 
     let socket = ListeningSocket::bind_auto("wayland", 0..32).unwrap();
     let socket_name = socket.socket_name().unwrap().to_string_lossy().into_owned();
-    println!("[pattern]: Wayland socket created: {}", socket_name);
+    info!("Wayland socket created: {}", socket_name);
 
     unsafe {
         std::env::set_var("WAYLAND_DISPLAY", &socket_name);
@@ -144,9 +147,9 @@ fn main() {
         std::env::set_var("DISPLAY", ":0");
     }
 
-    println!("[pattern]: Booting Vulkan Context...");
+    info!("Creating Vulkan Context");
     let vkctx = Rc::new(VulkanContext::new());
-    println!("[pattern]: Vulkan Ready. Entering the void.");
+    info!("Vulkan Ready. Entering the void.");
 
     let mut state = ServerState::new(
         vkctx.clone(),
@@ -222,10 +225,7 @@ fn main() {
     let mut waiting_for_flip = false;
     let mut running = true;
 
-    let socket_name = socket.socket_name().unwrap().to_string_lossy().into_owned();
-    println!("[pattern]: Auto-launching Kitty on socket: {}", socket_name);
-
-    println!("[pattern]: Started :)");
+    debug!("Started :)");
 
     while running {
         let timeout = if waiting_for_flip {
@@ -267,7 +267,6 @@ fn main() {
                 }
                 3 => {
                     if let Ok(Some(stream)) = socket.accept() {
-                        println!("[pattern]: A new Wayland client connected!");
                         display
                             .handle()
                             .insert_client(stream, Arc::new(ClientState))
@@ -312,7 +311,6 @@ fn main() {
                 state.xdg_to_surface.retain(|_, v| v.id() != id);
 
                 if let Some(tex) = state.surface_textures.remove(&id) {
-                    println!("[pattern]: Client disconnected! Reaping surface memory...");
                     unsafe {
                         vkctx.device.destroy_sampler(tex.samp, None);
                         vkctx.device.destroy_image_view(tex.view, None);
@@ -374,17 +372,18 @@ fn main() {
                 let shape = state
                     .cursor_shape
                     .unwrap_or(wp_cursor_shape_device_v1::Shape::Default);
-                if let Some(shape_set) = state.load_cursor_shape(shape) {
-                    let tex = state.cursor_manager.textures.get(&shape).unwrap();
-                    let (hot_x, hot_y) = state
-                        .cursor_manager
-                        .hotspots
-                        .get(&shape)
-                        .copied()
-                        .unwrap_or((0.0, 0.0));
+
+                state.load_cursor_shape(shape);
+
+                let ts = clock_gettime(ClockId::CLOCK_MONOTONIC).unwrap();
+                let now_ms = (ts.tv_sec() * 1000 + ts.tv_nsec() / 1_000_000) as u32;
+
+                if let Some(frame) = state.cursor_manager.get_frame(shape, now_ms) {
+                    let tex = &frame.texture;
+                    let (hot_x, hot_y) = frame.hotspot;
 
                     draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
-                        set: shape_set,
+                        set: tex.set,
                         x: (input.cursor.x as f32 - hot_x).round(),
                         y: (input.cursor.y as f32 - hot_y).round(),
                         w: tex.w,
@@ -417,7 +416,7 @@ fn main() {
         let _ = display.flush_clients();
     }
 
-    println!("[pattern]: Tearing down swapchain...");
+    info!("Tearing down swapchain");
     for frame in swapchain {
         unsafe { frame.destroy(&vkctx.device, &card) };
     }
@@ -454,5 +453,5 @@ fn main() {
         vkctx.instance.destroy_instance(None);
     }
 
-    println!("[pattern]: Engine shut down safely. Returning to the terminal.");
+    info!("Engine shut down safely. Returning to the terminal.");
 }
