@@ -199,6 +199,10 @@ impl Dispatch<WlDataDevice, ()> for ServerState {
     ) {
         match request {
             wayland_server::protocol::wl_data_device::Request::SetSelection { source, .. } => {
+                if state.selection.as_ref().map(|s| s.id()) == source.as_ref().map(|s| s.id()) {
+                    return;
+                }
+
                 if let Some(old_source) = state.selection.take() {
                     old_source.cancelled();
                 }
@@ -210,6 +214,13 @@ impl Dispatch<WlDataDevice, ()> for ServerState {
                         if let Some(focused_client) = focused_surface.client() {
                             for device in &state.data_devices {
                                 if device.client().map(|c| c.id()) == Some(focused_client.id()) {
+                                    // Don't send the selection to the client that set it
+                                    if new_source.client().map(|c| c.id())
+                                        == Some(focused_client.id())
+                                    {
+                                        continue;
+                                    }
+
                                     let offer = focused_client
                                         .create_resource::<WlDataOffer, (), Self>(
                                             dhandle,

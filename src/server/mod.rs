@@ -309,6 +309,18 @@ impl ServerState {
                 {
                     keyboard.leave(self.serial, &old_focus);
                 }
+
+                // Send NULL selection events to the client losing focus
+                for device in &self.data_devices {
+                    if device.client().map(|c| c.id()) == Some(old_client.id()) {
+                        device.selection(None);
+                    }
+                }
+                for device in &self.primary_selection_devices {
+                    if device.client().map(|c| c.id()) == Some(old_client.id()) {
+                        device.selection(None);
+                    }
+                }
             }
         }
 
@@ -341,6 +353,11 @@ impl ServerState {
             if let Some(source) = &self.selection {
                 for device in &self.data_devices {
                     if device.client().map(|c| c.id()) == Some(client.id()) {
+                        // Don't send the selection to the client that owns it
+                        if source.client().map(|c| c.id()) == Some(client.id()) {
+                            continue;
+                        }
+
                         use wayland_server::protocol::wl_data_offer::WlDataOffer;
                         let offer = client
                             .create_resource::<WlDataOffer, (), Self>(dh, device.version(), ())
@@ -367,6 +384,11 @@ impl ServerState {
             if let Some(source) = &self.primary_selection {
                 for device in &self.primary_selection_devices {
                     if device.client().map(|c| c.id()) == Some(client.id()) {
+                        // Don't send the selection to the client that owns it
+                        if source.client().map(|c| c.id()) == Some(client.id()) {
+                            continue;
+                        }
+
                         use wayland_protocols::wp::primary_selection::zv1::server::zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1;
                         let offer = client
                             .create_resource::<ZwpPrimarySelectionOfferV1, (), Self>(

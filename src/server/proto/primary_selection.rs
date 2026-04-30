@@ -88,6 +88,12 @@ impl Dispatch<ZwpPrimarySelectionDeviceV1, ()> for ServerState {
     ) {
         match request {
             zwp_primary_selection_device_v1::Request::SetSelection { source, .. } => {
+                if state.primary_selection.as_ref().map(|s| s.id())
+                    == source.as_ref().map(|s| s.id())
+                {
+                    return;
+                }
+
                 if let Some(old_source) = state.primary_selection.take() {
                     old_source.cancelled();
                 }
@@ -99,6 +105,13 @@ impl Dispatch<ZwpPrimarySelectionDeviceV1, ()> for ServerState {
                         if let Some(focused_client) = focused_surface.client() {
                             for device in &state.primary_selection_devices {
                                 if device.client().map(|c| c.id()) == Some(focused_client.id()) {
+                                    // Don't send the selection to the client that set it
+                                    if new_source.client().map(|c| c.id())
+                                        == Some(focused_client.id())
+                                    {
+                                        continue;
+                                    }
+
                                     let offer = focused_client
                                         .create_resource::<ZwpPrimarySelectionOfferV1, (), Self>(
                                             dhandle,
