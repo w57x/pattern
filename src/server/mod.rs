@@ -12,7 +12,7 @@ use rand::prelude::*;
 use wayland_server::{
     Resource, WEnum,
     backend::{ClientData, ClientId, DisconnectReason, ObjectId},
-    protocol::{wl_data_device, wl_data_source, wl_surface::WlSurface},
+    protocol::{wl_data_device, wl_data_offer::WlDataOffer, wl_data_source, wl_surface::WlSurface},
 };
 
 use wayland_protocols::{
@@ -22,7 +22,9 @@ use wayland_protocols::{
             zwp_pointer_gesture_hold_v1, zwp_pointer_gesture_pinch_v1, zwp_pointer_gesture_swipe_v1,
         },
         primary_selection::zv1::server::{
-            zwp_primary_selection_device_v1, zwp_primary_selection_source_v1,
+            zwp_primary_selection_device_v1,
+            zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1,
+            zwp_primary_selection_source_v1,
         },
     },
     xdg::shell::server::{xdg_positioner, xdg_toplevel::XdgToplevel},
@@ -311,16 +313,8 @@ impl ServerState {
                 }
 
                 // Send NULL selection events to the client losing focus
-                for device in &self.data_devices {
-                    if device.client().map(|c| c.id()) == Some(old_client.id()) {
-                        device.selection(None);
-                    }
-                }
-                for device in &self.primary_selection_devices {
-                    if device.client().map(|c| c.id()) == Some(old_client.id()) {
-                        device.selection(None);
-                    }
-                }
+                self.clear_selection(&old_client);
+                self.clear_primary_selection(&old_client);
             }
         }
 
@@ -349,72 +343,91 @@ impl ServerState {
                 keyboard.modifiers(self.serial, depressed, latched, locked, group);
             }
 
-            // Send selection offer to the newly focused client
-            if let Some(source) = &self.selection {
-                for device in &self.data_devices {
-                    if device.client().map(|c| c.id()) == Some(client.id()) {
-                        // Don't send the selection to the client that owns it
-                        if source.client().map(|c| c.id()) == Some(client.id()) {
-                            continue;
-                        }
+            // Send selection offers to the newly focused client
+            self.send_selection_offer(&client, dh);
+            self.send_primary_selection_offer(&client, dh);
+        }
+    }
 
-                        use wayland_server::protocol::wl_data_offer::WlDataOffer;
-                        let offer = client
-                            .create_resource::<WlDataOffer, (), Self>(dh, device.version(), ())
-                            .expect("Failed to create WlDataOffer");
-                        device.data_offer(&offer);
+    pub fn send_selection_offer(
+        &self,
+        client: &wayland_server::Client,
+        dh: &wayland_server::DisplayHandle,
+    ) {
+        if let Some(source) = &self.selection {
+            for device in &self.data_devices {
+                if device.client().map(|c| c.id()) == Some(client.id()) {
+                    // Don't send the selection to the client that owns it
+                    if source.client().map(|c| c.id()) == Some(client.id()) {
+                        continue;
+                    }
 
-                        if let Some((_, mime_types)) = self.data_sources.get(&source.id()) {
-                            for mime in mime_types {
-                                offer.offer(mime.clone());
-                            }
+                    let offer = client
+                        .create_resource::<WlDataOffer, (), Self>(dh, device.version(), ())
+                        .expect("Failed to create WlDataOffer");
+                    device.data_offer(&offer);
+
+                    if let Some((_, mime_types)) = self.data_sources.get(&source.id()) {
+                        for mime in mime_types {
+                            offer.offer(mime.clone());
                         }
-                        device.selection(Some(&offer));
                     }
-                }
-            } else {
-                for device in &self.data_devices {
-                    if device.client().map(|c| c.id()) == Some(client.id()) {
-                        device.selection(None);
-                    }
+                    device.selection(Some(&offer));
                 }
             }
+        } else {
+            self.clear_selection(client);
+        }
+    }
 
-            // Send primary selection offer to the newly focused client
-            if let Some(source) = &self.primary_selection {
-                for device in &self.primary_selection_devices {
-                    if device.client().map(|c| c.id()) == Some(client.id()) {
-                        // Don't send the selection to the client that owns it
-                        if source.client().map(|c| c.id()) == Some(client.id()) {
-                            continue;
-                        }
-
-                        use wayland_protocols::wp::primary_selection::zv1::server::zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1;
-                        let offer = client
-                            .create_resource::<ZwpPrimarySelectionOfferV1, (), Self>(
-                                dh,
-                                device.version(),
-                                (),
-                            )
-                            .expect("Failed to create ZwpPrimarySelectionOfferV1");
-                        device.data_offer(&offer);
-
-                        if let Some((_, mime_types)) =
-                            self.primary_selection_sources.get(&source.id())
-                        {
-                            for mime in mime_types {
-                                offer.offer(mime.clone());
-                            }
-                        }
-                        device.selection(Some(&offer));
+    pub fn send_primary_selection_offer(
+        &self,
+        client: &wayland_server::Client,
+        dh: &wayland_server::DisplayHandle,
+    ) {
+        if let Some(source) = &self.primary_selection {
+            for device in &self.primary_selection_devices {
+                if device.client().map(|c| c.id()) == Some(client.id()) {
+                    // Don't send the selection to the client that owns it
+                    if source.client().map(|c| c.id()) == Some(client.id()) {
+                        continue;
                     }
-                }
-            } else {
-                for device in &self.primary_selection_devices {
-                    if device.client().map(|c| c.id()) == Some(client.id()) {
-                        device.selection(None);
+
+                    let offer = client
+                        .create_resource::<ZwpPrimarySelectionOfferV1, (), Self>(
+                            dh,
+                            device.version(),
+                            (),
+                        )
+                        .expect("Failed to create ZwpPrimarySelectionOfferV1");
+                    device.data_offer(&offer);
+
+                    if let Some((_, mime_types)) = self.primary_selection_sources.get(&source.id())
+                    {
+                        for mime in mime_types {
+                            offer.offer(mime.clone());
+                        }
                     }
+                    device.selection(Some(&offer));
                 }
+            }
+        } else {
+            self.clear_primary_selection(client);
+        }
+    }
+
+    pub fn clear_selection(&self, client: &wayland_server::Client) {
+        for device in &self.data_devices {
+            if device.client().map(|c| c.id()) == Some(client.id()) {
+                device.selection(None);
+            }
+        }
+    }
+
+    pub fn clear_primary_selection(&self, client: &wayland_server::Client) {
+        for device in &self.primary_selection_devices {
+            if device.client().map(|c| c.id()) == Some(client.id()) {
+                device.selection(None);
             }
         }
     }

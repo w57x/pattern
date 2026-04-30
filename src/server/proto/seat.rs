@@ -212,45 +212,14 @@ impl Dispatch<WlDataDevice, ()> for ServerState {
 
                     if let Some(focused_surface) = &state.input_focus {
                         if let Some(focused_client) = focused_surface.client() {
-                            for device in &state.data_devices {
-                                if device.client().map(|c| c.id()) == Some(focused_client.id()) {
-                                    // Don't send the selection to the client that set it
-                                    if new_source.client().map(|c| c.id())
-                                        == Some(focused_client.id())
-                                    {
-                                        continue;
-                                    }
-
-                                    let offer = focused_client
-                                        .create_resource::<WlDataOffer, (), Self>(
-                                            dhandle,
-                                            device.version(),
-                                            (),
-                                        )
-                                        .expect("Failed to create WlDataOffer");
-                                    device.data_offer(&offer);
-
-                                    if let Some((_, mime_types)) =
-                                        state.data_sources.get(&new_source.id())
-                                    {
-                                        for mime in mime_types {
-                                            offer.offer(mime.clone());
-                                        }
-                                    }
-                                    device.selection(Some(&offer));
-                                }
-                            }
+                            state.send_selection_offer(&focused_client, dhandle);
                         }
                     }
                 } else {
                     state.selection = None;
                     if let Some(focused_surface) = &state.input_focus {
                         if let Some(focused_client) = focused_surface.client() {
-                            for device in &state.data_devices {
-                                if device.client().map(|c| c.id()) == Some(focused_client.id()) {
-                                    device.selection(None);
-                                }
-                            }
+                            state.clear_selection(&focused_client);
                         }
                     }
                 }
