@@ -7,25 +7,33 @@ use std::{
     rc::Rc,
 };
 
+use ash::vk;
 use nix::sys::memfd::{MFdFlags, memfd_create};
 use rand::prelude::*;
+use tracing::error;
 use wayland_server::{
     Resource, WEnum,
     backend::{ClientData, ClientId, DisconnectReason, ObjectId},
-    protocol::{wl_data_device, wl_data_offer::WlDataOffer, wl_data_source, wl_surface::WlSurface},
+    protocol::{
+        wl_buffer::WlBuffer, wl_callback::WlCallback, wl_data_device, wl_data_offer::WlDataOffer,
+        wl_data_source, wl_keyboard::WlKeyboard, wl_pointer::WlPointer, wl_surface::WlSurface,
+    },
 };
 
 use wayland_protocols::{
     wp::{
         cursor_shape::v1::server::wp_cursor_shape_device_v1,
+        pointer_constraints::zv1::server::{zwp_confined_pointer_v1, zwp_locked_pointer_v1},
         pointer_gestures::zv1::server::{
             zwp_pointer_gesture_hold_v1, zwp_pointer_gesture_pinch_v1, zwp_pointer_gesture_swipe_v1,
         },
+        presentation_time::server::wp_presentation_feedback::WpPresentationFeedback,
         primary_selection::zv1::server::{
             zwp_primary_selection_device_v1,
             zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1,
             zwp_primary_selection_source_v1,
         },
+        relative_pointer::zv1::server::zwp_relative_pointer_v1,
     },
     xdg::shell::server::{xdg_positioner, xdg_toplevel::XdgToplevel},
 };
@@ -78,7 +86,7 @@ impl Default for PositionerData {
     }
 }
 
-pub struct ServerState {
+pub struct Composer {
     rng: ThreadRng,
 
     pub surfaces: Vec<WlSurface>,
@@ -94,8 +102,8 @@ pub struct ServerState {
     pub buffers: HashMap<ObjectId, ShmBuffer>,
 
     // Maps Surface ID -> WlBuffer
-    pub surface_buffers: HashMap<ObjectId, wayland_server::protocol::wl_buffer::WlBuffer>,
-    pub active_dmabufs: HashMap<ObjectId, wayland_server::protocol::wl_buffer::WlBuffer>,
+    pub surface_buffers: HashMap<ObjectId, WlBuffer>,
+    pub active_dmabufs: HashMap<ObjectId, WlBuffer>,
     pub surface_textures: HashMap<ObjectId, SurfaceTexture>,
     pub cursor_manager: CursorManager,
     pub cursor_surface: Option<(WlSurface, i32, i32)>,
@@ -106,20 +114,21 @@ pub struct ServerState {
     pub styler: Box<dyn crate::styler::Styler>,
     pub cursor_pos: (f64, f64),
 
-    pub frame_callbacks: Vec<wayland_server::protocol::wl_callback::WlCallback>,
+    pub pending_frame_callbacks: HashMap<ObjectId, Vec<WlCallback>>,
+    pub active_frame_callbacks: Vec<WlCallback>,
 
-    pub keyboards: Vec<wayland_server::protocol::wl_keyboard::WlKeyboard>,
+    pub keyboards: Vec<WlKeyboard>,
     pub keymap_fd: OwnedFd,
     pub keymap_size: u32,
     pub xkb_state: xkbcommon::xkb::State,
 
-    pub pointers: Vec<wayland_server::protocol::wl_pointer::WlPointer>,
+    pub pointers: Vec<WlPointer>,
     pub pointer_focus: Option<WlSurface>,
     pub pointer_grab: Option<WlSurface>,
 
-    pub relative_pointers: Vec<wayland_protocols::wp::relative_pointer::zv1::server::zwp_relative_pointer_v1::ZwpRelativePointerV1>,
-    pub pointer_lock: Option<wayland_protocols::wp::pointer_constraints::zv1::server::zwp_locked_pointer_v1::ZwpLockedPointerV1>,
-    pub pointer_confine: Option<wayland_protocols::wp::pointer_constraints::zv1::server::zwp_confined_pointer_v1::ZwpConfinedPointerV1>,
+    pub relative_pointers: Vec<zwp_relative_pointer_v1::ZwpRelativePointerV1>,
+    pub pointer_lock: Option<zwp_locked_pointer_v1::ZwpLockedPointerV1>,
+    pub pointer_confine: Option<zwp_confined_pointer_v1::ZwpConfinedPointerV1>,
     pub cursor_pos_hint: Option<(f64, f64)>,
 
     pub swipe_gestures:
@@ -129,6 +138,20 @@ pub struct ServerState {
     pub hold_gestures: HashMap<ObjectId, Vec<zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1>>,
 
     pub outputs: Vec<wayland_server::protocol::wl_output::WlOutput>,
+
+    pub pending_syncobj_state:
+        HashMap<ObjectId, crate::server::proto::linux_drm_syncobj::SurfaceSyncObjState>,
+    pub syncobj_state:
+        HashMap<ObjectId, crate::server::proto::linux_drm_syncobj::SurfaceSyncObjState>,
+    pub syncobj_timelines: HashMap<ObjectId, ash::vk::Semaphore>,
+    pub explicit_sync_surfaces: HashSet<ObjectId>,
+    pub buffer_textures: HashMap<ObjectId, crate::vulkan::SurfaceTexture>,
+    pub dead_semaphores: Vec<vk::Semaphore>,
+    pub needs_redraw: bool,
+
+    pub pending_presentation_feedbacks: HashMap<ObjectId, Vec<WpPresentationFeedback>>,
+    pub surface_presentation_feedbacks: HashMap<ObjectId, Vec<WpPresentationFeedback>>,
+    pub feedbacks_to_present: Vec<WpPresentationFeedback>,
 
     pub serial: u32,
 
@@ -182,7 +205,7 @@ pub struct SubsurfaceData {
     pub y: i32,
 }
 
-impl ServerState {
+impl Composer {
     pub fn new(
         vkctx: Rc<VulkanContext>,
         mode: drm::control::Mode,
@@ -244,7 +267,8 @@ impl ServerState {
             styler: Box::new(crate::styler::DefaultStyler::new()),
             cursor_pos: (0., 0.),
 
-            frame_callbacks: Vec::new(),
+            pending_frame_callbacks: HashMap::new(),
+            active_frame_callbacks: Vec::new(),
 
             keyboards: Vec::new(),
             keymap_fd,
@@ -264,6 +288,18 @@ impl ServerState {
             cursor_pos_hint: None,
 
             outputs: Vec::new(),
+
+            pending_syncobj_state: HashMap::new(),
+            syncobj_state: HashMap::new(),
+            syncobj_timelines: HashMap::new(),
+            explicit_sync_surfaces: HashSet::new(),
+            buffer_textures: HashMap::new(),
+            dead_semaphores: vec![],
+            needs_redraw: true,
+
+            pending_presentation_feedbacks: HashMap::new(),
+            surface_presentation_feedbacks: HashMap::new(),
+            feedbacks_to_present: Vec::new(),
 
             serial: 1,
 
@@ -301,10 +337,7 @@ impl ServerState {
         }
     }
 
-    pub fn load_cursor_shape(
-        &mut self,
-        shape: wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_device_v1::Shape,
-    ) {
+    pub fn load_cursor_shape(&mut self, shape: wp_cursor_shape_device_v1::Shape) {
         self.cursor_manager.get_or_load(shape, &self.vkctx)
     }
 
@@ -318,13 +351,61 @@ impl ServerState {
         if let Some(sub) = self
             .subsurfaces
             .iter()
-            .find(|s| &s.surface.id() == surface_id)
+            .find(|s| s.surface.id() == *surface_id)
         {
-            let (parent_x, parent_y) = self.get_surface_position(&sub.parent.id())?;
-            return Some((parent_x + sub.x as f64, parent_y + sub.y as f64));
+            if let Some((px, py)) = self.get_surface_position(&sub.parent.id()) {
+                return Some((px + sub.x as f64, py + sub.y as f64));
+            }
         }
 
         None
+    }
+
+    pub fn get_or_import_timeline_semaphore(
+        &mut self,
+        timeline_id: &ObjectId,
+        dh: &wayland_server::DisplayHandle,
+    ) -> Option<vk::Semaphore> {
+        if let Some(sem) = self.syncobj_timelines.get(timeline_id) {
+            return Some(*sem);
+        }
+
+        let timeline = match wayland_protocols::wp::linux_drm_syncobj::v1::server::wp_linux_drm_syncobj_timeline_v1::WpLinuxDrmSyncobjTimelineV1::from_id(dh, timeline_id.clone()) {
+            Ok(t) => t,
+            Err(_) => {
+                error!("Failed to create resource from id for {:?}", timeline_id);
+                return None;
+            }
+        };
+
+        let timeline_data =
+            match timeline.data::<crate::server::proto::linux_drm_syncobj::Timeline>() {
+                Some(data) => data,
+                None => {
+                    error!("Failed to get timeline data for {:?}", timeline_id);
+                    return None;
+                }
+            };
+
+        let fd_dup = match timeline_data.fd.try_clone() {
+            Ok(fd) => fd,
+            Err(e) => {
+                error!("try_clone failed for {:?}: {:?}", timeline_id, e);
+                return None;
+            }
+        };
+        let sem = match unsafe { self.vkctx.import_syncobj_as_semaphore(fd_dup) } {
+            Ok(sem) => sem,
+            Err(e) => {
+                error!(
+                    "import_syncobj_as_semaphore failed for {:?}: {:?}",
+                    timeline_id, e
+                );
+                return None;
+            }
+        };
+        self.syncobj_timelines.insert(timeline_id.clone(), sem);
+        Some(sem)
     }
 
     pub fn set_input_focus(&mut self, surface: WlSurface, dh: &wayland_server::DisplayHandle) {
@@ -378,6 +459,40 @@ impl ServerState {
             self.send_selection_offer(&client, dh);
             self.send_primary_selection_offer(&client, dh);
         }
+    }
+
+    pub fn cleanup_surface(&mut self, id: &ObjectId) {
+        self.wm.unmap_window(id);
+        self.wm.unmap_popup(id);
+        self.xdg_to_surface.remove(id);
+        self.surface_textures.remove(id);
+        self.active_dmabufs.remove(id);
+        self.pending_syncobj_state.remove(id);
+        self.syncobj_state.remove(id);
+        self.surface_buffers.remove(id);
+        self.explicit_sync_surfaces.remove(id);
+
+        if self.input_focus.as_ref().map(|s| s.id()) == Some(id.clone()) {
+            self.input_focus = None;
+        }
+        if self.pointer_focus.as_ref().map(|s| s.id()) == Some(id.clone()) {
+            self.pointer_focus = None;
+        }
+        if self.pointer_grab.as_ref().map(|s| s.id()) == Some(id.clone()) {
+            let mut shifted = false;
+            if let Some(sub) = self.subsurfaces.iter().find(|s| s.surface.id() == *id) {
+                if sub.parent.is_alive() {
+                    self.pointer_grab = Some(sub.parent.clone());
+                    shifted = true;
+                }
+            }
+            if !shifted {
+                self.pointer_grab = None;
+            }
+        }
+
+        self.surfaces.retain(|s| &s.id() != id);
+        self.subsurfaces.retain(|s| &s.surface.id() != id);
     }
 
     pub fn send_selection_offer(
@@ -523,6 +638,14 @@ impl ServerState {
                     pointer.enter(self.serial, &surf, local_x, local_y);
                     pointer.frame();
                 }
+            }
+        }
+    }
+
+    pub unsafe fn drop_semaphores(&mut self) {
+        for sem in self.dead_semaphores.drain(..) {
+            unsafe {
+                self.vkctx.device.destroy_semaphore(sem, None);
             }
         }
     }

@@ -1,11 +1,11 @@
-use crate::server::ServerState;
+use crate::server::Composer;
 use wayland_protocols::wp::pointer_constraints::zv1::server::{
     zwp_confined_pointer_v1::ZwpConfinedPointerV1, zwp_locked_pointer_v1::ZwpLockedPointerV1,
     zwp_pointer_constraints_v1::ZwpPointerConstraintsV1,
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<ZwpPointerConstraintsV1, ()> for ServerState {
+impl GlobalDispatch<ZwpPointerConstraintsV1, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -18,7 +18,7 @@ impl GlobalDispatch<ZwpPointerConstraintsV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<ZwpPointerConstraintsV1, ()> for ServerState {
+impl Dispatch<ZwpPointerConstraintsV1, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -57,7 +57,7 @@ impl Dispatch<ZwpPointerConstraintsV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<ZwpLockedPointerV1, ()> for ServerState {
+impl Dispatch<ZwpLockedPointerV1, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -82,7 +82,7 @@ impl Dispatch<ZwpLockedPointerV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<ZwpConfinedPointerV1, ()> for ServerState {
+impl Dispatch<ZwpConfinedPointerV1, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,

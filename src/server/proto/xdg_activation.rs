@@ -1,9 +1,9 @@
-use crate::server::ServerState;
+use crate::server::Composer;
 use rand::Rng;
 use wayland_protocols::xdg::activation::v1::server::{xdg_activation_token_v1, xdg_activation_v1};
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<xdg_activation_v1::XdgActivationV1, ()> for ServerState {
+impl GlobalDispatch<xdg_activation_v1::XdgActivationV1, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -16,7 +16,7 @@ impl GlobalDispatch<xdg_activation_v1::XdgActivationV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<xdg_activation_v1::XdgActivationV1, ()> for ServerState {
+impl Dispatch<xdg_activation_v1::XdgActivationV1, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -41,7 +41,7 @@ impl Dispatch<xdg_activation_v1::XdgActivationV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<xdg_activation_token_v1::XdgActivationTokenV1, ()> for ServerState {
+impl Dispatch<xdg_activation_token_v1::XdgActivationTokenV1, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,

@@ -1,11 +1,11 @@
-use crate::server::ServerState;
+use crate::server::Composer;
 use wayland_protocols::wp::pointer_gestures::zv1::server::{
     zwp_pointer_gesture_hold_v1, zwp_pointer_gesture_pinch_v1, zwp_pointer_gesture_swipe_v1,
     zwp_pointer_gestures_v1,
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, ()> for ServerState {
+impl GlobalDispatch<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -18,7 +18,7 @@ impl GlobalDispatch<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, ()> for Serve
     }
 }
 
-impl Dispatch<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, ()> for ServerState {
+impl Dispatch<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -59,7 +59,7 @@ impl Dispatch<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, ()> for ServerState
     }
 }
 
-impl Dispatch<zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1, ()> for ServerState {
+impl Dispatch<zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1, ()> for Composer {
     fn request(
         _state: &mut Self,
         _client: &wayland_server::Client,
@@ -76,7 +76,7 @@ impl Dispatch<zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1, ()> for Se
     }
 }
 
-impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()> for ServerState {
+impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()> for Composer {
     fn request(
         _state: &mut Self,
         _client: &wayland_server::Client,
@@ -93,7 +93,7 @@ impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()> for Se
     }
 }
 
-impl Dispatch<zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1, ()> for ServerState {
+impl Dispatch<zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1, ()> for Composer {
     fn request(
         _state: &mut Self,
         _client: &wayland_server::Client,

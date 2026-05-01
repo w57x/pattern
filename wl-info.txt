@@ -22,7 +22,7 @@ interface: 'wl_seat',                                    version:  5, name:  5
 interface: 'wl_data_device_manager',                     version:  3, name:  6
 interface: 'zwp_primary_selection_device_manager_v1',    version:  1, name:  7
 interface: 'xdg_wm_base',                                version:  3, name:  8
-interface: 'zwp_linux_dmabuf_v1',                        version:  4, name:  9
+interface: 'zwp_linux_dmabuf_v1',                        version:  5, name:  9
 	main device: 0xE201 (/dev/dri/card1 or /dev/dri/renderD128)
 	tranche
 		target device: 0xE201 (/dev/dri/card1 or /dev/dri/renderD128)
@@ -50,3 +50,7 @@ interface: 'wp_cursor_shape_manager_v1',                 version:  2, name: 18
 interface: 'wp_pointer_warp_v1',                         version:  1, name: 19
 interface: 'zwp_pointer_constraints_v1',                 version:  1, name: 20
 interface: 'zwp_relative_pointer_manager_v1',            version:  1, name: 21
+interface: 'wp_linux_drm_syncobj_manager_v1',            version:  1, name: 22
+interface: 'wp_fifo_manager_v1',                         version:  1, name: 23
+interface: 'wp_presentation',                            version:  2, name: 24
+	presentation clock id: 1 (CLOCK_MONOTONIC)

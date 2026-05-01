@@ -9,10 +9,13 @@ use pattern::vulkan::RenderQuad;
 use pattern::{
     gpu::{Card, buffer::Buffer},
     input::Input,
-    server::{ClientState, ServerState},
+    server::{ClientState, Composer},
     vulkan::{VulkanContext, frame::VulkanFrame},
 };
-use tracing::{debug, info};
+use tracing::{debug, info, error};
+use wayland_protocols::wp::fifo::v1::server::wp_fifo_manager_v1::WpFifoManagerV1;
+use wayland_protocols::wp::presentation_time::server::wp_presentation::WpPresentation;
+use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_device_v1;
 use wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
 use wayland_protocols::wp::pointer_constraints::zv1::server::zwp_pointer_constraints_v1::ZwpPointerConstraintsV1;
@@ -30,6 +33,7 @@ use wayland_protocols::xdg::dialog::v1::server::xdg_wm_dialog_v1::XdgWmDialogV1;
 use wayland_protocols::xdg::activation::v1::server::xdg_activation_v1::XdgActivationV1;
 use wayland_protocols_wlr::layer_shell::v1::server::zwlr_layer_shell_v1::ZwlrLayerShellV1;
 use wayland_server::protocol::wl_data_device_manager::WlDataDeviceManager;
+use wayland_protocols::wp::linux_drm_syncobj::v1::server::wp_linux_drm_syncobj_manager_v1::WpLinuxDrmSyncobjManagerV1;
 use wayland_server::{
     Display, ListeningSocket, Resource,
     protocol::{
@@ -49,9 +53,9 @@ fn main() {
         .init();
 
     let seat = Seat::open(|seat, event| match event {
-        libseat::SeatEvent::Enable => info!("[seat]: Acquired DRM Master"),
+        libseat::SeatEvent::Enable => info!("[seat] Acquired DRM Master"),
         libseat::SeatEvent::Disable => {
-            info!("[seat]: Lost DRM Master (User switched TTY)");
+            info!("[seat] Lost DRM Master (User switched TTY)");
             seat.disable().unwrap();
         }
     })
@@ -119,30 +123,33 @@ fn main() {
     info!("{:?}", info.mode);
 
     info!("Booting Wayland Server");
-    let mut display: Display<ServerState> = Display::new().unwrap();
+    let mut display: Display<Composer> = Display::new().unwrap();
     let dh = display.handle();
 
-    dh.create_global::<ServerState, WlCompositor, ()>(5, ());
-    dh.create_global::<ServerState, WlShm, ()>(1, ());
-    dh.create_global::<ServerState, WlSubcompositor, ()>(1, ());
-    dh.create_global::<ServerState, WlOutput, ()>(4, ());
-    dh.create_global::<ServerState, WlSeat, ()>(5, ());
-    dh.create_global::<ServerState, WlDataDeviceManager, ()>(3, ());
-    dh.create_global::<ServerState, ZwpPrimarySelectionDeviceManagerV1, ()>(1, ());
-    dh.create_global::<ServerState, XdgWmBase, ()>(3, ());
-    dh.create_global::<ServerState, ZwpLinuxDmabufV1, ()>(4, ());
-    dh.create_global::<ServerState, ZxdgDecorationManagerV1, ()>(1, ());
-    dh.create_global::<ServerState, WpViewporter, ()>(1, ());
-    dh.create_global::<ServerState, ZxdgOutputManagerV1, ()>(2, ());
-    dh.create_global::<ServerState, ZwlrLayerShellV1, ()>(4, ());
-    dh.create_global::<ServerState, ExtWorkspaceManagerV1, ()>(1, ());
-    dh.create_global::<ServerState, XdgWmDialogV1, ()>(1, ());
-    dh.create_global::<ServerState, XdgActivationV1, ()>(1, ());
-    dh.create_global::<ServerState, ZwpPointerGesturesV1, ()>(3, ());
-    dh.create_global::<ServerState, WpCursorShapeManagerV1, ()>(2, ());
-    dh.create_global::<ServerState, WpPointerWarpV1, ()>(1, ());
-    dh.create_global::<ServerState, ZwpPointerConstraintsV1, ()>(1, ());
-    dh.create_global::<ServerState, ZwpRelativePointerManagerV1, ()>(1, ());
+    dh.create_global::<Composer, WlCompositor, ()>(5, ());
+    dh.create_global::<Composer, WlShm, ()>(1, ());
+    dh.create_global::<Composer, WlSubcompositor, ()>(1, ());
+    dh.create_global::<Composer, WlOutput, ()>(4, ());
+    dh.create_global::<Composer, WlSeat, ()>(5, ());
+    dh.create_global::<Composer, WlDataDeviceManager, ()>(3, ());
+    dh.create_global::<Composer, ZwpPrimarySelectionDeviceManagerV1, ()>(1, ());
+    dh.create_global::<Composer, XdgWmBase, ()>(3, ());
+    dh.create_global::<Composer, ZwpLinuxDmabufV1, ()>(5, ());
+    dh.create_global::<Composer, ZxdgDecorationManagerV1, ()>(1, ());
+    dh.create_global::<Composer, WpViewporter, ()>(1, ());
+    dh.create_global::<Composer, ZxdgOutputManagerV1, ()>(2, ());
+    dh.create_global::<Composer, ZwlrLayerShellV1, ()>(4, ());
+    dh.create_global::<Composer, ExtWorkspaceManagerV1, ()>(1, ());
+    dh.create_global::<Composer, XdgWmDialogV1, ()>(1, ());
+    dh.create_global::<Composer, XdgActivationV1, ()>(1, ());
+    dh.create_global::<Composer, ZwpPointerGesturesV1, ()>(3, ());
+    dh.create_global::<Composer, WpCursorShapeManagerV1, ()>(2, ());
+    dh.create_global::<Composer, WpPointerWarpV1, ()>(1, ());
+    dh.create_global::<Composer, ZwpPointerConstraintsV1, ()>(1, ());
+    dh.create_global::<Composer, ZwpRelativePointerManagerV1, ()>(1, ());
+    dh.create_global::<Composer, WpLinuxDrmSyncobjManagerV1, ()>(1, ());
+    dh.create_global::<Composer, WpFifoManagerV1, ()>(1, ());
+    dh.create_global::<Composer, WpPresentation, ()>(2, ());
 
     let socket = ListeningSocket::bind_auto("wayland", 0..32).unwrap();
     let socket_name = socket.socket_name().unwrap().to_string_lossy().into_owned();
@@ -160,7 +167,7 @@ fn main() {
     let vkctx = Rc::new(VulkanContext::new());
     info!("Vulkan Ready. Entering the void.");
 
-    let mut state = ServerState::new(
+    let mut composer = Composer::new(
         vkctx.clone(),
         info.mode.clone(),
         info.clone(),
@@ -239,26 +246,59 @@ fn main() {
     while running {
         let timeout = if waiting_for_flip {
             PollTimeout::NONE
-        } else {
+        } else if composer.needs_redraw {
             PollTimeout::ZERO
+        } else {
+            PollTimeout::NONE
         };
 
         let mut events = [epoll::EpollEvent::empty(); 5];
-        let num_events = epoll.wait(&mut events, timeout).unwrap();
+        let num_events = match epoll.wait(&mut events, timeout) {
+            Ok(n) => n,
+            Err(e) if e == nix::errno::Errno::EINTR => 0,
+            Err(e) => {
+                error!("epoll_wait failed: {}", e);
+                0
+            }
+        };
 
         for i in 0..num_events {
             match events[i].data() {
                 0 => {
+                    // trace!("DRM Event");
                     let drm_events = card.receive_events().unwrap();
                     for event in drm_events {
                         match event {
-                            drm::control::Event::PageFlip(_vblank) => {
+                            drm::control::Event::PageFlip(v) => {
                                 waiting_for_flip = false;
 
                                 let now = pattern::utils::time::gettime();
+                                let tv_sec = (v.duration.as_micros() / 1_000_000) as u64;
+                                let tv_nsec = (v.duration.as_micros() % 1_000_000) as u32 * 1000;
+                                let seq = v.frame as u64;
 
-                                for cb in state.frame_callbacks.drain(..) {
+                                for cb in composer.active_frame_callbacks.drain(..) {
                                     cb.done(now);
+                                }
+
+                                for fb in composer.feedbacks_to_present.drain(..) {
+                                    if let Some(client) = fb.client() {
+                                        if let Some(output) = composer.outputs.iter().find(|o| {
+                                            o.client().map(|c| c.id()) == Some(client.id())
+                                        }) {
+                                            fb.sync_output(output);
+                                        }
+                                    }
+                                    fb.presented(
+                                        (tv_sec >> 32) as u32,
+                                        (tv_sec & 0xFFFFFFFF) as u32,
+                                        tv_nsec,
+                                        ((1. / info.mode.vrefresh() as f64) * 1_000_000.0 * 1_000.0)
+                                            as u32, // refresh in ns
+                                        (seq >> 32) as u32,
+                                        (seq & 0xFFFFFFFF) as u32,
+                                        wp_presentation_feedback::Kind::Vsync,
+                                    );
                                 }
                             }
                             _ => {}
@@ -266,12 +306,14 @@ fn main() {
                     }
                 }
                 1 => {
-                    if input.dispatch(&mut state, &dh) {
+                    if input.dispatch(&mut composer, &dh) {
                         running = false;
                     }
+                    composer.needs_redraw = true;
                 }
                 2 => {
                     shared_seat.borrow_mut().dispatch(-1).unwrap();
+                    composer.needs_redraw = true;
                 }
                 3 => {
                     if let Ok(Some(stream)) = socket.accept() {
@@ -282,114 +324,80 @@ fn main() {
                     }
                 }
                 4 => {
-                    display.dispatch_clients(&mut state).unwrap();
+                    display.dispatch_clients(&mut composer).unwrap();
                 }
                 _ => unreachable!(),
             }
         }
 
-        if !waiting_for_flip {
+        if !waiting_for_flip && composer.needs_redraw {
+            composer.needs_redraw = false;
+            // debug!("Rendering frame {}", frame_index);
             let frame = &swapchain[frame_index % 2];
 
             let mut dead_surface_ids = Vec::new();
 
-            for win in state.wm.all_windows() {
+            for win in composer.wm.all_windows() {
                 if !win.surface.is_alive() {
                     dead_surface_ids.push(win.surface.id());
                 }
             }
 
-            for popup in state.wm.get_popups() {
+            for popup in composer.wm.get_popups() {
                 if !popup.surface.is_alive() {
                     dead_surface_ids.push(popup.surface.id());
                 }
             }
 
-            if let Some((cursor_surf, _, _)) = &state.cursor_surface {
+            if let Some((cursor_surf, _, _)) = &composer.cursor_surface {
                 if !cursor_surf.is_alive() {
                     dead_surface_ids.push(cursor_surf.id());
-                    state.cursor_surface = None;
+                    composer.cursor_surface = None;
                 }
             }
 
             for id in dead_surface_ids {
-                state.wm.unmap_window(&id);
-                state.wm.unmap_popup(&id);
-
-                state.xdg_to_surface.retain(|_, v| v.id() != id);
-
-                if let Some(tex) = state.surface_textures.remove(&id) {
-                    unsafe {
-                        vkctx.device.destroy_sampler(tex.samp, None);
-                        vkctx.device.destroy_image_view(tex.view, None);
-                        vkctx.device.destroy_image(tex.img, None);
-                        vkctx.device.free_memory(tex.mem, None);
-                        vkctx.device.destroy_descriptor_pool(tex.pool, None);
-                    }
-                }
+                composer.cleanup_surface(&id);
             }
 
-            state.windows.retain(|w| w.is_alive());
-            state.outputs.retain(|o| o.is_alive());
-            state.pointers.retain(|p| p.is_alive());
-            state.keyboards.retain(|k| k.is_alive());
+            composer.windows.retain(|w| w.is_alive());
+            composer.outputs.retain(|o| o.is_alive());
+            composer.pointers.retain(|p| p.is_alive());
+            composer.keyboards.retain(|k| k.is_alive());
 
-            state.data_devices.retain(|d| d.is_alive());
-            state.primary_selection_devices.retain(|d| d.is_alive());
-            state.data_sources.retain(|_, (s, _)| s.is_alive());
-            state
+            composer.data_devices.retain(|d| d.is_alive());
+            composer.primary_selection_devices.retain(|d| d.is_alive());
+            composer.data_sources.retain(|_, (s, _)| s.is_alive());
+            composer
                 .primary_selection_sources
                 .retain(|_, (s, _)| s.is_alive());
 
-            if let Some(focus) = &state.input_focus {
-                if !focus.is_alive() {
-                    state.input_focus = None;
-                }
-            }
-            if let Some(focus) = &state.pointer_focus {
-                if !focus.is_alive() {
-                    state.pointer_focus = None;
-                }
-            }
-            if let Some(grab) = state.pointer_grab.clone() {
+            if let Some(grab) = composer.pointer_grab.clone() {
                 if !grab.is_alive() {
-                    let mut shifted = false;
-                    if let Some(sub) = state
-                        .subsurfaces
-                        .iter()
-                        .find(|s| s.surface.id() == grab.id())
-                    {
-                        if sub.parent.is_alive() {
-                            state.pointer_grab = Some(sub.parent.clone());
-                            shifted = true;
-                        }
-                    }
-                    if !shifted {
-                        state.pointer_grab = None;
-                    }
+                    composer.cleanup_surface(&grab.id());
                 }
             }
 
-            state
+            composer
                 .subsurfaces
                 .retain(|s| s.surface.is_alive() && s.parent.is_alive());
 
-            let mut draw_list = state.styler.generate_draw_list(
-                &state.subsurfaces,
-                &state.surface_textures,
-                &state.viewports,
-                &state.surface_to_viewport,
-                &state.surface_opaque_region,
-                state.wm.as_ref(),
+            let mut final_draw_list = composer.styler.generate_draw_list(
+                &composer.subsurfaces,
+                &composer.surface_textures,
+                &composer.viewports,
+                &composer.surface_to_viewport,
+                &composer.surface_opaque_region,
+                composer.wm.as_ref(),
             );
 
-            if state.pointer_lock.is_none() {
-                if let Some((cursor_surf, hot_x, hot_y)) = &state.cursor_surface {
-                    if let Some(tex) = state.surface_textures.get(&cursor_surf.id()) {
-                        draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
+            if composer.pointer_lock.is_none() {
+                if let Some((cursor_surf, hot_x, hot_y)) = &composer.cursor_surface {
+                    if let Some(tex) = composer.surface_textures.get(&cursor_surf.id()) {
+                        final_draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
                             set: tex.set,
-                            x: (state.cursor_pos.0 as f32 - *hot_x as f32).round(),
-                            y: (state.cursor_pos.1 as f32 - *hot_y as f32).round(),
+                            x: (composer.cursor_pos.0 as f32 - *hot_x as f32).round(),
+                            y: (composer.cursor_pos.1 as f32 - *hot_y as f32).round(),
                             w: tex.w / tex.scale,
                             h: tex.h / tex.scale,
                             src_x: 0.0,
@@ -399,19 +407,25 @@ fn main() {
                             border_radius: 0.0,
                         }));
                     }
-                } else if let Some(shape) = state.cursor_shape {
-                    state.load_cursor_shape(shape);
+                } else if let Some(shape) = composer.cursor_shape {
+                    composer.load_cursor_shape(shape);
 
                     let now_ms = pattern::utils::time::gettime();
 
-                    if let Some(frame) = state.cursor_manager.get_frame(shape, now_ms) {
+                    if let Some(frame) = composer.cursor_manager.get_frame(shape, now_ms) {
+                        if let Some(anim) = composer.cursor_manager.animations.get(&shape) {
+                            if anim.total_delay > 0 {
+                                composer.needs_redraw = true;
+                            }
+                        }
+
                         let tex = &frame.texture;
                         let (hot_x, hot_y) = frame.hotspot;
 
-                        draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
+                        final_draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
                             set: tex.set,
-                            x: (state.cursor_pos.0 as f32 - hot_x).round(),
-                            y: (state.cursor_pos.1 as f32 - hot_y).round(),
+                            x: (composer.cursor_pos.0 as f32 - hot_x).round(),
+                            y: (composer.cursor_pos.1 as f32 - hot_y).round(),
                             w: tex.w / tex.scale,
                             h: tex.h / tex.scale,
                             src_x: 0.0,
@@ -421,20 +435,20 @@ fn main() {
                             border_radius: 0.0,
                         }));
                     }
-                } else if state.pointer_focus.is_none() {
+                } else if composer.pointer_focus.is_none() {
                     let shape = wp_cursor_shape_device_v1::Shape::Default;
-                    state.load_cursor_shape(shape);
+                    composer.load_cursor_shape(shape);
 
                     let now_ms = pattern::utils::time::gettime();
 
-                    if let Some(frame) = state.cursor_manager.get_frame(shape, now_ms) {
+                    if let Some(frame) = composer.cursor_manager.get_frame(shape, now_ms) {
                         let tex = &frame.texture;
                         let (hot_x, hot_y) = frame.hotspot;
 
-                        draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
+                        final_draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
                             set: tex.set,
-                            x: (state.cursor_pos.0 as f32 - hot_x).round(),
-                            y: (state.cursor_pos.1 as f32 - hot_y).round(),
+                            x: (composer.cursor_pos.0 as f32 - hot_x).round(),
+                            y: (composer.cursor_pos.1 as f32 - hot_y).round(),
                             w: tex.w / tex.scale,
                             h: tex.h / tex.scale,
                             src_x: 0.0,
@@ -447,8 +461,81 @@ fn main() {
                 }
             }
 
+            // 1. Identify drawn surfaces
+            let mut drawn_surface_ids = std::collections::HashSet::new();
+            for cmd in &final_draw_list {
+                if let pattern::vulkan::DrawCommand::Texture(quad) = cmd {
+                    if let Some((id, _)) = composer
+                        .surface_textures
+                        .iter()
+                        .find(|(_, t)| t.set == quad.set)
+                    {
+                        drawn_surface_ids.insert(id.clone());
+                    }
+                }
+            }
+
+            // tracing::debug!("Drawn surfaces: {:?}", drawn_surface_ids);
+
+            let mut wait_semaphores: Vec<ash::vk::Semaphore> = Vec::new();
+            let mut wait_values: Vec<u64> = Vec::new();
+            let mut signal_semaphores: Vec<ash::vk::Semaphore> = Vec::new();
+            let mut signal_values: Vec<u64> = Vec::new();
+
+            // 2. Process Sync Points & Feedbacks
+            let sync_ids: Vec<_> = composer.syncobj_state.keys().cloned().collect();
+            // tracing::debug!("Sync IDs: {:?}", sync_ids);
+            for id in sync_ids {
+                let is_drawn = drawn_surface_ids.contains(&id);
+
+                if is_drawn {
+                    let sync_state = composer.syncobj_state.get_mut(&id).unwrap();
+                    // DELAYED RELEASE: Do NOT take current_release! Only signal the old ones.
+                    let acquire = sync_state.acquire_point.take();
+                    let signals = std::mem::take(&mut sync_state.signal_queue);
+
+                    if let Some((sem, point)) = acquire {
+                        wait_semaphores.push(sem);
+                        wait_values.push(point);
+                    }
+                    for (sem, point) in signals {
+                        signal_semaphores.push(sem);
+                        signal_values.push(point);
+                    }
+
+                    // Collect feedbacks for presentation
+                    if let Some(fbs) = composer.surface_presentation_feedbacks.remove(&id) {
+                        composer.feedbacks_to_present.extend(fbs);
+                    }
+                } else {
+                    let sync_state = composer.syncobj_state.get_mut(&id).unwrap();
+                    let signals = std::mem::take(&mut sync_state.signal_queue);
+                    for (sem, point) in signals {
+                        signal_semaphores.push(sem);
+                        signal_values.push(point);
+                    }
+
+                    // Discard feedbacks for hidden/skipped surfaces
+                    if let Some(fbs) = composer.surface_presentation_feedbacks.remove(&id) {
+                        for fb in fbs {
+                            fb.discarded();
+                        }
+                    }
+                }
+            }
             unsafe {
-                vkctx.draw_frame(frame.vk_fb, width as u32, height as u32, &draw_list);
+                vkctx.draw_frame(
+                    frame.vk_fb,
+                    width as u32,
+                    height as u32,
+                    &final_draw_list,
+                    &wait_semaphores,
+                    &wait_values,
+                    &signal_semaphores,
+                    &signal_values,
+                );
+
+                composer.drop_semaphores();
             }
 
             card.page_flip(
@@ -471,17 +558,8 @@ fn main() {
         unsafe { frame.destroy(&vkctx.device, &card) };
     }
 
-    for tex in state.surface_textures.values() {
-        unsafe {
-            vkctx.device.destroy_sampler(tex.samp, None);
-            vkctx.device.destroy_image_view(tex.view, None);
-            vkctx.device.destroy_image(tex.img, None);
-            vkctx.device.free_memory(tex.mem, None);
-            vkctx.device.destroy_descriptor_pool(tex.pool, None);
-        }
-    }
-
-    state.cursor_manager.clear(&vkctx);
+    // Drop all state, ensuring all Arc<VulkanTextureInner> references are dropped
+    drop(composer);
 
     unsafe {
         vkctx

@@ -1,4 +1,4 @@
-use crate::server::ServerState;
+use crate::server::Composer;
 use std::process::Command;
 use wayland_server::protocol::wl_keyboard::KeyState;
 use xkbcommon::xkb::Keysym;
@@ -10,7 +10,7 @@ pub enum BindingAction {
 }
 
 pub fn handle_keybinding(
-    state: &mut ServerState,
+    state: &mut Composer,
     _key: u32,
     key_state: KeyState,
     keysym: Keysym,

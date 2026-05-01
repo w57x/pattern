@@ -1,11 +1,11 @@
-use crate::server::ServerState;
+use crate::server::Composer;
 use wayland_protocols::wp::cursor_shape::v1::server::{
     wp_cursor_shape_device_v1::{self, WpCursorShapeDeviceV1},
     wp_cursor_shape_manager_v1::{self, WpCursorShapeManagerV1},
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<WpCursorShapeManagerV1, ()> for ServerState {
+impl GlobalDispatch<WpCursorShapeManagerV1, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -18,7 +18,7 @@ impl GlobalDispatch<WpCursorShapeManagerV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<WpCursorShapeManagerV1, ()> for ServerState {
+impl Dispatch<WpCursorShapeManagerV1, ()> for Composer {
     fn request(
         _state: &mut Self,
         _client: &wayland_server::Client,
@@ -49,7 +49,7 @@ impl Dispatch<WpCursorShapeManagerV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<WpCursorShapeDeviceV1, ()> for ServerState {
+impl Dispatch<WpCursorShapeDeviceV1, ()> for Composer {
     fn request(
         state: &mut Self,
         client: &wayland_server::Client,

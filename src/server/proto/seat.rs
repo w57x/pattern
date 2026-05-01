@@ -1,4 +1,4 @@
-use crate::server::ServerState;
+use crate::server::Composer;
 use std::os::fd::AsFd;
 use wayland_server::protocol::{
     wl_data_device::WlDataDevice, wl_data_device_manager::WlDataDeviceManager,
@@ -7,7 +7,7 @@ use wayland_server::protocol::{
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<WlSeat, ()> for ServerState {
+impl GlobalDispatch<WlSeat, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -26,7 +26,7 @@ impl GlobalDispatch<WlSeat, ()> for ServerState {
     }
 }
 
-impl Dispatch<WlSeat, ()> for ServerState {
+impl Dispatch<WlSeat, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -71,7 +71,7 @@ impl Dispatch<WlSeat, ()> for ServerState {
     }
 }
 
-impl Dispatch<WlPointer, ()> for ServerState {
+impl Dispatch<WlPointer, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -103,7 +103,7 @@ impl Dispatch<WlPointer, ()> for ServerState {
     }
 }
 
-impl Dispatch<WlKeyboard, ()> for ServerState {
+impl Dispatch<WlKeyboard, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -119,7 +119,7 @@ impl Dispatch<WlKeyboard, ()> for ServerState {
     }
 }
 
-impl GlobalDispatch<WlDataDeviceManager, ()> for ServerState {
+impl GlobalDispatch<WlDataDeviceManager, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -132,7 +132,7 @@ impl GlobalDispatch<WlDataDeviceManager, ()> for ServerState {
     }
 }
 
-impl Dispatch<WlDataDeviceManager, ()> for ServerState {
+impl Dispatch<WlDataDeviceManager, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -187,7 +187,7 @@ impl Dispatch<WlDataDeviceManager, ()> for ServerState {
     }
 }
 
-impl Dispatch<WlDataDevice, ()> for ServerState {
+impl Dispatch<WlDataDevice, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -232,7 +232,7 @@ impl Dispatch<WlDataDevice, ()> for ServerState {
     }
 }
 
-impl Dispatch<WlDataSource, ()> for ServerState {
+impl Dispatch<WlDataSource, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -259,7 +259,7 @@ impl Dispatch<WlDataSource, ()> for ServerState {
     }
 }
 
-impl Dispatch<WlDataOffer, ()> for ServerState {
+impl Dispatch<WlDataOffer, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,

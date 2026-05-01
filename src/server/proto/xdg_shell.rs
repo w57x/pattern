@@ -1,11 +1,11 @@
-use crate::server::ServerState;
+use crate::server::Composer;
 use wayland_protocols::xdg::shell::server::{
     xdg_popup, xdg_popup::XdgPopup, xdg_positioner, xdg_positioner::XdgPositioner, xdg_surface,
     xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base::XdgWmBase,
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<XdgWmBase, ()> for ServerState {
+impl GlobalDispatch<XdgWmBase, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -18,7 +18,7 @@ impl GlobalDispatch<XdgWmBase, ()> for ServerState {
     }
 }
 
-impl Dispatch<XdgWmBase, ()> for ServerState {
+impl Dispatch<XdgWmBase, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -49,7 +49,7 @@ impl Dispatch<XdgWmBase, ()> for ServerState {
 }
 
 fn compute_popup_position(
-    state: &ServerState,
+    state: &Composer,
     parent_surface_id: &wayland_server::backend::ObjectId,
     positioner_data: &crate::server::PositionerData,
 ) -> (i32, i32) {
@@ -133,7 +133,7 @@ fn compute_popup_position(
     (x, y)
 }
 
-impl Dispatch<XdgSurface, ()> for ServerState {
+impl Dispatch<XdgSurface, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -246,7 +246,7 @@ impl Dispatch<XdgSurface, ()> for ServerState {
     }
 }
 
-impl Dispatch<XdgPopup, ()> for ServerState {
+impl Dispatch<XdgPopup, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -300,7 +300,7 @@ impl Dispatch<XdgPopup, ()> for ServerState {
     }
 }
 
-impl Dispatch<XdgToplevel, ()> for ServerState {
+impl Dispatch<XdgToplevel, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -382,7 +382,7 @@ impl Dispatch<XdgToplevel, ()> for ServerState {
     }
 }
 
-impl Dispatch<XdgPositioner, ()> for ServerState {
+impl Dispatch<XdgPositioner, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,

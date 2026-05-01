@@ -1,8 +1,8 @@
-use crate::server::ServerState;
+use crate::server::Composer;
 use wayland_protocols::xdg::dialog::v1::server::{xdg_dialog_v1, xdg_wm_dialog_v1};
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<xdg_wm_dialog_v1::XdgWmDialogV1, ()> for ServerState {
+impl GlobalDispatch<xdg_wm_dialog_v1::XdgWmDialogV1, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -15,7 +15,7 @@ impl GlobalDispatch<xdg_wm_dialog_v1::XdgWmDialogV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<xdg_wm_dialog_v1::XdgWmDialogV1, ()> for ServerState {
+impl Dispatch<xdg_wm_dialog_v1::XdgWmDialogV1, ()> for Composer {
     fn request(
         _state: &mut Self,
         _client: &wayland_server::Client,
@@ -36,7 +36,7 @@ impl Dispatch<xdg_wm_dialog_v1::XdgWmDialogV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<xdg_dialog_v1::XdgDialogV1, ()> for ServerState {
+impl Dispatch<xdg_dialog_v1::XdgDialogV1, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,

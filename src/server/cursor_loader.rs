@@ -1,7 +1,8 @@
 use crate::server::proto::cursor_shape_utils::shape_to_name;
-use crate::vulkan::{SurfaceTexture, VulkanContext};
+use crate::vulkan::{SurfaceTexture, VulkanContext, VulkanTextureInner};
 use std::collections::HashMap;
 use std::io::Read;
+use std::sync::Arc;
 use wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_device_v1::Shape;
 use xcursor::{
     CursorTheme,
@@ -48,19 +49,8 @@ impl CursorManager {
         }
     }
 
-    pub fn clear(&mut self, vkctx: &VulkanContext) {
-        for anim in self.animations.values() {
-            for frame in &anim.frames {
-                let tex = &frame.texture;
-                unsafe {
-                    vkctx.device.destroy_sampler(tex.samp, None);
-                    vkctx.device.destroy_image_view(tex.view, None);
-                    vkctx.device.destroy_image(tex.img, None);
-                    vkctx.device.free_memory(tex.mem, None);
-                    vkctx.device.destroy_descriptor_pool(tex.pool, None);
-                }
-            }
-        }
+    pub fn clear(&mut self, _vkctx: &VulkanContext) {
+        // Resources are now automatically cleared by Arc<VulkanTextureInner> drop
         self.animations.clear();
     }
 
@@ -100,13 +90,18 @@ impl CursorManager {
                     cursor_sampler,
                 )
             };
-
-            let tex = SurfaceTexture {
+            
+            let inner = Arc::new(VulkanTextureInner {
+                device: vkctx.device.clone(),
                 img: cursor_vk_img,
                 mem: cursor_vk_mem,
                 view: cursor_view,
                 samp: cursor_sampler,
                 pool: desc_pool,
+            });
+
+            let tex = SurfaceTexture {
+                inner,
                 set: desc_set,
                 w: image.width as f32,
                 h: image.height as f32,

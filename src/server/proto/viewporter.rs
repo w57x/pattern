@@ -1,10 +1,10 @@
-use crate::server::ServerState;
+use crate::server::Composer;
 use wayland_protocols::wp::viewporter::server::{
     wp_viewport, wp_viewport::WpViewport, wp_viewporter, wp_viewporter::WpViewporter,
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<WpViewporter, ()> for ServerState {
+impl GlobalDispatch<WpViewporter, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -17,7 +17,7 @@ impl GlobalDispatch<WpViewporter, ()> for ServerState {
     }
 }
 
-impl Dispatch<WpViewporter, ()> for ServerState {
+impl Dispatch<WpViewporter, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -40,7 +40,7 @@ impl Dispatch<WpViewporter, ()> for ServerState {
     }
 }
 
-impl Dispatch<WpViewport, ()> for ServerState {
+impl Dispatch<WpViewport, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,

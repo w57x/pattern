@@ -1,11 +1,11 @@
-use crate::server::ServerState;
+use crate::server::Composer;
 use wayland_protocols::wp::relative_pointer::zv1::server::{
     zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1,
     zwp_relative_pointer_v1::ZwpRelativePointerV1,
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<ZwpRelativePointerManagerV1, ()> for ServerState {
+impl GlobalDispatch<ZwpRelativePointerManagerV1, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -18,7 +18,7 @@ impl GlobalDispatch<ZwpRelativePointerManagerV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<ZwpRelativePointerManagerV1, ()> for ServerState {
+impl Dispatch<ZwpRelativePointerManagerV1, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -42,7 +42,7 @@ impl Dispatch<ZwpRelativePointerManagerV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<ZwpRelativePointerV1, ()> for ServerState {
+impl Dispatch<ZwpRelativePointerV1, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,

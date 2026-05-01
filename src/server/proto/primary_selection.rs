@@ -1,4 +1,4 @@
-use crate::server::ServerState;
+use crate::server::Composer;
 use std::os::fd::AsFd;
 use wayland_protocols::wp::primary_selection::zv1::server::{
     zwp_primary_selection_device_manager_v1::{self, ZwpPrimarySelectionDeviceManagerV1},
@@ -8,7 +8,7 @@ use wayland_protocols::wp::primary_selection::zv1::server::{
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<ZwpPrimarySelectionDeviceManagerV1, ()> for ServerState {
+impl GlobalDispatch<ZwpPrimarySelectionDeviceManagerV1, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -21,7 +21,7 @@ impl GlobalDispatch<ZwpPrimarySelectionDeviceManagerV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<ZwpPrimarySelectionDeviceManagerV1, ()> for ServerState {
+impl Dispatch<ZwpPrimarySelectionDeviceManagerV1, ()> for Composer {
     fn request(
         state: &mut Self,
         client: &wayland_server::Client,
@@ -76,7 +76,7 @@ impl Dispatch<ZwpPrimarySelectionDeviceManagerV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<ZwpPrimarySelectionDeviceV1, ()> for ServerState {
+impl Dispatch<ZwpPrimarySelectionDeviceV1, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -125,7 +125,7 @@ impl Dispatch<ZwpPrimarySelectionDeviceV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<ZwpPrimarySelectionSourceV1, ()> for ServerState {
+impl Dispatch<ZwpPrimarySelectionSourceV1, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -154,7 +154,7 @@ impl Dispatch<ZwpPrimarySelectionSourceV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<ZwpPrimarySelectionOfferV1, ()> for ServerState {
+impl Dispatch<ZwpPrimarySelectionOfferV1, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
