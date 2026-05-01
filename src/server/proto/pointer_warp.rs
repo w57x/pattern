@@ -1,9 +1,9 @@
 use wayland_protocols::wp::pointer_warp::v1::server::wp_pointer_warp_v1::{self, WpPointerWarpV1};
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-use crate::{server::ServerState, utils::time::gettime};
+use crate::{server::Composer, utils::time::gettime};
 
-impl GlobalDispatch<WpPointerWarpV1, ()> for ServerState {
+impl GlobalDispatch<WpPointerWarpV1, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -16,7 +16,7 @@ impl GlobalDispatch<WpPointerWarpV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<WpPointerWarpV1, ()> for ServerState {
+impl Dispatch<WpPointerWarpV1, ()> for Composer {
     fn request(
         state: &mut Self,
         client: &wayland_server::Client,

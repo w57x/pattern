@@ -1,4 +1,4 @@
-use crate::server::ServerState;
+use crate::server::Composer;
 use wayland_protocols::xdg::xdg_output::zv1::server::{
     zxdg_output_manager_v1::{self, ZxdgOutputManagerV1},
     zxdg_output_v1::{self, ZxdgOutputV1},
@@ -6,7 +6,7 @@ use wayland_protocols::xdg::xdg_output::zv1::server::{
 use wayland_server::protocol::wl_output::WlOutput;
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<WlOutput, ()> for ServerState {
+impl GlobalDispatch<WlOutput, ()> for Composer {
     fn bind(
         state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -55,7 +55,7 @@ impl GlobalDispatch<WlOutput, ()> for ServerState {
     }
 }
 
-impl Dispatch<WlOutput, ()> for ServerState {
+impl Dispatch<WlOutput, ()> for Composer {
     fn request(
         _state: &mut Self,
         _client: &wayland_server::Client,
@@ -68,7 +68,7 @@ impl Dispatch<WlOutput, ()> for ServerState {
     }
 }
 
-impl GlobalDispatch<ZxdgOutputManagerV1, ()> for ServerState {
+impl GlobalDispatch<ZxdgOutputManagerV1, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -81,7 +81,7 @@ impl GlobalDispatch<ZxdgOutputManagerV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<ZxdgOutputManagerV1, ()> for ServerState {
+impl Dispatch<ZxdgOutputManagerV1, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -109,7 +109,7 @@ impl Dispatch<ZxdgOutputManagerV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<ZxdgOutputV1, WlOutput> for ServerState {
+impl Dispatch<ZxdgOutputV1, WlOutput> for Composer {
     fn request(
         _state: &mut Self,
         _client: &wayland_server::Client,
@@ -123,7 +123,7 @@ impl Dispatch<ZxdgOutputV1, WlOutput> for ServerState {
     }
 }
 
-impl GlobalDispatch<ZxdgOutputV1, WlOutput> for ServerState {
+impl GlobalDispatch<ZxdgOutputV1, WlOutput> for Composer {
     fn bind(
         state: &mut Self,
         _handle: &wayland_server::DisplayHandle,

@@ -14,7 +14,7 @@ use std::rc::Rc;
 use tracing::debug;
 use wayland_server::Resource;
 
-use crate::server::ServerState;
+use crate::server::Composer;
 
 mod bindings;
 use bindings::{BindingAction, handle_keybinding};
@@ -93,11 +93,7 @@ impl Input {
         }
     }
 
-    pub fn dispatch(
-        &mut self,
-        state: &mut ServerState,
-        dh: &wayland_server::DisplayHandle,
-    ) -> bool {
+    pub fn dispatch(&mut self, state: &mut Composer, dh: &wayland_server::DisplayHandle) -> bool {
         // Synchronize with potential external warps (e.g. wp_pointer_warp)
         if (self.cursor.x - state.cursor_pos.0).abs() > 0.1
             || (self.cursor.y - state.cursor_pos.1).abs() > 0.1
@@ -237,6 +233,7 @@ impl Input {
                             self.cursor.y = (self.cursor.y + dy).clamp(0.0, self.dimension.y);
 
                             state.cursor_pos = (self.cursor.x, self.cursor.y);
+                            state.needs_redraw = true;
                             state.wm.update_drag(self.cursor.x, self.cursor.y);
                             state
                                 .wm
@@ -267,6 +264,7 @@ impl Input {
                                 (abs_y + self.absolute_offset.y).clamp(0.0, self.dimension.y);
 
                             state.cursor_pos = (self.cursor.x, self.cursor.y);
+                            state.needs_redraw = true;
                             state.wm.update_drag(self.cursor.x, self.cursor.y);
                             state
                                 .wm
@@ -288,6 +286,8 @@ impl Input {
 
                         let is_left_click = button == 272;
                         let is_pressed = state_val == WlButtonState::Pressed;
+
+                        state.needs_redraw = true;
 
                         let super_mod = state.xkb_state.mod_name_is_active(
                             &xkbcommon::xkb::MOD_NAME_LOGO,
@@ -602,10 +602,12 @@ impl Input {
     >(
         event: E,
         source: wayland_server::protocol::wl_pointer::AxisSource,
-        state: &mut ServerState,
+        state: &mut Composer,
     ) {
         use input::event::pointer::Axis as LibinputAxis;
         use wayland_server::protocol::wl_pointer::Axis as WlAxis;
+
+        state.needs_redraw = true;
 
         if let Some(focused) = &state.pointer_focus {
             if let Some(client) = focused.client() {
@@ -638,7 +640,7 @@ impl Input {
         }
     }
 
-    fn route_pointer_motion(cursor: Vec2, state: &mut ServerState, time: u32) {
+    fn route_pointer_motion(cursor: Vec2, state: &mut Composer, time: u32) {
         if let Some(grabbed_surface) = state.pointer_grab.clone() {
             if let Some((abs_x, abs_y)) = state.get_surface_position(&grabbed_surface.id()) {
                 let local_x = cursor.x - abs_x;

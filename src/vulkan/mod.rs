@@ -1,4 +1,4 @@
-use ash::{Device, Entry, Instance, vk};
+use ash::{vk, Device, Entry, Instance};
 use drm::buffer::Buffer as _;
 use std::ffi::CStr;
 use std::os::fd::{IntoRawFd, OwnedFd};
@@ -53,11 +53,17 @@ impl VulkanContext {
             .position(|info| info.queue_flags.contains(vk::QueueFlags::GRAPHICS))
             .expect("No Graphics Queue found") as u32;
 
+        let mut physical_device_vulkan_12_features =
+            vk::PhysicalDeviceVulkan12Features::default().timeline_semaphore(true);
+
         let device_extensions = [
             ash::khr::external_memory_fd::NAME.as_ptr(),
             ash::khr::external_memory::NAME.as_ptr(),
             ash::ext::external_memory_dma_buf::NAME.as_ptr(),
             ash::ext::image_drm_format_modifier::NAME.as_ptr(),
+            ash::khr::external_semaphore_fd::NAME.as_ptr(),
+            ash::khr::external_semaphore::NAME.as_ptr(),
+            ash::khr::timeline_semaphore::NAME.as_ptr(),
         ];
 
         let queue_priorities = [1.0];
@@ -68,6 +74,7 @@ impl VulkanContext {
 
         let device_create_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(std::slice::from_ref(&queue_info))
+            .push_next(&mut physical_device_vulkan_12_features)
             .enabled_extension_names(&device_extensions);
 
         let device = unsafe {
@@ -511,6 +518,10 @@ impl VulkanContext {
         screen_w: u32,
         screen_h: u32,
         quads: &[DrawCommand],
+        wait_semaphores: &[vk::Semaphore],
+        wait_values: &[u64],
+        signal_semaphores: &[vk::Semaphore],
+        signal_values: &[u64],
     ) {
         unsafe {
             self.device.reset_fences(&[self.fence]).unwrap();
@@ -535,7 +546,7 @@ impl VulkanContext {
         // Begin the Render Pass
         let clear_values = [vk::ClearValue {
             color: vk::ClearColorValue {
-                float32: [1., 1., 1., 1.],
+                float32: [0., 0., 0., 1.],
             },
         }];
 
@@ -697,8 +708,21 @@ impl VulkanContext {
             self.device.end_command_buffer(cmd_buffer).unwrap();
         }
 
-        let submit_info =
-            vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cmd_buffer));
+        let mut wait_stages = Vec::new();
+        for _ in wait_semaphores {
+            wait_stages.push(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT);
+        }
+
+        let mut timeline_info = vk::TimelineSemaphoreSubmitInfo::default()
+            .wait_semaphore_values(wait_values)
+            .signal_semaphore_values(signal_values);
+
+        let submit_info = vk::SubmitInfo::default()
+            .push_next(&mut timeline_info)
+            .wait_semaphores(wait_semaphores)
+            .wait_dst_stage_mask(&wait_stages)
+            .command_buffers(std::slice::from_ref(&cmd_buffer))
+            .signal_semaphores(signal_semaphores);
 
         unsafe {
             self.device
@@ -1144,6 +1168,41 @@ impl VulkanContext {
         (descriptor_pool, descriptor_set)
     }
 
+    pub unsafe fn import_syncobj_as_semaphore(
+        &self,
+        fd: OwnedFd,
+    ) -> Result<vk::Semaphore, ash::vk::Result> {
+        let mut type_info = vk::SemaphoreTypeCreateInfo::default()
+            .semaphore_type(vk::SemaphoreType::TIMELINE)
+            .initial_value(0);
+
+        let create_info = vk::SemaphoreCreateInfo::default().push_next(&mut type_info);
+
+        let semaphore = unsafe { self.device.create_semaphore(&create_info, None)? };
+
+        let import_info = vk::ImportSemaphoreFdInfoKHR::default()
+            .semaphore(semaphore)
+            .flags(vk::SemaphoreImportFlags::empty())
+            .handle_type(vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_FD)
+            .fd(fd.into_raw_fd());
+
+        let ext_semaphore_fd =
+            ash::khr::external_semaphore_fd::Device::new(&self.instance, &self.device);
+
+        match unsafe { ext_semaphore_fd.import_semaphore_fd(&import_info) } {
+            Ok(_) => Ok(semaphore),
+            Err(e) => {
+                tracing::error!("Failed to import DRM Syncobj FD into Vulkan Semaphore: {:?}", e);
+                unsafe { self.device.destroy_semaphore(semaphore, None) };
+                Err(e)
+            }
+        }
+    }
+
+    pub unsafe fn get_semaphore_value(&self, semaphore: vk::Semaphore) -> Result<u64, vk::Result> {
+        unsafe { self.device.get_semaphore_counter_value(semaphore) }
+    }
+
     pub unsafe fn import_dmabuf(
         &self,
         ofd: &OwnedFd,
@@ -1153,23 +1212,26 @@ impl VulkanContext {
         stride: u32,
         modifier: u64,
         drm_format: u32,
+        wait_implicit: bool,
     ) -> (vk::Image, vk::DeviceMemory) {
         let dup_fd = ofd.try_clone().expect("Failed to duplicate DMA-BUF FD");
         let raw_fd = dup_fd.into_raw_fd();
 
-        // Wait for the client GPU to finish writing to the buffer (Implicit Synchronization)
-        let mut pollfd = libc::pollfd {
-            fd: raw_fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        unsafe {
-            // Wait up to 1000ms for the fence to signal.
-            let ret = libc::poll(&mut pollfd, 1, 1000);
-            if ret == 0 {
-                warn!("DMA-BUF poll timed out! Flickering might occur.");
-            } else if ret < 0 {
-                warn!("DMA-BUF poll failed!");
+        if wait_implicit {
+            // Wait for the client GPU to finish writing to the buffer (Implicit Synchronization)
+            let mut pollfd = libc::pollfd {
+                fd: raw_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            unsafe {
+                // Wait up to 1000ms for the fence to signal.
+                let ret = libc::poll(&mut pollfd, 1, 1000);
+                if ret == 0 {
+                    warn!("DMA-BUF poll timed out! Flickering might occur.");
+                } else if ret < 0 {
+                    warn!("DMA-BUF poll failed!");
+                }
             }
         }
 
@@ -1341,14 +1403,46 @@ impl RenderQuad {
     }
 }
 
-pub struct SurfaceTexture {
+use std::sync::Arc;
+
+pub struct VulkanTextureInner {
+    pub device: ash::Device,
     pub img: vk::Image,
     pub mem: vk::DeviceMemory,
     pub view: vk::ImageView,
     pub samp: vk::Sampler,
     pub pool: vk::DescriptorPool,
+}
+
+impl Drop for VulkanTextureInner {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.destroy_sampler(self.samp, None);
+            self.device.destroy_image_view(self.view, None);
+            self.device.destroy_image(self.img, None);
+            self.device.free_memory(self.mem, None);
+            self.device.destroy_descriptor_pool(self.pool, None);
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct SurfaceTexture {
+    pub inner: Arc<VulkanTextureInner>,
     pub set: vk::DescriptorSet,
     pub w: f32,
     pub h: f32,
     pub scale: f32,
+}
+
+impl SurfaceTexture {
+    pub fn clone_with_scale(&self, scale: f32) -> Self {
+        let mut new = self.clone();
+        new.scale = scale;
+        new
+    }
+
+    pub fn img(&self) -> vk::Image {
+        self.inner.img
+    }
 }

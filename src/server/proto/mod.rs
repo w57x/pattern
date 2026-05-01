@@ -18,3 +18,6 @@ pub mod workspace;
 pub mod xdg_activation;
 pub mod xdg_dialog;
 pub mod xdg_shell;
+pub mod linux_drm_syncobj;
+pub mod fifo;
+pub mod presentation;

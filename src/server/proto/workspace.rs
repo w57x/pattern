@@ -1,10 +1,10 @@
-use crate::server::ServerState;
+use crate::server::Composer;
 use wayland_protocols::ext::workspace::v1::server::{
     ext_workspace_group_handle_v1, ext_workspace_handle_v1, ext_workspace_manager_v1,
 };
 use wayland_server::{Dispatch, GlobalDispatch};
 
-impl GlobalDispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for ServerState {
+impl GlobalDispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -17,7 +17,7 @@ impl GlobalDispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for Ser
     }
 }
 
-impl Dispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for ServerState {
+impl Dispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for Composer {
     fn request(
         _state: &mut Self,
         _client: &wayland_server::Client,
@@ -35,7 +35,7 @@ impl Dispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for ServerSta
     }
 }
 
-impl Dispatch<ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1, ()> for ServerState {
+impl Dispatch<ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1, ()> for Composer {
     fn request(
         _state: &mut Self,
         _client: &wayland_server::Client,
@@ -53,7 +53,7 @@ impl Dispatch<ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1, ()> for 
     }
 }
 
-impl Dispatch<ext_workspace_handle_v1::ExtWorkspaceHandleV1, ()> for ServerState {
+impl Dispatch<ext_workspace_handle_v1::ExtWorkspaceHandleV1, ()> for Composer {
     fn request(
         _state: &mut Self,
         _client: &wayland_server::Client,

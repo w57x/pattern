@@ -1,11 +1,11 @@
-use crate::server::ServerState;
+use crate::server::Composer;
 use wayland_protocols::xdg::decoration::zv1::server::{
     zxdg_decoration_manager_v1::{self, ZxdgDecorationManagerV1},
     zxdg_toplevel_decoration_v1::{self, ZxdgToplevelDecorationV1},
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<ZxdgDecorationManagerV1, ()> for ServerState {
+impl GlobalDispatch<ZxdgDecorationManagerV1, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -18,7 +18,7 @@ impl GlobalDispatch<ZxdgDecorationManagerV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<ZxdgDecorationManagerV1, ()> for ServerState {
+impl Dispatch<ZxdgDecorationManagerV1, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -47,7 +47,7 @@ impl Dispatch<ZxdgDecorationManagerV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<ZxdgToplevelDecorationV1, ()> for ServerState {
+impl Dispatch<ZxdgToplevelDecorationV1, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,

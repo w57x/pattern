@@ -1,9 +1,9 @@
-use crate::server::ServerState;
+use crate::server::Composer;
 use tracing::debug;
 use wayland_protocols_wlr::layer_shell::v1::server::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, ()> for ServerState {
+impl GlobalDispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -16,7 +16,7 @@ impl GlobalDispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, ()> for ServerState {
+impl Dispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -59,7 +59,7 @@ impl Dispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for ServerState {
+impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,

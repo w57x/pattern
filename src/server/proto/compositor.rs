@@ -1,11 +1,13 @@
-use crate::server::ServerState;
+use crate::server::Composer;
+use std::os::fd::AsRawFd;
+use std::sync::Arc;
 use wayland_server::protocol::{
     wl_callback::WlCallback, wl_compositor::WlCompositor, wl_region::WlRegion,
     wl_surface::WlSurface,
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<WlCompositor, ()> for ServerState {
+impl GlobalDispatch<WlCompositor, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -18,7 +20,7 @@ impl GlobalDispatch<WlCompositor, ()> for ServerState {
     }
 }
 
-impl Dispatch<WlCompositor, ()> for ServerState {
+impl Dispatch<WlCompositor, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -49,14 +51,14 @@ impl Dispatch<WlCompositor, ()> for ServerState {
     }
 }
 
-impl Dispatch<WlSurface, ()> for ServerState {
+impl Dispatch<WlSurface, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
         surface: &WlSurface,
         request: wayland_server::protocol::wl_surface::Request,
         _data: &(),
-        dhandle: &wayland_server::DisplayHandle,
+        _dhandle: &wayland_server::DisplayHandle,
         data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
         use crate::vulkan::SurfaceTexture;
@@ -93,7 +95,6 @@ impl Dispatch<WlSurface, ()> for ServerState {
                 width,
                 height,
             } => {
-                // DamageBuffer is already in buffer-local coordinates.
                 state
                     .pending_damage
                     .entry(surface.id())
@@ -128,7 +129,6 @@ impl Dispatch<WlSurface, ()> for ServerState {
                 }
             }
             wayland_server::protocol::wl_surface::Request::Commit => {
-                // Apply regions
                 if let Some(input) = state.pending_input_region.remove(&surface.id()) {
                     state.surface_input_region.insert(surface.id(), input);
                 }
@@ -136,51 +136,65 @@ impl Dispatch<WlSurface, ()> for ServerState {
                     state.surface_opaque_region.insert(surface.id(), opaque);
                 }
 
-                // Apply damage (and clear it for next frame)
+                // Track if we had a previous sync state for delayed release
+                if let Some(new_sync) = state.pending_syncobj_state.remove(&surface.id()) {
+                    let sync_state = state.syncobj_state.entry(surface.id()).or_default();
+
+                    // The previous "current" buffer is now being replaced.
+                    // Move its release point to the signal queue.
+                    if let Some(old_release) = sync_state.current_release.take() {
+                        sync_state.signal_queue.push(old_release);
+                    }
+
+                    // Apply new state
+                    sync_state.acquire_point = new_sync.acquire_point;
+                    sync_state.current_release = new_sync.current_release;
+                    sync_state.signal_queue.extend(new_sync.signal_queue);
+                }
+
+                // Handle presentation feedbacks
+                if let Some(new_feedbacks) =
+                    state.pending_presentation_feedbacks.remove(&surface.id())
+                {
+                    if let Some(old_feedbacks) = state
+                        .surface_presentation_feedbacks
+                        .insert(surface.id(), new_feedbacks)
+                    {
+                        for fb in old_feedbacks {
+                            fb.discarded();
+                        }
+                    }
+                }
+
+                // Handle frame callbacks
+                if let Some(new_callbacks) = state.pending_frame_callbacks.remove(&surface.id()) {
+                    state.active_frame_callbacks.extend(new_callbacks);
+                }
+
+                state.needs_redraw = true;
+
                 let damage = state
                     .pending_damage
                     .remove(&surface.id())
                     .unwrap_or_default();
 
                 if let Some(buffer) = state.surface_buffers.remove(&surface.id()) {
+                    let scale = *state.pending_scales.get(&surface.id()).unwrap_or(&1);
+
                     if let Some(buffer_info) = state.buffers.get(&buffer.id()) {
-                        if let Some((_, mmap)) = state.pools.get(&buffer_info.pool_id) {
-                            let start = buffer_info.offset as usize;
-                            let len = (buffer_info.height * buffer_info.stride) as usize;
-                            let pixels = &mmap[start..start + len];
-                            let scale = *state.pending_scales.get(&surface.id()).unwrap_or(&1);
-
-                            unsafe {
-                                let mut can_reuse = false;
-                                if let Some(old) = state.surface_textures.get(&surface.id()) {
-                                    if old.w == buffer_info.width as f32
-                                        && old.h == buffer_info.height as f32
-                                        && (old.scale - scale as f32).abs() < 0.001
-                                    {
-                                        can_reuse = true;
+                        unsafe {
+                            let tex = if let Some(cached_tex) =
+                                state.buffer_textures.get(&buffer.id())
+                            {
+                                cached_tex.clone_with_scale(scale as f32)
+                            } else {
+                                if let Some((_, mmap)) = state.pools.get(&buffer_info.pool_id) {
+                                    let start = buffer_info.offset as usize;
+                                    let len = (buffer_info.height * buffer_info.stride) as usize;
+                                    if len == 0 || start + len > mmap.len() {
+                                        return;
                                     }
-                                }
-
-                                if can_reuse {
-                                    let old = state.surface_textures.get(&surface.id()).unwrap();
-                                    state.vkctx.update_texture(
-                                        old.img,
-                                        buffer_info.width as u32,
-                                        buffer_info.height as u32,
-                                        buffer_info.stride as u32,
-                                        pixels,
-                                        &damage,
-                                    );
-                                } else {
-                                    if let Some(old) = state.surface_textures.remove(&surface.id())
-                                    {
-                                        state.vkctx.device.destroy_sampler(old.samp, None);
-                                        state.vkctx.device.destroy_image_view(old.view, None);
-                                        state.vkctx.device.destroy_image(old.img, None);
-                                        state.vkctx.device.free_memory(old.mem, None);
-                                        state.vkctx.device.destroy_descriptor_pool(old.pool, None);
-                                    }
-
+                                    let pixels = &mmap[start..start + len];
                                     let (img, mem, view, samp) = state.vkctx.upload_texture(
                                         buffer_info.width as u32,
                                         buffer_info.height as u32,
@@ -194,104 +208,167 @@ impl Dispatch<WlSurface, ()> for ServerState {
                                         samp,
                                     );
 
-                                    #[rustfmt::skip]
-                                    state.surface_textures.insert(
-                                        surface.id(),
-                                        SurfaceTexture {
-                                            img, mem, view, samp, pool, set,
-                                            w: buffer_info.width as f32,
-                                            h: buffer_info.height as f32,
-                                            scale: scale as f32,
-                                        },
-                                    );
+                                    let inner = Arc::new(crate::vulkan::VulkanTextureInner {
+                                        device: state.vkctx.device.clone(),
+                                        img,
+                                        mem,
+                                        view,
+                                        samp,
+                                        pool,
+                                    });
+
+                                    let new_tex = SurfaceTexture {
+                                        inner,
+                                        set,
+                                        w: buffer_info.width as f32,
+                                        h: buffer_info.height as f32,
+                                        scale: scale as f32,
+                                    };
+
+                                    state.buffer_textures.insert(buffer.id(), new_tex.clone());
+                                    new_tex
+                                } else {
+                                    return;
                                 }
-
-                                state.wm.refresh_window_dimensions(
-                                    &surface.id(),
-                                    buffer_info.width,
-                                    buffer_info.height,
-                                );
-                            }
-                        }
-
-                        // SHM buffers can be released immediately since their data has been copied to the GPU
-                        buffer.release();
-                    } else if let Some(dmabuf) = state.dmabuffers.get(&buffer.id()) {
-                        let scale = *state.pending_scales.get(&surface.id()).unwrap_or(&1);
-                        unsafe {
-                            if let Some(old) = state.surface_textures.remove(&surface.id()) {
-                                state.vkctx.device.destroy_sampler(old.samp, None);
-                                state.vkctx.device.destroy_image_view(old.view, None);
-                                state.vkctx.device.destroy_image(old.img, None);
-                                state.vkctx.device.free_memory(old.mem, None);
-                                state.vkctx.device.destroy_descriptor_pool(old.pool, None);
-                            }
-
-                            let (img, mem) = state.vkctx.import_dmabuf(
-                                &dmabuf.fd,
-                                dmabuf.width,
-                                dmabuf.height,
-                                dmabuf.offset,
-                                dmabuf.stride,
-                                dmabuf.modifier,
-                                dmabuf.format,
-                            );
-
-                            let format = match dmabuf.format {
-                                0x34324241 | 0x34324258 => vk::Format::R8G8B8A8_UNORM,
-                                _ => vk::Format::B8G8R8A8_UNORM,
                             };
 
-                            let view_info = vk::ImageViewCreateInfo::default()
-                                .image(img)
-                                .view_type(vk::ImageViewType::TYPE_2D)
-                                .format(format)
-                                .subresource_range(
-                                    vk::ImageSubresourceRange::default()
-                                        .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                        .level_count(1)
-                                        .layer_count(1),
-                                );
+                            // Update SHM content if damaged. NO POLL NEEDED FOR SHM.
+                            if !damage.is_empty() {
+                                if let Some((_, mmap)) = state.pools.get(&buffer_info.pool_id) {
+                                    let start = buffer_info.offset as usize;
+                                    let len = (buffer_info.height * buffer_info.stride) as usize;
+                                    if len == 0 || start + len > mmap.len() {
+                                        return;
+                                    }
+                                    let pixels = &mmap[start..start + len];
+                                    state.vkctx.update_texture(
+                                        tex.inner.img,
+                                        buffer_info.width as u32,
+                                        buffer_info.height as u32,
+                                        buffer_info.stride as u32,
+                                        pixels,
+                                        &damage,
+                                    );
+                                }
+                            }
 
-                            let view = state
-                                .vkctx
-                                .device
-                                .create_image_view(&view_info, None)
-                                .expect("Failed to create Image View for DMA-BUF");
-
-                            let sampler_info = vk::SamplerCreateInfo::default()
-                                .mag_filter(vk::Filter::LINEAR)
-                                .min_filter(vk::Filter::LINEAR)
-                                .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                                .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-                                .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE);
-
-                            let samp = state
-                                .vkctx
-                                .device
-                                .create_sampler(&sampler_info, None)
-                                .expect("Failed to create Sampler for DMA-BUF");
-
-                            let (pool, set) = state.vkctx.create_descriptor_set(
-                                state.vkctx.descriptor_set_layout,
-                                view,
-                                samp,
+                            state.surface_textures.insert(surface.id(), tex);
+                            state.wm.refresh_window_dimensions(
+                                &surface.id(),
+                                buffer_info.width,
+                                buffer_info.height,
                             );
+                        }
 
-                            state.surface_textures.insert(
-                                surface.id(),
-                                SurfaceTexture {
-                                    img,
-                                    mem,
-                                    view,
-                                    samp,
-                                    pool,
-                                    set,
-                                    w: dmabuf.width as f32,
-                                    h: dmabuf.height as f32,
-                                    scale: scale as f32,
-                                },
-                            );
+                        // Buffer lifecycle: Only release the PREVIOUS buffer.
+                        // Holding the current one ensures the client doesn't overwrite it while we draw.
+                        if !state.explicit_sync_surfaces.contains(&surface.id()) {
+                            if let Some(old_buffer) =
+                                state.active_dmabufs.insert(surface.id(), buffer.clone())
+                            {
+                                if old_buffer.id() != buffer.id() {
+                                    old_buffer.release();
+                                }
+                            }
+                        } else {
+                            state.active_dmabufs.insert(surface.id(), buffer.clone());
+                        }
+                    } else if let Some(dmabuf) = state.dmabuffers.get(&buffer.id()) {
+                        unsafe {
+                            let has_acquire_point = state
+                                .pending_syncobj_state
+                                .get(&surface.id())
+                                .and_then(|s| s.acquire_point)
+                                .is_some();
+
+                            let tex =
+                                if let Some(cached_tex) = state.buffer_textures.get(&buffer.id()) {
+                                    cached_tex.clone_with_scale(scale as f32)
+                                } else {
+                                    let (img, mem) = state.vkctx.import_dmabuf(
+                                        &dmabuf.fd,
+                                        dmabuf.width,
+                                        dmabuf.height,
+                                        dmabuf.offset,
+                                        dmabuf.stride,
+                                        dmabuf.modifier,
+                                        dmabuf.format,
+                                        !has_acquire_point,
+                                    );
+
+                                    let format = match dmabuf.format {
+                                        0x34324241 | 0x34324258 => vk::Format::R8G8B8A8_UNORM,
+                                        _ => vk::Format::B8G8R8A8_UNORM,
+                                    };
+
+                                    let view_info = vk::ImageViewCreateInfo::default()
+                                        .image(img)
+                                        .view_type(vk::ImageViewType::TYPE_2D)
+                                        .format(format)
+                                        .subresource_range(
+                                            vk::ImageSubresourceRange::default()
+                                                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                                                .level_count(1)
+                                                .layer_count(1),
+                                        );
+
+                                    let view = state
+                                        .vkctx
+                                        .device
+                                        .create_image_view(&view_info, None)
+                                        .expect("Fail View");
+
+                                    let sampler_info = vk::SamplerCreateInfo::default()
+                                        .mag_filter(vk::Filter::LINEAR)
+                                        .min_filter(vk::Filter::LINEAR)
+                                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE);
+
+                                    let samp = state
+                                        .vkctx
+                                        .device
+                                        .create_sampler(&sampler_info, None)
+                                        .expect("Fail Sampler");
+
+                                    let (pool, set) = state.vkctx.create_descriptor_set(
+                                        state.vkctx.descriptor_set_layout,
+                                        view,
+                                        samp,
+                                    );
+
+                                    let inner = Arc::new(crate::vulkan::VulkanTextureInner {
+                                        device: state.vkctx.device.clone(),
+                                        img,
+                                        mem,
+                                        view,
+                                        samp,
+                                        pool,
+                                    });
+
+                                    let new_tex = SurfaceTexture {
+                                        inner,
+                                        set,
+                                        w: dmabuf.width as f32,
+                                        h: dmabuf.height as f32,
+                                        scale: scale as f32,
+                                    };
+
+                                    state.buffer_textures.insert(buffer.id(), new_tex.clone());
+                                    new_tex
+                                };
+
+                            // Synchronization: Only poll if NOT using explicit sync
+                            if !has_acquire_point {
+                                let mut pollfd = libc::pollfd {
+                                    fd: dmabuf.fd.as_raw_fd(),
+                                    events: libc::POLLIN,
+                                    revents: 0,
+                                };
+                                libc::poll(&mut pollfd, 1, 100);
+                            }
+
+                            state.surface_textures.insert(surface.id(), tex);
                             state.wm.refresh_window_dimensions(
                                 &surface.id(),
                                 dmabuf.width as i32,
@@ -299,57 +376,51 @@ impl Dispatch<WlSurface, ()> for ServerState {
                             );
                         }
 
-                        // DMA-BUF buffers are not copied, they are directly read by the GPU.
-                        // We must hold onto the new buffer and only release the PREVIOUS one,
-                        // ensuring the client does not overwrite the buffer currently on screen.
-                        if let Some(old_buffer) =
-                            state.active_dmabufs.insert(surface.id(), buffer.clone())
-                        {
-                            if old_buffer.id() != buffer.id() {
-                                old_buffer.release();
+                        if !state.explicit_sync_surfaces.contains(&surface.id()) {
+                            if let Some(old_buffer) =
+                                state.active_dmabufs.insert(surface.id(), buffer.clone())
+                            {
+                                if old_buffer.id() != buffer.id() {
+                                    old_buffer.release();
+                                }
                             }
+                        } else {
+                            state.active_dmabufs.insert(surface.id(), buffer.clone());
                         }
                     }
                 }
             }
             wayland_server::protocol::wl_surface::Request::Frame { callback } => {
                 let cb = data_init.init(callback, ());
-                state.frame_callbacks.push(cb);
+                state
+                    .pending_frame_callbacks
+                    .entry(surface.id())
+                    .or_default()
+                    .push(cb);
             }
             wayland_server::protocol::wl_surface::Request::SetBufferScale { scale } => {
                 state.pending_scales.insert(surface.id(), scale);
             }
             wayland_server::protocol::wl_surface::Request::Destroy => {
-                let is_focused = state.input_focus.as_ref().map(|s| s.id()) == Some(surface.id());
-                if is_focused {
-                    state.input_focus = None;
-                }
-                if state.pointer_focus.as_ref().map(|s| s.id()) == Some(surface.id()) {
-                    state.pointer_focus = None;
-                }
                 state.wm.unmap_window(&surface.id());
                 state.wm.unmap_popup(&surface.id());
                 state.surfaces.retain(|s| s.id() != surface.id());
+                state.surface_textures.remove(&surface.id());
                 if let Some(vp_id) = state.surface_to_viewport.remove(&surface.id()) {
                     state.viewports.remove(&vp_id);
                 }
-
                 if let Some(active_buf) = state.active_dmabufs.remove(&surface.id()) {
                     active_buf.release();
                 }
-
-                if is_focused {
-                    if let Some(next_window) = state.wm.get_focused_window() {
-                        state.set_input_focus(next_window, dhandle);
-                    }
-                }
+                state.pending_syncobj_state.remove(&surface.id());
+                state.syncobj_state.remove(&surface.id());
             }
             _ => {}
         }
     }
 }
 
-impl Dispatch<WlCallback, ()> for ServerState {
+impl Dispatch<WlCallback, ()> for Composer {
     fn request(
         _state: &mut Self,
         _client: &wayland_server::Client,
@@ -362,7 +433,7 @@ impl Dispatch<WlCallback, ()> for ServerState {
     }
 }
 
-impl Dispatch<WlRegion, ()> for ServerState {
+impl Dispatch<WlRegion, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -396,10 +467,6 @@ impl Dispatch<WlRegion, ()> for ServerState {
                 height,
             } => {
                 if let Some(rects) = state.regions.get_mut(&resource.id()) {
-                    // Simple subtraction: remove any rect that is entirely contained in the subtracted area
-                    // or just don't support it for now. But "no half baked" means we should try.
-                    // Actually, Wayland regions are usually additive. Subtracting is harder.
-                    // For now, let's just filter out rects that are exactly the same or contained.
                     rects.retain(|r| {
                         !(r.x >= x && r.y >= y && r.x + r.w <= x + width && r.y + r.h <= y + height)
                     });

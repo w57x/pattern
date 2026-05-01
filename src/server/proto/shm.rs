@@ -1,8 +1,8 @@
-use crate::server::{ServerState, ShmBuffer};
+use crate::server::{Composer, ShmBuffer};
 use wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm::WlShm, wl_shm_pool::WlShmPool};
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<WlShm, ()> for ServerState {
+impl GlobalDispatch<WlShm, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -18,7 +18,7 @@ impl GlobalDispatch<WlShm, ()> for ServerState {
     }
 }
 
-impl Dispatch<WlShm, ()> for ServerState {
+impl Dispatch<WlShm, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -42,7 +42,7 @@ impl Dispatch<WlShm, ()> for ServerState {
     }
 }
 
-impl Dispatch<WlShmPool, ()> for ServerState {
+impl Dispatch<WlShmPool, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -96,7 +96,7 @@ impl Dispatch<WlShmPool, ()> for ServerState {
     }
 }
 
-impl Dispatch<WlBuffer, ()> for ServerState {
+impl Dispatch<WlBuffer, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -110,6 +110,7 @@ impl Dispatch<WlBuffer, ()> for ServerState {
             wayland_server::protocol::wl_buffer::Request::Destroy => {
                 state.buffers.remove(&resource.id());
                 state.dmabuffers.remove(&resource.id());
+                state.buffer_textures.remove(&resource.id());
             }
             _ => {}
         }

@@ -1,8 +1,8 @@
-use crate::server::{ServerState, SubsurfaceData};
+use crate::server::{Composer, SubsurfaceData};
 use wayland_server::protocol::{wl_subcompositor::WlSubcompositor, wl_subsurface::WlSubsurface};
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<WlSubcompositor, ()> for ServerState {
+impl GlobalDispatch<WlSubcompositor, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -15,7 +15,7 @@ impl GlobalDispatch<WlSubcompositor, ()> for ServerState {
     }
 }
 
-impl Dispatch<WlSubcompositor, ()> for ServerState {
+impl Dispatch<WlSubcompositor, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -46,7 +46,7 @@ impl Dispatch<WlSubcompositor, ()> for ServerState {
     }
 }
 
-impl Dispatch<WlSubsurface, ()> for ServerState {
+impl Dispatch<WlSubsurface, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,

@@ -1,3 +1,4 @@
+use tracing::debug;
 use wayland_protocols::xdg::shell::server::xdg_popup::XdgPopup;
 use wayland_protocols::xdg::shell::server::xdg_surface::XdgSurface;
 use wayland_protocols::xdg::shell::server::xdg_toplevel::XdgToplevel;
@@ -1150,6 +1151,11 @@ impl WindowManager for FloatingWm {
         layer_surface: wayland_protocols_wlr::layer_shell::v1::server::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
         layer: u32,
     ) {
+        debug!(
+            "Mapping layer surface: id={:?}, layer={}",
+            surface.id(),
+            layer
+        );
         if self.outputs.is_empty() {
             return;
         }

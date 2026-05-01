@@ -1,4 +1,4 @@
-use crate::server::{DmabufData, ServerState};
+use crate::server::{Composer, DmabufData};
 use std::os::fd::AsFd;
 use wayland_protocols::wp::linux_dmabuf::zv1::server::{
     zwp_linux_buffer_params_v1,
@@ -10,7 +10,7 @@ use wayland_protocols::wp::linux_dmabuf::zv1::server::{
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<ZwpLinuxDmabufV1, ()> for ServerState {
+impl GlobalDispatch<ZwpLinuxDmabufV1, ()> for Composer {
     fn bind(
         _state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
@@ -30,7 +30,7 @@ impl GlobalDispatch<ZwpLinuxDmabufV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<ZwpLinuxDmabufV1, ()> for ServerState {
+impl Dispatch<ZwpLinuxDmabufV1, ()> for Composer {
     fn request(
         state: &mut Self,
         _client: &wayland_server::Client,
@@ -73,7 +73,7 @@ impl Dispatch<ZwpLinuxDmabufV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for ServerState {
+impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for Composer {
     fn request(
         _state: &mut Self,
         _client: &wayland_server::Client,
@@ -86,7 +86,7 @@ impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for ServerState {
     }
 }
 
-impl Dispatch<ZwpLinuxBufferParamsV1, ()> for ServerState {
+impl Dispatch<ZwpLinuxBufferParamsV1, ()> for Composer {
     fn request(
         state: &mut Self,
         client: &wayland_server::Client,
@@ -136,7 +136,7 @@ impl Dispatch<ZwpLinuxBufferParamsV1, ()> for ServerState {
                     data.height = height as u32;
                     data.format = format;
 
-                    let wl_buffer = client.create_resource::<wayland_server::protocol::wl_buffer::WlBuffer, (), ServerState>(
+                    let wl_buffer = client.create_resource::<wayland_server::protocol::wl_buffer::WlBuffer, (), Composer>(
                         dhandle,
                         resource.version(),
                         (),
