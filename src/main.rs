@@ -251,6 +251,7 @@ fn main() {
     }
 
     let mut frame_index = 0;
+    let mut initial_modeset = true;
 
     let mut waiting_for_flip = false;
     let mut running = true;
@@ -576,16 +577,40 @@ fn main() {
                 composer.drop_semaphores();
             }
 
-            card.page_flip(
-                info.crtc_handle,
-                frame.fb_handle,
-                drm::control::PageFlipFlags::EVENT,
-                None, // No user data for now
-            )
-            .expect("Failed to page flip");
+            if initial_modeset {
+                // Clear any hardware cursor that might be lingering
+                #[allow(deprecated)]
+                let _ = card.set_cursor::<Buffer<()>>(info.crtc_handle, None);
 
-            waiting_for_flip = true;
-            frame_index += 1;
+                card.set_crtc(
+                    info.crtc_handle,
+                    Some(frame.fb_handle),
+                    (0, 0),
+                    &[info.connector_handle],
+                    Some(info.mode),
+                )
+                .expect("Failed to set CRTC");
+
+                initial_modeset = false;
+                frame_index += 1;
+                composer.needs_redraw = true;
+            } else {
+                match card.page_flip(
+                    info.crtc_handle,
+                    frame.fb_handle,
+                    drm::control::PageFlipFlags::EVENT,
+                    None, // No user data for now
+                ) {
+                    Ok(_) => {
+                        waiting_for_flip = true;
+                        frame_index += 1;
+                    }
+                    Err(e) => {
+                        error!("Failed to page flip: {}", e);
+                        composer.needs_redraw = true; // Try again next loop
+                    }
+                }
+            }
         }
 
         let _ = display.flush_clients();

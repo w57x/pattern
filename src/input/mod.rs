@@ -11,7 +11,7 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::io::OwnedFd;
 use std::path::Path;
 use std::rc::Rc;
-use tracing::debug;
+use tracing::{debug, warn};
 use wayland_server::Resource;
 use wayland_server::protocol::{wl_keyboard, wl_pointer};
 
@@ -608,7 +608,9 @@ impl Input {
                     }
                 }
                 input::Event::Switch(_) => {}
-                _ => todo!(),
+                _ => {
+                    warn!("Unhandled libinput event: {:?}", event);
+                }
             }
         }
 
