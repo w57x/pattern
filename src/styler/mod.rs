@@ -44,7 +44,21 @@ pub trait Styler {
         surface_to_viewport: &HashMap<ObjectId, ObjectId>,
         input_regions: &HashMap<ObjectId, Vec<crate::wm::Rect>>,
         wm: &dyn crate::wm::WindowManager,
+        extra_hit_surfaces: &[(WlSurface, f64, f64)],
     ) -> HitResult;
+
+    /// Draws a surface and all its subsurfaces at the given global position.
+    fn draw_surface_tree(
+        &self,
+        surface: &WlSurface,
+        abs_x: f64,
+        abs_y: f64,
+        subsurfaces: &[SubsurfaceData],
+        textures: &HashMap<ObjectId, SurfaceTexture>,
+        viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
+        surface_to_viewport: &HashMap<ObjectId, ObjectId>,
+        draw_list: &mut Vec<DrawCommand>,
+    );
 
     /// Returns whether this styler supports server-side decorations (SSD).
     fn supports_ssd(&self) -> bool {
@@ -231,7 +245,7 @@ impl Styler for DefaultStyler {
             for win_state in layer {
                 // Do not apply SSD border radius to layer shell surfaces
                 let radius = if win_state.ssd && win_state.layer_surface.is_none() {
-                    20.0
+                    12.0
                 } else {
                     0.0
                 };
@@ -280,7 +294,26 @@ impl Styler for DefaultStyler {
         surface_to_viewport: &HashMap<ObjectId, ObjectId>,
         input_regions: &HashMap<ObjectId, Vec<crate::wm::Rect>>,
         wm: &dyn crate::wm::WindowManager,
+        extra_hit_surfaces: &[(wayland_server::protocol::wl_surface::WlSurface, f64, f64)],
     ) -> HitResult {
+        // we check extra hit surfaces (like IME popups) first, as they are drawn on top
+        for (surface, surf_x, surf_y) in extra_hit_surfaces.iter().rev() {
+            if let Some(hit) = self.hit_test_recursive(
+                surface,
+                *surf_x,
+                *surf_y,
+                cursor_x,
+                cursor_y,
+                subsurfaces,
+                textures,
+                viewports,
+                surface_to_viewport,
+                input_regions,
+            ) {
+                return hit;
+            }
+        }
+
         for popup in wm.get_popups().iter().rev() {
             let (abs_x, abs_y) = wm.get_absolute_position(&popup.surface.id());
             let surf_x = abs_x - popup.geometry.x as f64;
@@ -348,5 +381,29 @@ impl Styler for DefaultStyler {
 
     fn supports_ssd(&self) -> bool {
         true
+    }
+
+    fn draw_surface_tree(
+        &self,
+        surface: &WlSurface,
+        abs_x: f64,
+        abs_y: f64,
+        subsurfaces: &[SubsurfaceData],
+        textures: &HashMap<ObjectId, SurfaceTexture>,
+        viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
+        surface_to_viewport: &HashMap<ObjectId, ObjectId>,
+        draw_list: &mut Vec<DrawCommand>,
+    ) {
+        self.draw_surface_recursive(
+            surface,
+            abs_x,
+            abs_y,
+            subsurfaces,
+            textures,
+            viewports,
+            surface_to_viewport,
+            draw_list,
+            0.0,
+        );
     }
 }
