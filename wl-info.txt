@@ -54,3 +54,7 @@ interface: 'wp_linux_drm_syncobj_manager_v1',            version:  1, name: 22
 interface: 'wp_fifo_manager_v1',                         version:  1, name: 23
 interface: 'wp_presentation',                            version:  2, name: 24
 	presentation clock id: 1 (CLOCK_MONOTONIC)
+interface: 'zwp_text_input_manager_v3',                  version:  1, name: 25
+interface: 'zwp_input_method_manager_v2',                version:  1, name: 26
+interface: 'zwp_virtual_keyboard_manager_v1',            version:  1, name: 27
+interface: 'zwlr_data_control_manager_v1',               version:  2, name: 28
