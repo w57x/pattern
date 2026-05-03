@@ -1,7 +1,7 @@
-use input::event::EventTrait;
 use input::event::gesture::GestureHoldEvent;
 use input::event::keyboard::KeyboardEventTrait;
 use input::event::pointer::PointerEventTrait;
+use input::event::{EventTrait, pointer};
 use input::{Libinput, LibinputInterface};
 use libseat::Seat;
 use nix::unistd::dup;
@@ -13,6 +13,7 @@ use std::path::Path;
 use std::rc::Rc;
 use tracing::debug;
 use wayland_server::Resource;
+use wayland_server::protocol::{wl_keyboard, wl_pointer};
 
 use crate::server::Composer;
 
@@ -137,9 +138,9 @@ impl Input {
                     let time = k.time();
 
                     let key_state = if k.key_state() == input::event::keyboard::KeyState::Pressed {
-                        wayland_server::protocol::wl_keyboard::KeyState::Pressed
+                        wl_keyboard::KeyState::Pressed
                     } else {
-                        wayland_server::protocol::wl_keyboard::KeyState::Released
+                        wl_keyboard::KeyState::Released
                     };
 
                     let xkb_keycode = key + 8;
@@ -175,6 +176,19 @@ impl Input {
                     let group = state
                         .xkb_state
                         .serialize_layout(xkbcommon::xkb::STATE_LAYOUT_EFFECTIVE);
+
+                    // Forward to IME grabs
+                    let mut grabbed = false;
+                    for (grab, _) in &state.input_method_grabs {
+                        state.serial += 1;
+                        grab.key(state.serial, time, key, key_state);
+                        grab.modifiers(state.serial, depressed, latched, locked, group);
+                        grabbed = true;
+                    }
+
+                    if grabbed {
+                        continue;
+                    }
 
                     if let Some(focused_surface) = &state.input_focus {
                         if let Some(client) = focused_surface.client() {
@@ -294,6 +308,7 @@ impl Input {
                             xkbcommon::xkb::STATE_MODS_EFFECTIVE,
                         );
 
+                        let extra_surfaces = state.get_input_popup_surfaces();
                         let hit = state.styler.hit_test(
                             self.cursor.x,
                             self.cursor.y,
@@ -303,30 +318,33 @@ impl Input {
                             &state.surface_to_viewport,
                             &state.surface_input_region,
                             state.wm.as_ref(),
+                            &extra_surfaces,
                         );
                         let hit_surface = hit.surface;
 
                         if is_left_click && is_pressed {
                             if let Some(surf) = &hit_surface {
-                                let focused_id = state.wm.focus_window(&surf.id());
-                                let target_surf = state
-                                    .surfaces
-                                    .iter()
-                                    .find(|s| s.id() == focused_id)
-                                    .cloned()
-                                    .unwrap_or_else(|| surf.clone());
+                                if !state.is_input_popup(&surf.id()) {
+                                    let focused_id = state.wm.focus_window(&surf.id());
+                                    let target_surf = state
+                                        .surfaces
+                                        .iter()
+                                        .find(|s| s.id() == focused_id)
+                                        .cloned()
+                                        .unwrap_or_else(|| surf.clone());
 
-                                state.set_input_focus(target_surf.clone(), dh);
-                                state.pointer_grab = Some(surf.clone());
+                                    state.set_input_focus(target_surf.clone(), dh);
 
-                                if super_mod {
-                                    state.wm.begin_drag(
-                                        &target_surf.id(),
-                                        self.cursor.x,
-                                        self.cursor.y,
-                                        state.mode.size(),
-                                    );
+                                    if super_mod {
+                                        state.wm.begin_drag(
+                                            &target_surf.id(),
+                                            self.cursor.x,
+                                            self.cursor.y,
+                                            state.mode.size(),
+                                        );
+                                    }
                                 }
+                                state.pointer_grab = Some(surf.clone());
                             }
                         } else if is_left_click && !is_pressed {
                             state.wm.end_drag();
@@ -597,15 +615,13 @@ impl Input {
         return should_exit;
     }
 
-    fn handle_scroll<
-        E: input::event::pointer::PointerScrollEvent + input::event::pointer::PointerEventTrait,
-    >(
+    fn handle_scroll<E: pointer::PointerScrollEvent + pointer::PointerEventTrait>(
         event: E,
-        source: wayland_server::protocol::wl_pointer::AxisSource,
+        source: wl_pointer::AxisSource,
         state: &mut Composer,
     ) {
-        use input::event::pointer::Axis as LibinputAxis;
-        use wayland_server::protocol::wl_pointer::Axis as WlAxis;
+        use pointer::Axis as LibinputAxis;
+        use wl_pointer::Axis as WlAxis;
 
         state.needs_redraw = true;
 
@@ -650,6 +666,7 @@ impl Input {
             }
         }
 
+        let extra_surfaces = state.get_input_popup_surfaces();
         let hit = state.styler.hit_test(
             cursor.x,
             cursor.y,
@@ -659,6 +676,7 @@ impl Input {
             &state.surface_to_viewport,
             &state.surface_input_region,
             state.wm.as_ref(),
+            &extra_surfaces,
         );
 
         state.set_pointer_focus(hit.surface, hit.local_x, hit.local_y, time);

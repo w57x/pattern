@@ -11,18 +11,23 @@ use ash::vk;
 use nix::sys::memfd::{MFdFlags, memfd_create};
 use rand::prelude::*;
 use tracing::error;
+use wayland_protocols_wlr::data_control::v1::server::{
+    zwlr_data_control_device_v1, zwlr_data_control_offer_v1, zwlr_data_control_source_v1,
+};
 use wayland_server::{
-    Resource, WEnum,
+    Client, Resource, WEnum,
     backend::{ClientData, ClientId, DisconnectReason, ObjectId},
     protocol::{
         wl_buffer::WlBuffer, wl_callback::WlCallback, wl_data_device, wl_data_offer::WlDataOffer,
-        wl_data_source, wl_keyboard::WlKeyboard, wl_pointer::WlPointer, wl_surface::WlSurface,
+        wl_data_source, wl_keyboard::WlKeyboard, wl_pointer::WlPointer, wl_seat::WlSeat,
+        wl_surface::WlSurface,
     },
 };
 
 use wayland_protocols::{
     wp::{
         cursor_shape::v1::server::wp_cursor_shape_device_v1,
+        linux_drm_syncobj::v1::server::wp_linux_drm_syncobj_timeline_v1::WpLinuxDrmSyncobjTimelineV1,
         pointer_constraints::zv1::server::{zwp_confined_pointer_v1, zwp_locked_pointer_v1},
         pointer_gestures::zv1::server::{
             zwp_pointer_gesture_hold_v1, zwp_pointer_gesture_pinch_v1, zwp_pointer_gesture_swipe_v1,
@@ -34,8 +39,16 @@ use wayland_protocols::{
             zwp_primary_selection_source_v1,
         },
         relative_pointer::zv1::server::zwp_relative_pointer_v1,
+        text_input::zv3::server::zwp_text_input_v3::ZwpTextInputV3,
     },
-    xdg::shell::server::{xdg_positioner, xdg_toplevel::XdgToplevel},
+    xdg::shell::server::{
+        xdg_popup::XdgPopup, xdg_positioner, xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel,
+    },
+};
+
+use wayland_protocols_misc::zwp_input_method_v2::server::{
+    zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2,
+    zwp_input_method_v2::ZwpInputMethodV2, zwp_input_popup_surface_v2::ZwpInputPopupSurfaceV2,
 };
 
 use crate::{
@@ -84,6 +97,67 @@ impl Default for PositionerData {
             constraint_adjustment: WEnum::Value(xdg_positioner::ConstraintAdjustment::None),
         }
     }
+}
+
+#[derive(Clone)]
+pub enum SelectionSource {
+    Standard(wl_data_source::WlDataSource),
+    Primary(zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1),
+    DataControl(zwlr_data_control_source_v1::ZwlrDataControlSourceV1),
+}
+
+impl SelectionSource {
+    pub fn id(&self) -> ObjectId {
+        match self {
+            Self::Standard(s) => s.id(),
+            Self::Primary(s) => s.id(),
+            Self::DataControl(s) => s.id(),
+        }
+    }
+
+    pub fn client(&self) -> Option<Client> {
+        match self {
+            Self::Standard(s) => s.client(),
+            Self::Primary(s) => s.client(),
+            Self::DataControl(s) => s.client(),
+        }
+    }
+
+    pub fn cancelled(&self) {
+        match self {
+            Self::Standard(s) => s.cancelled(),
+            Self::Primary(s) => s.cancelled(),
+            Self::DataControl(s) => s.cancelled(),
+        }
+    }
+
+    pub fn send(&self, mime_type: String, fd: std::os::unix::io::BorrowedFd<'_>) {
+        match self {
+            Self::Standard(s) => s.send(mime_type, fd),
+            Self::Primary(s) => s.send(mime_type, fd),
+            Self::DataControl(s) => s.send(mime_type, fd),
+        }
+    }
+
+    pub fn target(&self, mime_type: Option<String>) {
+        match self {
+            Self::Standard(s) => s.target(mime_type),
+            Self::Primary(_) => {
+                // Primary selection does not have a target event
+            }
+            Self::DataControl(_) => {
+                // Data control sources don't support explicit target feedback
+            }
+        }
+    }
+}
+
+pub struct LayerState {
+    pub size: Option<(u32, u32)>,
+    pub anchor: Option<u32>,
+    pub zone: Option<i32>,
+    pub margin: Option<(i32, i32, i32, i32)>,
+    pub interactivity: Option<u32>,
 }
 
 pub struct Composer {
@@ -172,7 +246,14 @@ pub struct Composer {
     pub surface_to_viewport: HashMap<ObjectId, ObjectId>,
 
     pub data_sources: HashMap<ObjectId, (wl_data_source::WlDataSource, Vec<String>)>,
-    pub selection: Option<wl_data_source::WlDataSource>,
+    pub data_control_sources: HashMap<
+        ObjectId,
+        (
+            zwlr_data_control_source_v1::ZwlrDataControlSourceV1,
+            Vec<String>,
+        ),
+    >,
+    pub selection: Option<SelectionSource>,
     pub data_devices: Vec<wl_data_device::WlDataDevice>,
 
     pub primary_selection_sources: HashMap<
@@ -182,16 +263,33 @@ pub struct Composer {
             Vec<String>,
         ),
     >,
-    pub primary_selection: Option<zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1>,
+    pub primary_selection: Option<SelectionSource>,
     pub primary_selection_devices:
         Vec<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1>,
+    pub data_control_devices: Vec<zwlr_data_control_device_v1::ZwlrDataControlDeviceV1>,
+
+    pub text_inputs: Vec<(
+        ZwpTextInputV3,
+        WlSeat,
+        crate::server::proto::text_input::TextInputState,
+    )>,
+
+    pub input_methods: Vec<(ZwpInputMethodV2, WlSeat)>,
+    pub input_popups: Vec<(ZwpInputPopupSurfaceV2, WlSurface, ZwpInputMethodV2)>,
+    pub input_method_grabs: Vec<(ZwpInputMethodKeyboardGrabV2, ZwpInputMethodV2)>,
+
+    pub unparented_popups: HashMap<ObjectId, (WlSurface, XdgSurface, XdgPopup, PositionerData)>,
 
     pub last_enter_serial: HashMap<ClientId, u32>,
 
     pub regions: HashMap<ObjectId, Vec<crate::wm::Rect>>,
     pub pending_damage: HashMap<ObjectId, Vec<crate::wm::Rect>>,
-    pub pending_input_region: HashMap<ObjectId, Vec<crate::wm::Rect>>,
-    pub pending_opaque_region: HashMap<ObjectId, Vec<crate::wm::Rect>>,
+    pub pending_input_region: HashMap<ObjectId, Option<Vec<crate::wm::Rect>>>,
+    pub pending_opaque_region: HashMap<ObjectId, Option<Vec<crate::wm::Rect>>>,
+    pub pending_geometry: HashMap<ObjectId, crate::wm::Rect>,
+    pub pending_subsurface_positions: HashMap<ObjectId, (i32, i32)>,
+    pub pending_popup_positions: HashMap<ObjectId, (i32, i32)>,
+    pub pending_layer_state: HashMap<ObjectId, LayerState>,
     pub surface_input_region: HashMap<ObjectId, Vec<crate::wm::Rect>>,
     pub surface_opaque_region: HashMap<ObjectId, Vec<crate::wm::Rect>>,
 }
@@ -206,12 +304,14 @@ pub struct SubsurfaceData {
 }
 
 impl Composer {
-    pub fn new(
+    pub fn init(
         vkctx: Rc<VulkanContext>,
         mode: drm::control::Mode,
         card_info: CardInfo,
         gpu_dev_t: u64,
         dmabuf_table_fd: std::os::unix::io::OwnedFd,
+        wm: Box<dyn crate::wm::WindowManager>,
+        styler: Box<dyn crate::styler::Styler>,
     ) -> Self {
         use nix::unistd::{ftruncate, write};
         use xkbcommon::xkb;
@@ -263,8 +363,8 @@ impl Composer {
             cursor_shape: None,
 
             window_surfaces: Vec::new(),
-            wm: Box::new(crate::wm::FloatingWm::new()),
-            styler: Box::new(crate::styler::DefaultStyler::new()),
+            wm,
+            styler,
             cursor_pos: (0., 0.),
 
             pending_frame_callbacks: HashMap::new(),
@@ -319,12 +419,20 @@ impl Composer {
             surface_to_viewport: HashMap::new(),
 
             data_sources: HashMap::new(),
+            data_control_sources: HashMap::new(),
             selection: None,
             data_devices: Vec::new(),
 
             primary_selection_sources: HashMap::new(),
             primary_selection: None,
             primary_selection_devices: Vec::new(),
+            data_control_devices: Vec::new(),
+
+            text_inputs: Vec::new(),
+            input_methods: Vec::new(),
+            input_popups: Vec::new(),
+            input_method_grabs: Vec::new(),
+            unparented_popups: HashMap::new(),
 
             last_enter_serial: HashMap::new(),
 
@@ -332,22 +440,85 @@ impl Composer {
             pending_damage: HashMap::new(),
             pending_input_region: HashMap::new(),
             pending_opaque_region: HashMap::new(),
+            pending_geometry: HashMap::new(),
+            pending_subsurface_positions: HashMap::new(),
+            pending_popup_positions: HashMap::new(),
+            pending_layer_state: HashMap::new(),
             surface_input_region: HashMap::new(),
             surface_opaque_region: HashMap::new(),
         }
     }
+}
 
+impl Composer {
     pub fn load_cursor_shape(&mut self, shape: wp_cursor_shape_device_v1::Shape) {
         self.cursor_manager.get_or_load(shape, &self.vkctx)
     }
 
+    pub fn is_input_popup(&self, surface_id: &ObjectId) -> bool {
+        for (_, popup_surf, _) in &self.input_popups {
+            if &popup_surf.id() == surface_id {
+                return true;
+            }
+            if self.is_child_of(surface_id, &popup_surf.id()) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn is_child_of(&self, child_id: &ObjectId, parent_id: &ObjectId) -> bool {
+        if let Some(sub) = self
+            .subsurfaces
+            .iter()
+            .find(|s| &s.surface.id() == child_id)
+        {
+            if &sub.parent.id() == parent_id {
+                return true;
+            }
+            return self.is_child_of(&sub.parent.id(), parent_id);
+        }
+        false
+    }
+
+    pub fn get_input_popup_surfaces(&self) -> Vec<(WlSurface, f64, f64)> {
+        let mut surfaces = Vec::new();
+
+        // we find the active text input for the currently focused surface
+        let active_ti = if let Some(focus) = &self.input_focus {
+            self.text_inputs.iter().find(|(_, _, ti_state)| {
+                ti_state.active && ti_state.surface.as_ref().map(|s| s.id()) == Some(focus.id())
+            })
+        } else {
+            None
+        };
+
+        if let Some((_, _ti_seat, ti_state)) = active_ti {
+            if let Some(focused_surf) = &ti_state.surface {
+                if let Some((px, py)) = self.get_surface_position(&focused_surf.id()) {
+                    // we find any popups associated with an input method
+                    for (_, popup_surf, _im) in &self.input_popups {
+                        if popup_surf.is_alive() {
+                            let x = px + ti_state.cursor_rect.0 as f64;
+                            let y =
+                                py + ti_state.cursor_rect.1 as f64 + ti_state.cursor_rect.3 as f64;
+
+                            surfaces.push((popup_surf.clone(), x, y));
+                        }
+                    }
+                }
+            }
+        }
+        surfaces
+    }
+
     pub fn get_surface_position(&self, surface_id: &ObjectId) -> Option<(f64, f64)> {
-        // 1. Check if it's a toplevel or popup managed by WM
+        // we check if it's a toplevel or popup managed by WM
         if let Some((wm_x, wm_y)) = self.wm.get_surface_position(surface_id) {
             return Some((wm_x, wm_y));
         }
 
-        // 2. Check if it's a subsurface
+        // we check if it's a subsurface
         if let Some(sub) = self
             .subsurfaces
             .iter()
@@ -370,7 +541,7 @@ impl Composer {
             return Some(*sem);
         }
 
-        let timeline = match wayland_protocols::wp::linux_drm_syncobj::v1::server::wp_linux_drm_syncobj_timeline_v1::WpLinuxDrmSyncobjTimelineV1::from_id(dh, timeline_id.clone()) {
+        let timeline = match WpLinuxDrmSyncobjTimelineV1::from_id(dh, timeline_id.clone()) {
             Ok(t) => t,
             Err(_) => {
                 error!("Failed to create resource from id for {:?}", timeline_id);
@@ -394,6 +565,7 @@ impl Composer {
                 return None;
             }
         };
+
         let sem = match unsafe { self.vkctx.import_syncobj_as_semaphore(fd_dup) } {
             Ok(sem) => sem,
             Err(e) => {
@@ -404,12 +576,30 @@ impl Composer {
                 return None;
             }
         };
+
         self.syncobj_timelines.insert(timeline_id.clone(), sem);
         Some(sem)
     }
 
     pub fn set_input_focus(&mut self, surface: WlSurface, dh: &wayland_server::DisplayHandle) {
         if self.input_focus.as_ref() == Some(&surface) {
+            return;
+        }
+
+        // we check if it's a layer surface and if it can take focus
+        let mut can_focus = true;
+        if let Some(win) = self
+            .wm
+            .all_windows()
+            .iter()
+            .find(|w| w.surface.id() == surface.id())
+        {
+            if win.layer_surface.is_some() && win.keyboard_interactivity == 0 {
+                can_focus = false;
+            }
+        }
+
+        if !can_focus {
             return;
         }
 
@@ -424,7 +614,15 @@ impl Composer {
                     keyboard.leave(self.serial, &old_focus);
                 }
 
-                // Send NULL selection events to the client losing focus
+                // Text Input Leave
+                for (ti, _, state) in self.text_inputs.iter_mut() {
+                    if ti.client().map(|c| c.id()) == Some(old_client.id()) {
+                        ti.leave(&old_focus);
+                        state.surface = None;
+                    }
+                }
+
+                // we send nil selection events to the client losing focus
                 self.clear_selection(&old_client);
                 self.clear_primary_selection(&old_client);
             }
@@ -433,6 +631,19 @@ impl Composer {
         self.input_focus = Some(surface.clone());
         if let Some(client) = surface.client() {
             self.serial += 1;
+
+            // Text Input Enter
+            for (ti, _, state) in self.text_inputs.iter_mut() {
+                if ti.client().map(|c| c.id()) == Some(client.id()) {
+                    ti.enter(&surface);
+                    state.surface = Some(surface.clone());
+                }
+            }
+
+            // we send selection offers to the newly focused client before keyboard.enter
+            self.send_selection_offer(&client, dh);
+            self.send_primary_selection_offer(&client, dh);
+
             for keyboard in self
                 .keyboards
                 .iter()
@@ -454,10 +665,6 @@ impl Composer {
                     .serialize_layout(xkbcommon::xkb::STATE_LAYOUT_EFFECTIVE);
                 keyboard.modifiers(self.serial, depressed, latched, locked, group);
             }
-
-            // Send selection offers to the newly focused client
-            self.send_selection_offer(&client, dh);
-            self.send_primary_selection_offer(&client, dh);
         }
     }
 
@@ -476,7 +683,7 @@ impl Composer {
             self.input_focus = None;
         }
         if self.pointer_focus.as_ref().map(|s| s.id()) == Some(id.clone()) {
-            self.pointer_focus = None;
+            self.set_pointer_focus(None, 0.0, 0.0, 0);
         }
         if self.pointer_grab.as_ref().map(|s| s.id()) == Some(id.clone()) {
             let mut shifted = false;
@@ -493,6 +700,39 @@ impl Composer {
 
         self.surfaces.retain(|s| &s.id() != id);
         self.subsurfaces.retain(|s| &s.surface.id() != id);
+        self.input_popups.retain(|(_, s, _)| &s.id() != id);
+    }
+
+    pub fn broadcast_selection_offer(&self, dh: &wayland_server::DisplayHandle) {
+        // we send to the focused client (standard wayland)
+        if let Some(focus) = &self.input_focus {
+            if let Some(client) = focus.client() {
+                self.send_selection_offer(&client, dh);
+            }
+        }
+
+        // we send to all data control devices (privileged clipboard listeners)
+        // NOTE: we can't easily iterate over all clients here, but we can iterate over devices.
+        // Each device knows its client.
+        for device in &self.data_control_devices {
+            if let Some(client) = device.client() {
+                self.send_selection_offer(&client, dh);
+            }
+        }
+    }
+
+    pub fn broadcast_primary_selection_offer(&self, dh: &wayland_server::DisplayHandle) {
+        if let Some(focus) = &self.input_focus {
+            if let Some(client) = focus.client() {
+                self.send_primary_selection_offer(&client, dh);
+            }
+        }
+
+        for device in &self.data_control_devices {
+            if let Some(client) = device.client() {
+                self.send_primary_selection_offer(&client, dh);
+            }
+        }
     }
 
     pub fn send_selection_offer(
@@ -503,17 +743,60 @@ impl Composer {
         if let Some(source) = &self.selection {
             for device in &self.data_devices {
                 if device.client().map(|c| c.id()) == Some(client.id()) {
-                    // Don't send the selection to the client that owns it
-                    if source.client().map(|c| c.id()) == Some(client.id()) {
-                        continue;
-                    }
-
                     let offer = client
                         .create_resource::<WlDataOffer, (), Self>(dh, device.version(), ())
                         .expect("Failed to create WlDataOffer");
                     device.data_offer(&offer);
 
-                    if let Some((_, mime_types)) = self.data_sources.get(&source.id()) {
+                    let mime_types = match source {
+                        SelectionSource::Standard(_) => {
+                            self.data_sources.get(&source.id()).map(|(_, m)| m)
+                        }
+                        SelectionSource::Primary(_) => self
+                            .primary_selection_sources
+                            .get(&source.id())
+                            .map(|(_, m)| m),
+                        SelectionSource::DataControl(_) => {
+                            self.data_control_sources.get(&source.id()).map(|(_, m)| m)
+                        }
+                    };
+
+                    if let Some(mime_types) = mime_types {
+                        for mime in mime_types {
+                            offer.offer(mime.clone());
+                        }
+                    }
+                    device.selection(Some(&offer));
+                }
+            }
+
+            for device in &self.data_control_devices {
+                if device.client().map(|c| c.id()) == Some(client.id()) {
+                    let offer = client
+                        .create_resource::<zwlr_data_control_offer_v1::ZwlrDataControlOfferV1, (), Self>(dh, device.version(), ());
+
+                    if offer.is_err() {
+                        error!("Failed to create ZwlrDataControlOfferV1");
+                        continue;
+                    }
+
+                    let offer = offer.unwrap();
+                    device.data_offer(&offer);
+
+                    let mime_types = match source {
+                        SelectionSource::Standard(_) => {
+                            self.data_sources.get(&source.id()).map(|(_, m)| m)
+                        }
+                        SelectionSource::Primary(_) => self
+                            .primary_selection_sources
+                            .get(&source.id())
+                            .map(|(_, m)| m),
+                        SelectionSource::DataControl(_) => {
+                            self.data_control_sources.get(&source.id()).map(|(_, m)| m)
+                        }
+                    };
+
+                    if let Some(mime_types) = mime_types {
                         for mime in mime_types {
                             offer.offer(mime.clone());
                         }
@@ -534,27 +817,76 @@ impl Composer {
         if let Some(source) = &self.primary_selection {
             for device in &self.primary_selection_devices {
                 if device.client().map(|c| c.id()) == Some(client.id()) {
-                    // Don't send the selection to the client that owns it
-                    if source.client().map(|c| c.id()) == Some(client.id()) {
+                    let offer = client.create_resource::<ZwpPrimarySelectionOfferV1, (), Self>(
+                        dh,
+                        device.version(),
+                        (),
+                    );
+
+                    if offer.is_err() {
+                        error!("Failed to create ZwpPrimarySelectionOfferV1");
                         continue;
                     }
 
-                    let offer = client
-                        .create_resource::<ZwpPrimarySelectionOfferV1, (), Self>(
-                            dh,
-                            device.version(),
-                            (),
-                        )
-                        .expect("Failed to create ZwpPrimarySelectionOfferV1");
+                    let offer = offer.unwrap();
+
                     device.data_offer(&offer);
 
-                    if let Some((_, mime_types)) = self.primary_selection_sources.get(&source.id())
-                    {
+                    let mime_types = match source {
+                        SelectionSource::Standard(_) => {
+                            self.data_sources.get(&source.id()).map(|(_, m)| m)
+                        }
+                        SelectionSource::Primary(_) => self
+                            .primary_selection_sources
+                            .get(&source.id())
+                            .map(|(_, m)| m),
+                        SelectionSource::DataControl(_) => {
+                            self.data_control_sources.get(&source.id()).map(|(_, m)| m)
+                        }
+                    };
+
+                    if let Some(mime_types) = mime_types {
                         for mime in mime_types {
                             offer.offer(mime.clone());
                         }
                     }
                     device.selection(Some(&offer));
+                }
+            }
+
+            for device in &self.data_control_devices {
+                if device.client().map(|c| c.id()) == Some(client.id()) {
+                    let offer = client
+                        .create_resource::<zwlr_data_control_offer_v1::ZwlrDataControlOfferV1, (), Self>(dh, device.version(), ());
+
+                    if offer.is_err() {
+                        error!("Failed to create ZwlrDataControlOfferV1");
+                        continue;
+                    }
+
+                    let offer = offer.unwrap();
+
+                    device.data_offer(&offer);
+
+                    let mime_types = match source {
+                        SelectionSource::Standard(_) => {
+                            self.data_sources.get(&source.id()).map(|(_, m)| m)
+                        }
+                        SelectionSource::Primary(_) => self
+                            .primary_selection_sources
+                            .get(&source.id())
+                            .map(|(_, m)| m),
+                        SelectionSource::DataControl(_) => {
+                            self.data_control_sources.get(&source.id()).map(|(_, m)| m)
+                        }
+                    };
+
+                    if let Some(mime_types) = mime_types {
+                        for mime in mime_types {
+                            offer.offer(mime.clone());
+                        }
+                    }
+                    device.primary_selection(Some(&offer));
                 }
             }
         } else {
@@ -568,12 +900,22 @@ impl Composer {
                 device.selection(None);
             }
         }
+        for device in &self.data_control_devices {
+            if device.client().map(|c| c.id()) == Some(client.id()) {
+                device.selection(None);
+            }
+        }
     }
 
     pub fn clear_primary_selection(&self, client: &wayland_server::Client) {
         for device in &self.primary_selection_devices {
             if device.client().map(|c| c.id()) == Some(client.id()) {
                 device.selection(None);
+            }
+        }
+        for device in &self.data_control_devices {
+            if device.client().map(|c| c.id()) == Some(client.id()) {
+                device.primary_selection(None);
             }
         }
     }
@@ -601,43 +943,57 @@ impl Composer {
             return;
         }
 
-        if let Some(old_focus) = self.pointer_focus.take() {
-            if let Some(old_client) = old_focus.client() {
-                self.serial += 1;
-                for pointer in self
-                    .pointers
-                    .iter()
-                    .filter(|p| p.client().map(|c| c.id()) == Some(old_client.id()))
-                {
-                    pointer.leave(self.serial, &old_focus);
-                    pointer.frame();
+        let old_focus = self.pointer_focus.take();
+        self.pointer_focus = surface.clone();
+
+        self.serial += 1;
+        let serial = self.serial;
+
+        let old_client_id = old_focus.as_ref().and_then(|s| s.client().map(|c| c.id()));
+        let new_client_id = self
+            .pointer_focus
+            .as_ref()
+            .and_then(|s| s.client().map(|c| c.id()));
+
+        // Gathering all affected clients to send frames
+        let mut affected_clients = HashSet::new();
+        if let Some(id) = &old_client_id {
+            affected_clients.insert(id.clone());
+        }
+        if let Some(id) = &new_client_id {
+            affected_clients.insert(id.clone());
+        }
+
+        for client_id in affected_clients {
+            for pointer in self
+                .pointers
+                .iter()
+                .filter(|p| p.client().map(|c| c.id()) == Some(client_id.clone()))
+            {
+                // we send Leave if this client owned the old focus
+                if let Some(old_surf) = &old_focus {
+                    if old_client_id == Some(client_id.clone()) {
+                        pointer.leave(serial, old_surf);
+                    }
                 }
 
-                // Only clear cursor if moving to a different client
-                let new_client_id = surface.as_ref().and_then(|s| s.client().map(|c| c.id()));
-                if new_client_id != Some(old_client.id()) {
-                    self.cursor_surface = None;
-                    self.cursor_shape = None;
+                // we send Enter if this client owns the new focus
+                if let Some(new_surf) = &self.pointer_focus {
+                    if new_client_id == Some(client_id.clone()) {
+                        self.last_enter_serial.insert(client_id.clone(), serial);
+                        pointer.enter(serial, new_surf, local_x, local_y);
+                    }
                 }
-            } else {
-                self.cursor_surface = None;
-                self.cursor_shape = None;
+
+                pointer.frame();
             }
         }
 
-        self.pointer_focus = surface.clone();
-        if let Some(surf) = surface {
-            if let Some(client) = surf.client() {
-                self.serial += 1;
-                self.last_enter_serial.insert(client.id(), self.serial);
-                for pointer in self
-                    .pointers
-                    .iter()
-                    .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
-                {
-                    pointer.enter(self.serial, &surf, local_x, local_y);
-                    pointer.frame();
-                }
+        // cleaning up cursor if needed
+        if let Some(old_id) = old_client_id {
+            if new_client_id != Some(old_id) {
+                self.cursor_surface = None;
+                self.cursor_shape = None;
             }
         }
     }

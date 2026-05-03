@@ -1,11 +1,15 @@
+use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::{cell::RefCell, os::fd::AsFd, rc::Rc, sync::Arc};
 
+use ash::vk;
 use drm::control::Device as _;
 use gbm::{BufferObjectFlags, Device, Format};
 use libseat::Seat;
 use nix::{poll::PollTimeout, sys::epoll};
-use pattern::vulkan::RenderQuad;
+use pattern::styler;
+use pattern::vulkan::{DrawCommand, RenderQuad};
+use pattern::wm::impls::floating_wm;
 use pattern::{
     gpu::{Card, buffer::Buffer},
     input::Input,
@@ -23,6 +27,7 @@ use wayland_protocols::wp::relative_pointer::zv1::server::zwp_relative_pointer_m
 use wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use wayland_protocols::wp::pointer_warp::v1::server::wp_pointer_warp_v1::WpPointerWarpV1;
 use wayland_protocols::wp::primary_selection::zv1::server::zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1;
+use wayland_protocols::wp::text_input::zv3::server::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
 use wayland_protocols::wp::viewporter::server::wp_viewporter::WpViewporter;
 use wayland_protocols::xdg::decoration::zv1::server::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1;
 use wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase;
@@ -31,9 +36,12 @@ use wayland_protocols::wp::pointer_gestures::zv1::server::zwp_pointer_gestures_v
 use wayland_protocols::ext::workspace::v1::server::ext_workspace_manager_v1::ExtWorkspaceManagerV1;
 use wayland_protocols::xdg::dialog::v1::server::xdg_wm_dialog_v1::XdgWmDialogV1;
 use wayland_protocols::xdg::activation::v1::server::xdg_activation_v1::XdgActivationV1;
+use wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1;
+use wayland_protocols_wlr::data_control::v1::server::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
 use wayland_protocols_wlr::layer_shell::v1::server::zwlr_layer_shell_v1::ZwlrLayerShellV1;
 use wayland_server::protocol::wl_data_device_manager::WlDataDeviceManager;
 use wayland_protocols::wp::linux_drm_syncobj::v1::server::wp_linux_drm_syncobj_manager_v1::WpLinuxDrmSyncobjManagerV1;
+use wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2;
 use wayland_server::{
     Display, ListeningSocket, Resource,
     protocol::{
@@ -150,6 +158,10 @@ fn main() {
     dh.create_global::<Composer, WpLinuxDrmSyncobjManagerV1, ()>(1, ());
     dh.create_global::<Composer, WpFifoManagerV1, ()>(1, ());
     dh.create_global::<Composer, WpPresentation, ()>(2, ());
+    dh.create_global::<Composer, ZwpTextInputManagerV3, ()>(1, ());
+    dh.create_global::<Composer, ZwpInputMethodManagerV2, ()>(1, ());
+    dh.create_global::<Composer, ZwpVirtualKeyboardManagerV1, ()>(1, ());
+    dh.create_global::<Composer, ZwlrDataControlManagerV1, ()>(2, ());
 
     let socket = ListeningSocket::bind_auto("wayland", 0..32).unwrap();
     let socket_name = socket.socket_name().unwrap().to_string_lossy().into_owned();
@@ -160,22 +172,24 @@ fn main() {
         std::env::set_var("XDG_SESSION_TYPE", "wayland");
         std::env::set_var("XDG_CURRENT_DESKTOP", "Pattern");
         std::env::set_var("DESKTOP", "Pattern");
-        std::env::set_var("DISPLAY", ":0");
+        // std::env::set_var("DISPLAY", ":0"); TODO: XWayland
     }
 
     info!("Creating Vulkan Context");
     let vkctx = Rc::new(VulkanContext::new());
     info!("Vulkan Ready. Entering the void.");
 
-    let mut composer = Composer::new(
+    let mut composer = Composer::init(
         vkctx.clone(),
         info.mode.clone(),
         info.clone(),
         gpu_dev_t,
         table_fd,
+        Box::new(floating_wm::Wm::new()),
+        Box::new(styler::DefaultStyler::new()),
     );
     let mut input = Input::new(shared_seat.clone(), width as f64, height as f64);
-    input.natural_scroll = true; // Change this to false to disable natural scroll
+    input.natural_scroll = true; // TODO:(config) Change this to false to disable natural scroll
 
     let epoll = epoll::Epoll::new(epoll::EpollCreateFlags::empty()).unwrap();
 
@@ -364,6 +378,12 @@ fn main() {
             composer.outputs.retain(|o| o.is_alive());
             composer.pointers.retain(|p| p.is_alive());
             composer.keyboards.retain(|k| k.is_alive());
+            composer.input_methods.retain(|(im, _)| im.is_alive());
+            composer.input_method_grabs.retain(|(g, _)| g.is_alive());
+            composer.text_inputs.retain(|(ti, _, _)| ti.is_alive());
+            composer
+                .input_popups
+                .retain(|(p, s, im)| p.is_alive() && s.is_alive() && im.is_alive());
 
             composer.data_devices.retain(|d| d.is_alive());
             composer.primary_selection_devices.retain(|d| d.is_alive());
@@ -391,10 +411,25 @@ fn main() {
                 composer.wm.as_ref(),
             );
 
+            // Draw IME Popups
+            let ime_surfaces = composer.get_input_popup_surfaces();
+            for (surface, x, y) in ime_surfaces {
+                composer.styler.draw_surface_tree(
+                    &surface,
+                    x,
+                    y,
+                    &composer.subsurfaces,
+                    &composer.surface_textures,
+                    &composer.viewports,
+                    &composer.surface_to_viewport,
+                    &mut final_draw_list,
+                );
+            }
+
             if composer.pointer_lock.is_none() {
                 if let Some((cursor_surf, hot_x, hot_y)) = &composer.cursor_surface {
                     if let Some(tex) = composer.surface_textures.get(&cursor_surf.id()) {
-                        final_draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
+                        final_draw_list.push(DrawCommand::Texture(RenderQuad {
                             set: tex.set,
                             x: (composer.cursor_pos.0 as f32 - *hot_x as f32).round(),
                             y: (composer.cursor_pos.1 as f32 - *hot_y as f32).round(),
@@ -422,7 +457,7 @@ fn main() {
                         let tex = &frame.texture;
                         let (hot_x, hot_y) = frame.hotspot;
 
-                        final_draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
+                        final_draw_list.push(DrawCommand::Texture(RenderQuad {
                             set: tex.set,
                             x: (composer.cursor_pos.0 as f32 - hot_x).round(),
                             y: (composer.cursor_pos.1 as f32 - hot_y).round(),
@@ -445,7 +480,7 @@ fn main() {
                         let tex = &frame.texture;
                         let (hot_x, hot_y) = frame.hotspot;
 
-                        final_draw_list.push(pattern::vulkan::DrawCommand::Texture(RenderQuad {
+                        final_draw_list.push(DrawCommand::Texture(RenderQuad {
                             set: tex.set,
                             x: (composer.cursor_pos.0 as f32 - hot_x).round(),
                             y: (composer.cursor_pos.1 as f32 - hot_y).round(),
@@ -461,10 +496,10 @@ fn main() {
                 }
             }
 
-            // 1. Identify drawn surfaces
-            let mut drawn_surface_ids = std::collections::HashSet::new();
+            // 1. we identify drawn surfaces
+            let mut drawn_surface_ids = HashSet::new();
             for cmd in &final_draw_list {
-                if let pattern::vulkan::DrawCommand::Texture(quad) = cmd {
+                if let DrawCommand::Texture(quad) = cmd {
                     if let Some((id, _)) = composer
                         .surface_textures
                         .iter()
@@ -477,12 +512,12 @@ fn main() {
 
             // tracing::debug!("Drawn surfaces: {:?}", drawn_surface_ids);
 
-            let mut wait_semaphores: Vec<ash::vk::Semaphore> = Vec::new();
+            let mut wait_semaphores: Vec<vk::Semaphore> = Vec::new();
             let mut wait_values: Vec<u64> = Vec::new();
-            let mut signal_semaphores: Vec<ash::vk::Semaphore> = Vec::new();
+            let mut signal_semaphores: Vec<vk::Semaphore> = Vec::new();
             let mut signal_values: Vec<u64> = Vec::new();
 
-            // 2. Process Sync Points & Feedbacks
+            // 2. we process Sync Points and Feedbacks
             let sync_ids: Vec<_> = composer.syncobj_state.keys().cloned().collect();
             // tracing::debug!("Sync IDs: {:?}", sync_ids);
             for id in sync_ids {
@@ -498,12 +533,13 @@ fn main() {
                         wait_semaphores.push(sem);
                         wait_values.push(point);
                     }
+
                     for (sem, point) in signals {
                         signal_semaphores.push(sem);
                         signal_values.push(point);
                     }
 
-                    // Collect feedbacks for presentation
+                    // Collecting feedbacks for presentation
                     if let Some(fbs) = composer.surface_presentation_feedbacks.remove(&id) {
                         composer.feedbacks_to_present.extend(fbs);
                     }
@@ -515,7 +551,7 @@ fn main() {
                         signal_values.push(point);
                     }
 
-                    // Discard feedbacks for hidden/skipped surfaces
+                    // we discard feedbacks for hidden/skipped surfaces
                     if let Some(fbs) = composer.surface_presentation_feedbacks.remove(&id) {
                         for fb in fbs {
                             fb.discarded();
@@ -523,6 +559,7 @@ fn main() {
                     }
                 }
             }
+
             unsafe {
                 vkctx.draw_frame(
                     frame.vk_fb,
@@ -535,6 +572,7 @@ fn main() {
                     &signal_values,
                 );
 
+                // NOTE: it is safe to drop semaphores here because draw_frame is synchrone.
                 composer.drop_semaphores();
             }
 
@@ -558,7 +596,7 @@ fn main() {
         unsafe { frame.destroy(&vkctx.device, &card) };
     }
 
-    // Drop all state, ensuring all Arc<VulkanTextureInner> references are dropped
+    // we drop the composer, ensuring all Arc<VulkanTextureInner> references are dropped
     drop(composer);
 
     unsafe {

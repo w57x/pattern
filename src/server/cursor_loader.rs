@@ -90,7 +90,7 @@ impl CursorManager {
                     cursor_sampler,
                 )
             };
-            
+
             let inner = Arc::new(VulkanTextureInner {
                 device: vkctx.device.clone(),
                 img: cursor_vk_img,
