@@ -24,7 +24,9 @@ tracing-subscriber = "0.3.23"
 udev = "0.9.3"
 wayland-protocols = { git = "https://github.com/Smithay/wayland-rs.git", features = ["server", "unstable", "staging"] }
 wayland-protocols-wlr = { git = "https://github.com/Smithay/wayland-rs.git", features = ["server"] }
+wayland-protocols-misc = { git = "https://github.com/Smithay/wayland-rs.git", features = ["server"] }
 wayland-server = { git = "https://github.com/Smithay/wayland-rs.git" }
+wayland-backend = { git = "https://github.com/Smithay/wayland-rs.git" }
 xcursor = "0.3.10"
 xkbcommon = "0.9.0"
 

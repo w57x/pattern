@@ -179,7 +179,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -265,7 +265,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -699,7 +699,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -744,7 +744,9 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "udev",
+ "wayland-backend 0.3.15 (git+https://github.com/Smithay/wayland-rs.git)",
  "wayland-protocols",
+ "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "wayland-server 0.31.13 (git+https://github.com/Smithay/wayland-rs.git)",
  "xcursor",
@@ -923,7 +925,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1463,7 +1465,7 @@ dependencies = [
 [[package]]
 name = "wayland-backend"
 version = "0.3.15"
-source = "git+https://github.com/Smithay/wayland-rs.git#6bf350c4eb9231950e2477e6562a3549cf7ae710"
+source = "git+https://github.com/Smithay/wayland-rs.git#11ba1a463428386d08de8b9c6061f0b6fb68d5b4"
 dependencies = [
  "cc",
  "downcast-rs",
@@ -1475,7 +1477,7 @@ dependencies = [
 [[package]]
 name = "wayland-protocols"
 version = "0.32.12"
-source = "git+https://github.com/Smithay/wayland-rs.git#6bf350c4eb9231950e2477e6562a3549cf7ae710"
+source = "git+https://github.com/Smithay/wayland-rs.git#11ba1a463428386d08de8b9c6061f0b6fb68d5b4"
 dependencies = [
  "bitflags",
  "wayland-backend 0.3.15 (git+https://github.com/Smithay/wayland-rs.git)",
@@ -1484,9 +1486,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wayland-protocols-misc"
+version = "0.3.12"
+source = "git+https://github.com/Smithay/wayland-rs.git#11ba1a463428386d08de8b9c6061f0b6fb68d5b4"
+dependencies = [
+ "bitflags",
+ "wayland-backend 0.3.15 (git+https://github.com/Smithay/wayland-rs.git)",
+ "wayland-protocols",
+ "wayland-scanner 0.31.10 (git+https://github.com/Smithay/wayland-rs.git)",
+ "wayland-server 0.31.13 (git+https://github.com/Smithay/wayland-rs.git)",
+]
+
+[[package]]
 name = "wayland-protocols-wlr"
 version = "0.3.12"
-source = "git+https://github.com/Smithay/wayland-rs.git#6bf350c4eb9231950e2477e6562a3549cf7ae710"
+source = "git+https://github.com/Smithay/wayland-rs.git#11ba1a463428386d08de8b9c6061f0b6fb68d5b4"
 dependencies = [
  "bitflags",
  "wayland-backend 0.3.15 (git+https://github.com/Smithay/wayland-rs.git)",
@@ -1509,7 +1523,7 @@ dependencies = [
 [[package]]
 name = "wayland-scanner"
 version = "0.31.10"
-source = "git+https://github.com/Smithay/wayland-rs.git#6bf350c4eb9231950e2477e6562a3549cf7ae710"
+source = "git+https://github.com/Smithay/wayland-rs.git#11ba1a463428386d08de8b9c6061f0b6fb68d5b4"
 dependencies = [
  "proc-macro2",
  "quick-xml",
@@ -1532,7 +1546,7 @@ dependencies = [
 [[package]]
 name = "wayland-server"
 version = "0.31.13"
-source = "git+https://github.com/Smithay/wayland-rs.git#6bf350c4eb9231950e2477e6562a3549cf7ae710"
+source = "git+https://github.com/Smithay/wayland-rs.git#11ba1a463428386d08de8b9c6061f0b6fb68d5b4"
 dependencies = [
  "bitflags",
  "downcast-rs",
@@ -1557,7 +1571,7 @@ dependencies = [
 [[package]]
 name = "wayland-sys"
 version = "0.31.11"
-source = "git+https://github.com/Smithay/wayland-rs.git#6bf350c4eb9231950e2477e6562a3549cf7ae710"
+source = "git+https://github.com/Smithay/wayland-rs.git#11ba1a463428386d08de8b9c6061f0b6fb68d5b4"
 dependencies = [
  "pkg-config",
 ]
@@ -1590,15 +1604,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "windows-sys"
-version = "0.61.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
-dependencies = [
- "windows-link",
 ]
 
 [[package]]
