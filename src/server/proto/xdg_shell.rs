@@ -48,7 +48,7 @@ impl Dispatch<XdgWmBase, ()> for Composer {
     }
 }
 
-fn compute_popup_position(
+pub fn compute_popup_position(
     state: &Composer,
     parent_surface_id: &wayland_server::backend::ObjectId,
     positioner_data: &crate::server::PositionerData,
@@ -157,6 +157,7 @@ impl Dispatch<XdgSurface, ()> for Composer {
                     state.set_input_focus(surface.clone(), dhandle);
 
                     let (cx, cy) = state.cursor_pos;
+                    let extra_surfaces = state.get_input_popup_surfaces();
                     let hit = state.styler.hit_test(
                         cx,
                         cy,
@@ -166,6 +167,7 @@ impl Dispatch<XdgSurface, ()> for Composer {
                         &state.surface_to_viewport,
                         &state.surface_input_region,
                         state.wm.as_ref(),
+                        &extra_surfaces,
                     );
                     state.set_pointer_focus(hit.surface, hit.local_x, hit.local_y, 0);
                 }
@@ -212,6 +214,17 @@ impl Dispatch<XdgSurface, ()> for Composer {
                             popup.configure(x, y, positioner_data.size.0, positioner_data.size.1);
                             resource.configure(state.serial);
                         }
+                    } else {
+                        // we store it for layer-shell to claim
+                        state.unparented_popups.insert(
+                            popup.id(),
+                            (
+                                surface.clone(),
+                                resource.clone(),
+                                popup.clone(),
+                                positioner_data,
+                            ),
+                        );
                     }
                 }
             }
@@ -222,8 +235,8 @@ impl Dispatch<XdgSurface, ()> for Composer {
                 height,
             } => {
                 if let Some(surface) = state.xdg_to_surface.get(&resource.id()) {
-                    state.wm.set_window_geometry(
-                        &surface.id(),
+                    state.pending_geometry.insert(
+                        surface.id(),
                         crate::wm::Rect {
                             x,
                             y,
@@ -284,7 +297,7 @@ impl Dispatch<XdgPopup, ()> for Composer {
                 }
 
                 if let Some((id, x, y)) = popup_to_update {
-                    state.wm.update_popup_position(&id, x, y);
+                    state.pending_popup_positions.insert(id.clone(), (x, y));
                     resource.repositioned(token);
                     resource.configure(x, y, positioner_data.size.0, positioner_data.size.1);
                     // Also need to configure the underlying xdg_surface

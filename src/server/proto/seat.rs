@@ -1,10 +1,11 @@
-use crate::server::Composer;
+use crate::server::{Composer, SelectionSource};
 use std::os::fd::AsFd;
 use wayland_server::protocol::{
     wl_data_device::WlDataDevice, wl_data_device_manager::WlDataDeviceManager,
     wl_data_offer::WlDataOffer, wl_data_source::WlDataSource, wl_keyboard::WlKeyboard,
     wl_pointer::WlPointer, wl_seat::WlSeat,
 };
+use wayland_server::protocol::{wl_keyboard, wl_seat};
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
 impl GlobalDispatch<WlSeat, ()> for Composer {
@@ -18,10 +19,7 @@ impl GlobalDispatch<WlSeat, ()> for Composer {
     ) {
         let seat = data_init.init(resource, ());
 
-        seat.capabilities(
-            wayland_server::protocol::wl_seat::Capability::Pointer
-                | wayland_server::protocol::wl_seat::Capability::Keyboard,
-        );
+        seat.capabilities(wl_seat::Capability::Pointer | wl_seat::Capability::Keyboard);
         seat.name("pattern-seat".to_string());
     }
 }
@@ -29,7 +27,7 @@ impl GlobalDispatch<WlSeat, ()> for Composer {
 impl Dispatch<WlSeat, ()> for Composer {
     fn request(
         state: &mut Self,
-        _client: &wayland_server::Client,
+        client: &wayland_server::Client,
         _resource: &WlSeat,
         request: wayland_server::protocol::wl_seat::Request,
         _data: &(),
@@ -37,18 +35,14 @@ impl Dispatch<WlSeat, ()> for Composer {
         data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
         match request {
-            wayland_server::protocol::wl_seat::Request::GetPointer { id } => {
+            wl_seat::Request::GetPointer { id } => {
                 let pointer = data_init.init(id, ());
                 state.pointers.push(pointer);
             }
-            wayland_server::protocol::wl_seat::Request::GetKeyboard { id } => {
+            wl_seat::Request::GetKeyboard { id } => {
                 let keyboard = data_init.init(id, ());
                 let fd = state.keymap_fd.as_fd();
-                keyboard.keymap(
-                    wayland_server::protocol::wl_keyboard::KeymapFormat::XkbV1,
-                    fd,
-                    state.keymap_size,
-                );
+                keyboard.keymap(wl_keyboard::KeymapFormat::XkbV1, fd, state.keymap_size);
 
                 if keyboard.version() >= 4 {
                     keyboard.repeat_info(35, 300);
@@ -56,7 +50,7 @@ impl Dispatch<WlSeat, ()> for Composer {
 
                 if let Some(focused_surface) = &state.input_focus {
                     if let Some(focused_client) = focused_surface.client() {
-                        if focused_client.id() == _client.id() {
+                        if focused_client.id() == client.id() {
                             state.serial += 1;
                             keyboard.enter(state.serial, focused_surface, Vec::new());
                             keyboard.modifiers(state.serial, 0, 0, 0, 0);
@@ -162,8 +156,20 @@ impl Dispatch<WlDataDeviceManager, ()> for Composer {
                                     .expect("Failed to create WlDataOffer");
                                 device.data_offer(&offer);
 
-                                if let Some((_, mime_types)) = state.data_sources.get(&source.id())
-                                {
+                                let mime_types = match source {
+                                    SelectionSource::Standard(_) => {
+                                        state.data_sources.get(&source.id()).map(|(_, m)| m)
+                                    }
+                                    SelectionSource::Primary(_) => state
+                                        .primary_selection_sources
+                                        .get(&source.id())
+                                        .map(|(_, m)| m),
+                                    SelectionSource::DataControl(_) => {
+                                        state.data_control_sources.get(&source.id()).map(|(_, m)| m)
+                                    }
+                                };
+
+                                if let Some(mime_types) = mime_types {
                                     for mime in mime_types {
                                         offer.offer(mime.clone());
                                     }
@@ -208,13 +214,8 @@ impl Dispatch<WlDataDevice, ()> for Composer {
                 }
 
                 if let Some(new_source) = source {
-                    state.selection = Some(new_source.clone());
-
-                    if let Some(focused_surface) = &state.input_focus {
-                        if let Some(focused_client) = focused_surface.client() {
-                            state.send_selection_offer(&focused_client, dhandle);
-                        }
-                    }
+                    state.selection = Some(SelectionSource::Standard(new_source.clone()));
+                    state.broadcast_selection_offer(dhandle);
                 } else {
                     state.selection = None;
                     if let Some(focused_surface) = &state.input_focus {

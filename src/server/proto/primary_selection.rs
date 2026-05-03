@@ -1,4 +1,4 @@
-use crate::server::Composer;
+use crate::server::{Composer, SelectionSource};
 use std::os::fd::AsFd;
 use wayland_protocols::wp::primary_selection::zv1::server::{
     zwp_primary_selection_device_manager_v1::{self, ZwpPrimarySelectionDeviceManagerV1},
@@ -55,9 +55,20 @@ impl Dispatch<ZwpPrimarySelectionDeviceManagerV1, ()> for Composer {
                                     .expect("Failed to create ZwpPrimarySelectionOfferV1");
                                 device.data_offer(&offer);
 
-                                if let Some((_, mime_types)) =
-                                    state.primary_selection_sources.get(&source.id())
-                                {
+                                let mime_types = match source {
+                                    SelectionSource::Standard(_) => {
+                                        state.data_sources.get(&source.id()).map(|(_, m)| m)
+                                    }
+                                    SelectionSource::Primary(_) => state
+                                        .primary_selection_sources
+                                        .get(&source.id())
+                                        .map(|(_, m)| m),
+                                    SelectionSource::DataControl(_) => {
+                                        state.data_control_sources.get(&source.id()).map(|(_, m)| m)
+                                    }
+                                };
+
+                                if let Some(mime_types) = mime_types {
                                     for mime in mime_types {
                                         offer.offer(mime.clone());
                                     }
@@ -99,13 +110,8 @@ impl Dispatch<ZwpPrimarySelectionDeviceV1, ()> for Composer {
                 }
 
                 if let Some(new_source) = source {
-                    state.primary_selection = Some(new_source.clone());
-
-                    if let Some(focused_surface) = &state.input_focus {
-                        if let Some(focused_client) = focused_surface.client() {
-                            state.send_primary_selection_offer(&focused_client, dhandle);
-                        }
-                    }
+                    state.primary_selection = Some(SelectionSource::Primary(new_source.clone()));
+                    state.broadcast_primary_selection_offer(dhandle);
                 } else {
                     state.primary_selection = None;
                     if let Some(focused_surface) = &state.input_focus {

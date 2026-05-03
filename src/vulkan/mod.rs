@@ -1,8 +1,8 @@
-use ash::{vk, Device, Entry, Instance};
+use ash::{Device, Entry, Instance, vk};
 use drm::buffer::Buffer as _;
 use std::ffi::CStr;
 use std::os::fd::{IntoRawFd, OwnedFd};
-use tracing::warn;
+use tracing::{error, warn};
 
 use crate::gpu::buffer::Buffer;
 pub mod frame;
@@ -1192,7 +1192,10 @@ impl VulkanContext {
         match unsafe { ext_semaphore_fd.import_semaphore_fd(&import_info) } {
             Ok(_) => Ok(semaphore),
             Err(e) => {
-                tracing::error!("Failed to import DRM Syncobj FD into Vulkan Semaphore: {:?}", e);
+                error!(
+                    "Failed to import DRM Syncobj FD into Vulkan Semaphore: {:?}",
+                    e
+                );
                 unsafe { self.device.destroy_semaphore(semaphore, None) };
                 Err(e)
             }

@@ -58,10 +58,9 @@ impl Dispatch<WlSubsurface, ()> for Composer {
     ) {
         match request {
             wayland_server::protocol::wl_subsurface::Request::SetPosition { x, y } => {
-                if let Some(sub) = state.subsurfaces.iter_mut().find(|s| s.id == resource.id()) {
-                    sub.x = x;
-                    sub.y = y;
-                }
+                state
+                    .pending_subsurface_positions
+                    .insert(resource.id(), (x, y));
             }
             wayland_server::protocol::wl_subsurface::Request::PlaceAbove { sibling } => {
                 let idx = state.subsurfaces.iter().position(|s| s.id == resource.id());

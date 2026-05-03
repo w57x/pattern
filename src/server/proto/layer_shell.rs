@@ -1,7 +1,7 @@
 use crate::server::Composer;
-use tracing::debug;
+use crate::server::proto::xdg_shell::compute_popup_position;
 use wayland_protocols_wlr::layer_shell::v1::server::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
-use wayland_server::{Dispatch, GlobalDispatch, Resource};
+use wayland_server::{Dispatch, GlobalDispatch, Resource, WEnum};
 
 impl GlobalDispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, ()> for Composer {
     fn bind(
@@ -34,23 +34,22 @@ impl Dispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, ()> for Composer {
                 layer,
                 namespace,
             } => {
-                debug!(
-                    "Client requested a layer surface (namespace: {})",
-                    namespace
-                );
                 let layer_surface = data_init.init(id, ());
 
                 let layer_val = match layer {
-                    wayland_server::WEnum::Value(zwlr_layer_shell_v1::Layer::Background) => 0,
-                    wayland_server::WEnum::Value(zwlr_layer_shell_v1::Layer::Bottom) => 1,
-                    wayland_server::WEnum::Value(zwlr_layer_shell_v1::Layer::Top) => 2,
-                    wayland_server::WEnum::Value(zwlr_layer_shell_v1::Layer::Overlay) => 3,
+                    WEnum::Value(zwlr_layer_shell_v1::Layer::Background) => 0,
+                    WEnum::Value(zwlr_layer_shell_v1::Layer::Bottom) => 1,
+                    WEnum::Value(zwlr_layer_shell_v1::Layer::Top) => 2,
+                    WEnum::Value(zwlr_layer_shell_v1::Layer::Overlay) => 3,
                     _ => 2,
                 };
 
-                state
-                    .wm
-                    .map_layer_surface(surface.clone(), layer_surface.clone(), layer_val);
+                state.wm.map_layer_surface(
+                    surface.clone(),
+                    layer_surface.clone(),
+                    layer_val,
+                    namespace,
+                );
                 state.xdg_to_surface.insert(layer_surface.id(), surface);
             }
             zwlr_layer_shell_v1::Request::Destroy => {}
@@ -77,18 +76,47 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Composer {
 
         match request {
             zwlr_layer_surface_v1::Request::SetSize { width, height } => {
-                state.wm.set_layer_surface_size(&surface_id, width, height);
+                let state = state
+                    .pending_layer_state
+                    .entry(surface_id.clone())
+                    .or_insert(crate::server::LayerState {
+                        size: None,
+                        anchor: None,
+                        zone: None,
+                        margin: None,
+                        interactivity: None,
+                    });
+                state.size = Some((width, height));
             }
             zwlr_layer_surface_v1::Request::SetAnchor { anchor } => {
                 let anchor_val = match anchor {
                     wayland_server::WEnum::Value(a) => a.bits(),
                     _ => 0,
                 };
-                state.wm.set_layer_surface_anchor(&surface_id, anchor_val);
+                let state = state
+                    .pending_layer_state
+                    .entry(surface_id.clone())
+                    .or_insert(crate::server::LayerState {
+                        size: None,
+                        anchor: None,
+                        zone: None,
+                        margin: None,
+                        interactivity: None,
+                    });
+                state.anchor = Some(anchor_val);
             }
             zwlr_layer_surface_v1::Request::SetExclusiveZone { zone } => {
-                state.wm.set_layer_surface_zone(&surface_id, zone);
-                state.wm.recalculate_layer_layout(state.mode.size());
+                let state = state
+                    .pending_layer_state
+                    .entry(surface_id.clone())
+                    .or_insert(crate::server::LayerState {
+                        size: None,
+                        anchor: None,
+                        zone: None,
+                        margin: None,
+                        interactivity: None,
+                    });
+                state.zone = Some(zone);
             }
             zwlr_layer_surface_v1::Request::SetMargin {
                 top,
@@ -96,9 +124,17 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Composer {
                 bottom,
                 left,
             } => {
-                state
-                    .wm
-                    .set_layer_surface_margin(&surface_id, top, right, bottom, left);
+                let state = state
+                    .pending_layer_state
+                    .entry(surface_id.clone())
+                    .or_insert(crate::server::LayerState {
+                        size: None,
+                        anchor: None,
+                        zone: None,
+                        margin: None,
+                        interactivity: None,
+                    });
+                state.margin = Some((top, right, bottom, left));
             }
             zwlr_layer_surface_v1::Request::SetKeyboardInteractivity {
                 keyboard_interactivity,
@@ -107,11 +143,40 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Composer {
                     wayland_server::WEnum::Value(i) => i as u32,
                     _ => 0,
                 };
-                state
-                    .wm
-                    .set_layer_keyboard_interactivity(&surface_id, inter_val);
+                let state = state
+                    .pending_layer_state
+                    .entry(surface_id.clone())
+                    .or_insert(crate::server::LayerState {
+                        size: None,
+                        anchor: None,
+                        zone: None,
+                        margin: None,
+                        interactivity: None,
+                    });
+                state.interactivity = Some(inter_val);
             }
-            zwlr_layer_surface_v1::Request::GetPopup { popup: _ } => {}
+            zwlr_layer_surface_v1::Request::GetPopup { popup } => {
+                if let Some((surf, xdg_surf, xdg_pop, pos_data)) =
+                    state.unparented_popups.remove(&popup.id())
+                {
+                    let (x, y) = compute_popup_position(state, &surface_id, &pos_data);
+
+                    state.wm.map_popup(crate::wm::PopupState {
+                        surface: surf,
+                        xdg_surface: xdg_surf.clone(),
+                        xdg_popup: xdg_pop.clone(),
+                        parent_surface_id: surface_id.clone(),
+                        x,
+                        y,
+                        geometry: crate::wm::Rect::default(),
+                    });
+
+                    state.serial += 1;
+                    xdg_pop.configure(x, y, pos_data.size.0, pos_data.size.1);
+                    // Important: also configure the underlying xdg_surface
+                    xdg_surf.configure(state.serial);
+                }
+            }
             zwlr_layer_surface_v1::Request::AckConfigure { serial: _ } => {}
             zwlr_layer_surface_v1::Request::Destroy => {
                 state.wm.unmap_window(&surface_id);

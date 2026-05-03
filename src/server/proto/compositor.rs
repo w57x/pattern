@@ -1,6 +1,7 @@
 use crate::server::Composer;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
+use wayland_backend::server::ObjectId;
 use wayland_server::protocol::{
     wl_callback::WlCallback, wl_compositor::WlCompositor, wl_region::WlRegion,
     wl_surface::WlSurface,
@@ -111,10 +112,10 @@ impl Dispatch<WlSurface, ()> for Composer {
                     if let Some(rects) = state.regions.get(&reg.id()) {
                         state
                             .pending_input_region
-                            .insert(surface.id(), rects.clone());
+                            .insert(surface.id(), Some(rects.clone()));
                     }
                 } else {
-                    state.pending_input_region.remove(&surface.id());
+                    state.pending_input_region.insert(surface.id(), None);
                 }
             }
             wayland_server::protocol::wl_surface::Request::SetOpaqueRegion { region } => {
@@ -122,18 +123,80 @@ impl Dispatch<WlSurface, ()> for Composer {
                     if let Some(rects) = state.regions.get(&reg.id()) {
                         state
                             .pending_opaque_region
-                            .insert(surface.id(), rects.clone());
+                            .insert(surface.id(), Some(rects.clone()));
                     }
                 } else {
-                    state.pending_opaque_region.remove(&surface.id());
+                    state.pending_opaque_region.insert(surface.id(), None);
                 }
             }
             wayland_server::protocol::wl_surface::Request::Commit => {
-                if let Some(input) = state.pending_input_region.remove(&surface.id()) {
-                    state.surface_input_region.insert(surface.id(), input);
+                if let Some(input_opt) = state.pending_input_region.remove(&surface.id()) {
+                    if let Some(input) = input_opt {
+                        state.surface_input_region.insert(surface.id(), input);
+                    } else {
+                        state.surface_input_region.remove(&surface.id());
+                    }
                 }
-                if let Some(opaque) = state.pending_opaque_region.remove(&surface.id()) {
-                    state.surface_opaque_region.insert(surface.id(), opaque);
+                if let Some(opaque_opt) = state.pending_opaque_region.remove(&surface.id()) {
+                    if let Some(opaque) = opaque_opt {
+                        state.surface_opaque_region.insert(surface.id(), opaque);
+                    } else {
+                        state.surface_opaque_region.remove(&surface.id());
+                    }
+                }
+
+                if let Some(geometry) = state.pending_geometry.remove(&surface.id()) {
+                    state.wm.set_window_geometry(&surface.id(), geometry);
+                }
+
+                if let Some((x, y)) = state.pending_popup_positions.remove(&surface.id()) {
+                    state.wm.update_popup_position(&surface.id(), x, y);
+                }
+
+                if let Some(layer_state) = state.pending_layer_state.remove(&surface.id()) {
+                    if let Some(size) = layer_state.size {
+                        state
+                            .wm
+                            .set_layer_surface_size(&surface.id(), size.0, size.1);
+                    }
+                    if let Some(anchor) = layer_state.anchor {
+                        state.wm.set_layer_surface_anchor(&surface.id(), anchor);
+                    }
+                    if let Some(zone) = layer_state.zone {
+                        state.wm.set_layer_surface_zone(&surface.id(), zone);
+                    }
+                    if let Some(margin) = layer_state.margin {
+                        state.wm.set_layer_surface_margin(
+                            &surface.id(),
+                            margin.0,
+                            margin.1,
+                            margin.2,
+                            margin.3,
+                        );
+                    }
+                    if let Some(interactivity) = layer_state.interactivity {
+                        state
+                            .wm
+                            .set_layer_keyboard_interactivity(&surface.id(), interactivity);
+                    }
+                    state.wm.recalculate_layer_layout(state.mode.size());
+                }
+
+                // Apply subsurface positions (parent-commit double-buffered)
+                let sub_ids: Vec<ObjectId> = state
+                    .subsurfaces
+                    .iter()
+                    .filter(|s| s.parent.id() == surface.id())
+                    .map(|s| s.id.clone())
+                    .collect();
+
+                for sub_id in sub_ids {
+                    if let Some((x, y)) = state.pending_subsurface_positions.remove(&sub_id) {
+                        if let Some(sub) = state.subsurfaces.iter_mut().find(|s| s.id == sub_id) {
+                            sub.x = x;
+                            sub.y = y;
+                        }
+                    }
                 }
 
                 // Track if we had a previous sync state for delayed release
