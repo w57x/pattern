@@ -240,6 +240,8 @@ fn main() {
         let (vk_view, vk_fb) =
             unsafe { vkctx.create_vk_framebuffer(image, width as u32, height as u32) };
 
+        let blur_chain = unsafe { vkctx.create_blur_chain(3, width as u32, height as u32) };
+
         swapchain.push(VulkanFrame {
             bo,
             image,
@@ -247,6 +249,7 @@ fn main() {
             fb_handle,
             vk_view,
             vk_fb,
+            blur_target: Some(blur_chain),
         });
     }
 
@@ -346,7 +349,13 @@ fn main() {
         }
 
         if !waiting_for_flip && composer.needs_redraw {
-            composer.needs_redraw = false;
+            let now = pattern::utils::time::gettime();
+            let animating =
+                composer
+                    .styler
+                    .tick(now as f64, composer.wm.as_ref(), &composer.surface_textures);
+            composer.needs_redraw = animating;
+
             // debug!("Rendering frame {}", frame_index);
             let frame = &swapchain[frame_index % 2];
 
@@ -372,7 +381,7 @@ fn main() {
             }
 
             for id in dead_surface_ids {
-                composer.cleanup_surface(&id);
+                composer.cleanup_surface(&id, &dh);
             }
 
             composer.windows.retain(|w| w.is_alive());
@@ -395,7 +404,7 @@ fn main() {
 
             if let Some(grab) = composer.pointer_grab.clone() {
                 if !grab.is_alive() {
-                    composer.cleanup_surface(&grab.id());
+                    composer.cleanup_surface(&grab.id(), &dh);
                 }
             }
 
@@ -441,6 +450,7 @@ fn main() {
                             src_w: 1.0,
                             src_h: 1.0,
                             border_radius: 0.0,
+                            alpha: 1.0,
                         }));
                     }
                 } else if let Some(shape) = composer.cursor_shape {
@@ -469,6 +479,7 @@ fn main() {
                             src_w: 1.0,
                             src_h: 1.0,
                             border_radius: 0.0,
+                            alpha: 1.0,
                         }));
                     }
                 } else if composer.pointer_focus.is_none() {
@@ -492,6 +503,7 @@ fn main() {
                             src_w: 1.0,
                             src_h: 1.0,
                             border_radius: 0.0,
+                            alpha: 1.0,
                         }));
                     }
                 }
@@ -564,6 +576,7 @@ fn main() {
             unsafe {
                 vkctx.draw_frame(
                     frame.vk_fb,
+                    frame.image,
                     width as u32,
                     height as u32,
                     &final_draw_list,
@@ -571,6 +584,8 @@ fn main() {
                     &wait_values,
                     &signal_semaphores,
                     &signal_values,
+                    frame.blur_target.as_ref(),
+                    composer.styler.blur_passes(),
                 );
 
                 // NOTE: it is safe to drop semaphores here because draw_frame is synchrone.
@@ -623,26 +638,7 @@ fn main() {
 
     // we drop the composer, ensuring all Arc<VulkanTextureInner> references are dropped
     drop(composer);
-
-    unsafe {
-        vkctx
-            .device
-            .destroy_descriptor_set_layout(vkctx.descriptor_set_layout, None);
-        vkctx.device.destroy_pipeline(vkctx.graphics_pipeline, None);
-        vkctx.device.destroy_pipeline(vkctx.color_pipeline, None);
-        vkctx
-            .device
-            .destroy_pipeline_layout(vkctx.pipeline_layout, None);
-        vkctx
-            .device
-            .destroy_pipeline_layout(vkctx.color_pipeline_layout, None);
-        vkctx.device.destroy_render_pass(vkctx.render_pass, None);
-
-        vkctx.device.destroy_fence(vkctx.fence, None);
-        vkctx.device.destroy_command_pool(vkctx.command_pool, None);
-        vkctx.device.destroy_device(None);
-        vkctx.instance.destroy_instance(None);
-    }
+    drop(vkctx); // Just to be explicit about it
 
     info!("Engine shut down safely. Returning to the terminal.");
 }

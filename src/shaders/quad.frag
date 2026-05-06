@@ -1,8 +1,22 @@
 #version 450
 
+layout(push_constant) uniform PushConstants {
+    vec2 pos;
+    vec2 screen_size;
+    vec2 quad_size;
+    vec2 src_offset;
+    vec2 src_size;
+    float border_radius;
+    float alpha;
+    float shadow_spread;
+    float shadow_power;
+    vec4 color;
+} pc;
+
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 1) in vec2 fragQuadSize;
 layout(location = 2) in float fragBorderRadius;
+layout(location = 3) in float fragAlpha;
 
 layout(location = 0) out vec4 outColor;
 
@@ -16,16 +30,17 @@ float sdRoundedBox(vec2 p, vec2 b, float r) {
 
 void main() {
     // Convert UV to pixel coordinates relative to center
-    vec2 p = (fragTexCoord - 0.5) * fragQuadSize;
+    vec2 quadUv = (fragTexCoord - pc.src_offset) / max(pc.src_size, vec2(0.001));
+    vec2 p = (quadUv - 0.5) * fragQuadSize;
     vec2 b = fragQuadSize * 0.5;
-    
-    float alpha = 1.0;
+
+    float edgeAlpha = 1.0;
     if (fragBorderRadius > 0.0) {
         float d = sdRoundedBox(p, b, fragBorderRadius);
         // Antialiasing
-        alpha = 1.0 - smoothstep(-1.0, 1.0, d);
+        edgeAlpha = 1.0 - smoothstep(-1.0, 1.0, d);
     }
-    
+
     vec4 texColor = texture(texSampler, fragTexCoord);
-    outColor = texColor * alpha;
+    outColor = texColor * edgeAlpha * fragAlpha;
 }

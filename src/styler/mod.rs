@@ -4,11 +4,56 @@ use std::collections::HashMap;
 use wayland_server::Resource;
 use wayland_server::backend::ObjectId;
 use wayland_server::protocol::wl_surface::WlSurface;
+pub mod style;
+use crate::animation::{AnimatedValue, tree::AnimationTree};
+use crate::styler::style::StyleConfig;
 
 pub struct HitResult {
     pub surface: Option<WlSurface>,
     pub local_x: f64,
     pub local_y: f64,
+}
+
+pub struct AnimatedWindow {
+    pub surface_id: ObjectId,
+    pub x: AnimatedValue,
+    pub y: AnimatedValue,
+    pub w: AnimatedValue,
+    pub h: AnimatedValue,
+    pub alpha: AnimatedValue,
+    pub scale: AnimatedValue,
+    pub is_closing: bool,
+    pub last_seen: u64,
+    pub is_ssd: bool,
+    pub texture_snapshot: Option<SurfaceTexture>,
+    pub render_layer: u32,
+}
+
+impl AnimatedWindow {
+    pub fn new(
+        id: ObjectId,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        is_ssd: bool,
+        render_layer: u32,
+    ) -> Self {
+        Self {
+            surface_id: id,
+            x: AnimatedValue::new(x),
+            y: AnimatedValue::new(y),
+            w: AnimatedValue::new(w),
+            h: AnimatedValue::new(h),
+            alpha: AnimatedValue::new(0.0), // Start transparent
+            scale: AnimatedValue::new(0.9), // Start slightly scaled down
+            is_closing: false,
+            last_seen: 0,
+            is_ssd,
+            texture_snapshot: None,
+            render_layer,
+        }
+    }
 }
 
 /// A trait that defines how surfaces are rendered and how hit-testing is performed.
@@ -17,6 +62,14 @@ pub struct HitResult {
 /// concrete drawing commands for the renderer, and for mapping global cursor
 /// coordinates back to specific surfaces.
 pub trait Styler {
+    /// Advance animations and synchronize logical state with visual state
+    fn tick(
+        &mut self,
+        now_ms: f64,
+        wm: &dyn crate::wm::WindowManager,
+        textures: &HashMap<ObjectId, SurfaceTexture>,
+    ) -> bool;
+
     /// Generates a list of draw commands for the current frame.
     ///
     /// This method takes the complete state of the compositor and produces
@@ -64,13 +117,28 @@ pub trait Styler {
     fn supports_ssd(&self) -> bool {
         false
     }
+
+    /// Returns the number of Kawase passes configured.
+    fn blur_passes(&self) -> u32 {
+        0
+    }
 }
 
-pub struct DefaultStyler;
+pub struct DefaultStyler {
+    pub windows: HashMap<ObjectId, AnimatedWindow>,
+    pub frame_counter: u64,
+    pub config: AnimationTree,
+    pub style: StyleConfig,
+}
 
 impl DefaultStyler {
     pub fn new() -> Self {
-        Self
+        Self {
+            windows: HashMap::new(),
+            frame_counter: 0,
+            config: AnimationTree::default(),
+            style: StyleConfig::default(),
+        }
     }
 
     fn get_surface_size(
@@ -105,9 +173,16 @@ impl DefaultStyler {
         surface_to_viewport: &HashMap<ObjectId, ObjectId>,
         draw_list: &mut Vec<DrawCommand>,
         border_radius: f32,
+        alpha: f32,
+        scale: f32,
+        is_base: bool, // newly added parameter
+        is_ssd: bool,  // parameter to prevent shadowing CSD windows
     ) {
-        let (lw, lh) =
+        let (mut lw, mut lh) =
             self.get_surface_size(&surface.id(), textures, viewports, surface_to_viewport);
+
+        lw *= scale as f64;
+        lh *= scale as f64;
 
         if let Some(tex) = textures.get(&surface.id()) {
             let mut src_x = 0.0;
@@ -124,6 +199,47 @@ impl DefaultStyler {
                 }
             }
 
+            if is_base && self.style.blur.enabled && is_ssd {
+                draw_list.push(DrawCommand::BlurCapture);
+                draw_list.push(DrawCommand::Blur(RenderQuad {
+                    set: tex.set, // unused by blur pipeline
+                    x: abs_x.round() as f32,
+                    y: abs_y.round() as f32,
+                    w: lw.round() as f32,
+                    h: lh.round() as f32,
+                    src_x,
+                    src_y,
+                    src_w,
+                    src_h,
+                    border_radius,
+                    alpha,
+                }));
+            }
+
+            if is_base && is_ssd && self.style.shadow.enabled {
+                let shadow_size = self.style.shadow.range as f32 * scale;
+                // Offset the shadow based on config and apply scale
+                let shadow_x =
+                    abs_x as f32 + (self.style.shadow.offset.0 as f32 * scale) - shadow_size;
+                let shadow_y =
+                    abs_y as f32 + (self.style.shadow.offset.1 as f32 * scale) - shadow_size;
+
+                let shadow_w = lw.round() as f32 + (shadow_size * 2.0);
+                let shadow_h = lh.round() as f32 + (shadow_size * 2.0);
+
+                draw_list.push(DrawCommand::Shadow(crate::vulkan::ShadowQuad {
+                    x: shadow_x.round(),
+                    y: shadow_y.round(),
+                    w: shadow_w.round(),
+                    h: shadow_h.round(),
+                    border_radius,
+                    spread: shadow_size,
+                    power: self.style.shadow.render_power as f32,
+                    alpha,
+                    color: self.style.shadow.color,
+                }));
+            }
+
             draw_list.push(DrawCommand::Texture(RenderQuad {
                 set: tex.set,
                 x: abs_x.round() as f32,
@@ -135,6 +251,7 @@ impl DefaultStyler {
                 src_w,
                 src_h,
                 border_radius,
+                alpha,
             }));
         }
 
@@ -142,14 +259,18 @@ impl DefaultStyler {
             if sub.parent.id() == surface.id() {
                 self.draw_surface_recursive(
                     &sub.surface,
-                    abs_x + sub.x as f64,
-                    abs_y + sub.y as f64,
+                    abs_x + sub.x as f64 * scale as f64,
+                    abs_y + sub.y as f64 * scale as f64,
                     subsurfaces,
                     textures,
                     viewports,
                     surface_to_viewport,
                     draw_list,
                     0.0,
+                    alpha,
+                    scale,
+                    false, // subsurfaces are not base
+                    false, // subsurfaces are not ssd
                 );
             }
         }
@@ -219,9 +340,202 @@ impl DefaultStyler {
         }
         None
     }
+
+    #[rustfmt::skip]
+    fn get_visible_logical_windows(&self, wm: &dyn crate::wm::WindowManager) -> Vec<crate::wm::WindowState> {
+        let mut visible_ids = std::collections::HashSet::new();
+
+        for w in wm.get_background() { visible_ids.insert(w.surface.id()); }
+        for w in wm.get_bottom() { visible_ids.insert(w.surface.id()); }
+        for w in wm.get_workspace_windows() { visible_ids.insert(w.surface.id()); }
+        for w in wm.get_top() { visible_ids.insert(w.surface.id()); }
+        for w in wm.get_overlay() { visible_ids.insert(w.surface.id()); }
+
+        // We filter the complete list to preserve the `is_interacting` flag set by all_windows()
+        wm.all_windows()
+            .into_iter()
+            .filter(|w| visible_ids.contains(&w.surface.id()))
+            .collect()
+    }
 }
 
 impl Styler for DefaultStyler {
+    fn tick(
+        &mut self,
+        now_ms: f64,
+        wm: &dyn crate::wm::WindowManager,
+        textures: &HashMap<ObjectId, SurfaceTexture>,
+    ) -> bool {
+        let mut animating = false;
+        self.frame_counter += 1;
+
+        let all_logical_windows = self.get_visible_logical_windows(wm);
+
+        // 1. Reconciliation: Map WM state into Styler state
+        for logical_win in all_logical_windows {
+            let id = logical_win.surface.id();
+            let is_ssd = logical_win.ssd && logical_win.layer_surface.is_none();
+            let render_layer = if logical_win.layer_surface.is_none() {
+                2 // workspace
+            } else {
+                match logical_win.layer {
+                    0 => 0, // background
+                    1 => 1, // bottom
+                    2 => 3, // top
+                    3 => 4, // overlay
+                    _ => 3,
+                }
+            };
+
+            if let Some(anim_win) = self.windows.get_mut(&id) {
+                anim_win.last_seen = self.frame_counter;
+                anim_win.is_ssd = is_ssd;
+                anim_win.render_layer = render_layer;
+
+                if let Some(tex) = textures.get(&id) {
+                    anim_win.texture_snapshot = Some(tex.clone());
+                }
+
+                let move_cfg = &self.config.windows_move;
+                if move_cfg.enabled && !logical_win.is_interacting {
+                    anim_win
+                        .x
+                        .set_target(logical_win.x, now_ms, move_cfg.duration, move_cfg.curve);
+                    anim_win
+                        .y
+                        .set_target(logical_win.y, now_ms, move_cfg.duration, move_cfg.curve);
+                    anim_win.w.set_target(
+                        logical_win.w as f64,
+                        now_ms,
+                        move_cfg.duration,
+                        move_cfg.curve,
+                    );
+                    anim_win.h.set_target(
+                        logical_win.h as f64,
+                        now_ms,
+                        move_cfg.duration,
+                        move_cfg.curve,
+                    );
+                } else {
+                    anim_win
+                        .x
+                        .set_target(logical_win.x, now_ms, 0.0, move_cfg.curve);
+                    anim_win
+                        .y
+                        .set_target(logical_win.y, now_ms, 0.0, move_cfg.curve);
+                    anim_win
+                        .w
+                        .set_target(logical_win.w as f64, now_ms, 0.0, move_cfg.curve);
+                    anim_win
+                        .h
+                        .set_target(logical_win.h as f64, now_ms, 0.0, move_cfg.curve);
+                }
+
+                // If it was closing but reappeared (rare but possible), cancel close
+                if anim_win.is_closing {
+                    anim_win.is_closing = false;
+                    let in_cfg = &self.config.windows_in;
+                    if in_cfg.enabled {
+                        anim_win.alpha.set_target(
+                            1.0,
+                            now_ms,
+                            self.config.fade_in.duration,
+                            self.config.fade_in.curve,
+                        );
+                        anim_win
+                            .scale
+                            .set_target(1.0, now_ms, in_cfg.duration, in_cfg.curve);
+                    }
+                }
+            } else {
+                // New window! Pop-in animation.
+                let mut new_anim_win = AnimatedWindow::new(
+                    id.clone(),
+                    logical_win.x,
+                    logical_win.y,
+                    logical_win.w as f64,
+                    logical_win.h as f64,
+                    is_ssd,
+                    render_layer,
+                );
+                new_anim_win.last_seen = self.frame_counter;
+                if let Some(tex) = textures.get(&id) {
+                    new_anim_win.texture_snapshot = Some(tex.clone());
+                }
+
+                let in_cfg = &self.config.windows_in;
+                if in_cfg.enabled {
+                    if in_cfg.style_name == "popin" {
+                        new_anim_win.scale.current = 0.8;
+                        new_anim_win.scale.start = 0.8;
+                    }
+                    new_anim_win.alpha.set_target(
+                        1.0,
+                        now_ms,
+                        self.config.fade_in.duration,
+                        self.config.fade_in.curve,
+                    );
+                    new_anim_win
+                        .scale
+                        .set_target(1.0, now_ms, in_cfg.duration, in_cfg.curve);
+                } else {
+                    new_anim_win.alpha.current = 1.0;
+                    new_anim_win.alpha.target = 1.0;
+                    new_anim_win.scale.current = 1.0;
+                    new_anim_win.scale.target = 1.0;
+                }
+
+                self.windows.insert(id, new_anim_win);
+            }
+        }
+
+        // 2. Identify closed windows and trigger fade-out
+        for anim_win in self.windows.values_mut() {
+            if anim_win.last_seen != self.frame_counter && !anim_win.is_closing {
+                anim_win.is_closing = true;
+                let out_cfg = &self.config.windows_out;
+
+                if out_cfg.enabled {
+                    anim_win.alpha.set_target(
+                        0.0,
+                        now_ms,
+                        self.config.fade_out.duration,
+                        self.config.fade_out.curve,
+                    );
+                    if out_cfg.style_name == "popin" {
+                        anim_win
+                            .scale
+                            .set_target(0.8, now_ms, out_cfg.duration, out_cfg.curve);
+                    }
+                } else {
+                    anim_win
+                        .alpha
+                        .set_target(0.0, now_ms, 0.0, self.config.fade_out.curve);
+                }
+            }
+        }
+
+        // 3. Tick all animations
+        self.windows.retain(|_, anim_win| {
+            let mut keep_alive = true;
+
+            animating |= anim_win.x.tick(now_ms);
+            animating |= anim_win.y.tick(now_ms);
+            animating |= anim_win.w.tick(now_ms);
+            animating |= anim_win.h.tick(now_ms);
+            animating |= anim_win.alpha.tick(now_ms);
+            animating |= anim_win.scale.tick(now_ms);
+
+            if anim_win.is_closing && !animating && anim_win.alpha.current <= 0.01 {
+                keep_alive = false; // Dead and invisible
+            }
+
+            keep_alive
+        });
+
+        animating
+    }
+
     fn generate_draw_list(
         &self,
         subsurfaces: &[SubsurfaceData],
@@ -233,36 +547,127 @@ impl Styler for DefaultStyler {
     ) -> Vec<DrawCommand> {
         let mut draw_list = Vec::new();
 
-        let layers = vec![
-            wm.get_background(),
-            wm.get_bottom(),
-            wm.get_workspace_windows(),
-            wm.get_top(),
-            wm.get_overlay(),
-        ];
+        // 1. Draw all active and closing windows from our animated state
+        let all_logical = self.get_visible_logical_windows(wm);
+        let mut render_order: Vec<ObjectId> = all_logical.iter().map(|w| w.surface.id()).collect();
 
-        for layer in layers {
-            for win_state in layer {
-                // Do not apply SSD border radius to layer shell surfaces
-                let radius = if win_state.ssd && win_state.layer_surface.is_none() {
-                    12.0
-                } else {
-                    0.0
-                };
-                self.draw_surface_recursive(
-                    &win_state.surface,
-                    win_state.x,
-                    win_state.y,
-                    subsurfaces,
-                    textures,
-                    viewports,
-                    surface_to_viewport,
-                    &mut draw_list,
-                    radius,
-                );
+        // Append closing windows
+        for id in self.windows.keys() {
+            if !render_order.contains(id) {
+                render_order.push(id.clone());
             }
         }
 
+        // Sort stably by render_layer so we don't break the WM's internal focus order,
+        // but we ensure layers (background, workspace, overlay) are respected.
+        render_order.sort_by_key(|id| self.windows.get(id).map(|w| w.render_layer).unwrap_or(2));
+
+        for id in render_order {
+            if let Some(anim_win) = self.windows.get(&id) {
+                let surface = all_logical
+                    .iter()
+                    .find(|w| w.surface.id() == id)
+                    .map(|w| w.surface.clone());
+                let radius = if anim_win.is_ssd {
+                    self.style.rounding
+                } else {
+                    0.0
+                };
+
+                if let Some(surf) = surface {
+                    // Adjust position based on scale to keep window centered during animation
+                    let (sw, sh) =
+                        self.get_surface_size(&id, textures, viewports, surface_to_viewport);
+                    let x_offset = (sw - sw * anim_win.scale.current) / 2.0;
+                    let y_offset = (sh - sh * anim_win.scale.current) / 2.0;
+
+                    self.draw_surface_recursive(
+                        &surf,
+                        anim_win.x.current + x_offset,
+                        anim_win.y.current + y_offset,
+                        subsurfaces,
+                        textures,
+                        viewports,
+                        surface_to_viewport,
+                        &mut draw_list,
+                        radius,
+                        anim_win.alpha.current as f32,
+                        anim_win.scale.current as f32,
+                        true,
+                        anim_win.is_ssd,
+                    );
+                } else if let Some(tex) = &anim_win.texture_snapshot {
+                    let lw = (tex.w as f64 / tex.scale as f64) * anim_win.scale.current;
+                    let lh = (tex.h as f64 / tex.scale as f64) * anim_win.scale.current;
+
+                    let sw = tex.w as f64 / tex.scale as f64;
+                    let sh = tex.h as f64 / tex.scale as f64;
+                    let x_offset = (sw - lw) / 2.0;
+                    let y_offset = (sh - lh) / 2.0;
+
+                    let final_x = anim_win.x.current + x_offset;
+                    let final_y = anim_win.y.current + y_offset;
+
+                    if self.style.blur.enabled && anim_win.is_ssd {
+                        draw_list.push(DrawCommand::BlurCapture);
+                        draw_list.push(DrawCommand::Blur(RenderQuad {
+                            set: tex.set, // unused by blur pipeline
+                            x: final_x.round() as f32,
+                            y: final_y.round() as f32,
+                            w: lw.round() as f32,
+                            h: lh.round() as f32,
+                            src_x: 0.0,
+                            src_y: 0.0,
+                            src_w: 1.0,
+                            src_h: 1.0,
+                            border_radius: radius,
+                            alpha: anim_win.alpha.current as f32,
+                        }));
+                    }
+
+                    if anim_win.is_ssd && self.style.shadow.enabled {
+                        let scale = anim_win.scale.current as f32;
+                        let shadow_size = self.style.shadow.range as f32 * scale;
+
+                        let shadow_x = final_x as f32 + (self.style.shadow.offset.0 as f32 * scale)
+                            - shadow_size;
+                        let shadow_y = final_y as f32 + (self.style.shadow.offset.1 as f32 * scale)
+                            - shadow_size;
+
+                        let shadow_w = lw.round() as f32 + (shadow_size * 2.0);
+                        let shadow_h = lh.round() as f32 + (shadow_size * 2.0);
+
+                        draw_list.push(DrawCommand::Shadow(crate::vulkan::ShadowQuad {
+                            x: shadow_x.round(),
+                            y: shadow_y.round(),
+                            w: shadow_w.round(),
+                            h: shadow_h.round(),
+                            border_radius: radius,
+                            spread: shadow_size,
+                            power: self.style.shadow.render_power as f32,
+                            alpha: anim_win.alpha.current as f32,
+                            color: self.style.shadow.color,
+                        }));
+                    }
+
+                    draw_list.push(DrawCommand::Texture(RenderQuad {
+                        set: tex.set,
+                        x: final_x.round() as f32,
+                        y: final_y.round() as f32,
+                        w: lw.round() as f32,
+                        h: lh.round() as f32,
+                        src_x: 0.0,
+                        src_y: 0.0,
+                        src_w: 1.0,
+                        src_h: 1.0,
+                        border_radius: radius,
+                        alpha: anim_win.alpha.current as f32,
+                    }));
+                }
+            }
+        }
+
+        // 2. Draw popups (on top of windows)
         for popup in wm.get_popups() {
             let (abs_x, abs_y) = wm.get_absolute_position(&popup.surface.id());
             let surf_x = abs_x - popup.geometry.x as f64;
@@ -278,6 +683,10 @@ impl Styler for DefaultStyler {
                 surface_to_viewport,
                 &mut draw_list,
                 0.0,
+                1.0,
+                1.0,
+                true,
+                false, // Popups are not SSD
             );
         }
 
@@ -383,6 +792,14 @@ impl Styler for DefaultStyler {
         true
     }
 
+    fn blur_passes(&self) -> u32 {
+        if self.style.blur.enabled {
+            self.style.blur.passes
+        } else {
+            0
+        }
+    }
+
     fn draw_surface_tree(
         &self,
         surface: &WlSurface,
@@ -404,6 +821,10 @@ impl Styler for DefaultStyler {
             surface_to_viewport,
             draw_list,
             0.0,
+            1.0,
+            1.0,
+            false,
+            false,
         );
     }
 }

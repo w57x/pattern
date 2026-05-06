@@ -29,5 +29,6 @@ wayland-server = { git = "https://github.com/Smithay/wayland-rs.git" }
 wayland-backend = { git = "https://github.com/Smithay/wayland-rs.git" }
 xcursor = "0.3.10"
 xkbcommon = "0.9.0"
+mlua = { version = "0.11.6", features = ["lua55", "vendored", "send"] }
 
 [build-dependencies]

@@ -581,21 +581,26 @@ impl Composer {
         Some(sem)
     }
 
-    pub fn set_input_focus(&mut self, surface: WlSurface, dh: &wayland_server::DisplayHandle) {
-        if self.input_focus.as_ref() == Some(&surface) {
+    pub fn set_input_focus(
+        &mut self,
+        surface: Option<WlSurface>,
+        dh: &wayland_server::DisplayHandle,
+    ) {
+        if self.input_focus.as_ref().map(|s| s.id()) == surface.as_ref().map(|s| s.id()) {
             return;
         }
 
-        // we check if it's a layer surface and if it can take focus
         let mut can_focus = true;
-        if let Some(win) = self
-            .wm
-            .all_windows()
-            .iter()
-            .find(|w| w.surface.id() == surface.id())
-        {
-            if win.layer_surface.is_some() && win.keyboard_interactivity == 0 {
-                can_focus = false;
+        if let Some(surf) = &surface {
+            if let Some(win) = self
+                .wm
+                .all_windows()
+                .iter()
+                .find(|w| w.surface.id() == surf.id())
+            {
+                if win.layer_surface.is_some() && win.keyboard_interactivity == 0 {
+                    can_focus = false;
+                }
             }
         }
 
@@ -603,7 +608,37 @@ impl Composer {
             return;
         }
 
+        use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+
         if let Some(old_focus) = self.input_focus.take() {
+            if let Some(win) = self
+                .wm
+                .all_windows()
+                .iter()
+                .find(|w| w.surface.id() == old_focus.id())
+            {
+                if let (Some(toplevel), Some(xdg_surface)) = (&win.toplevel, &win.xdg_surface) {
+                    let mut states = Vec::new();
+                    // NOTE: Intentionally omitting State::Activated
+                    if win.maximized {
+                        states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
+                    }
+                    if win.fullscreen {
+                        states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
+                    }
+
+                    // Only enforcing size if maximized or fullscreen
+                    let (cfg_w, cfg_h) = if win.maximized || win.fullscreen {
+                        (win.w, win.h)
+                    } else {
+                        (0, 0)
+                    };
+
+                    toplevel.configure(cfg_w, cfg_h, states);
+                    xdg_surface.configure(self.serial);
+                }
+            }
+
             if let Some(old_client) = old_focus.client() {
                 self.serial += 1;
                 for keyboard in self
@@ -628,47 +663,75 @@ impl Composer {
             }
         }
 
-        self.input_focus = Some(surface.clone());
-        if let Some(client) = surface.client() {
-            self.serial += 1;
+        self.input_focus = surface;
 
-            // Text Input Enter
-            for (ti, _, state) in self.text_inputs.iter_mut() {
-                if ti.client().map(|c| c.id()) == Some(client.id()) {
-                    ti.enter(&surface);
-                    state.surface = Some(surface.clone());
+        if let Some(new_focus) = &self.input_focus {
+            if let Some(win) = self
+                .wm
+                .all_windows()
+                .iter()
+                .find(|w| w.surface.id() == new_focus.id())
+            {
+                if let (Some(toplevel), Some(xdg_surface)) = (&win.toplevel, &win.xdg_surface) {
+                    let mut states = Vec::new();
+                    states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
+                    if win.maximized {
+                        states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
+                    }
+                    if win.fullscreen {
+                        states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
+                    }
+
+                    let (cfg_w, cfg_h) = if win.maximized || win.fullscreen {
+                        (win.w, win.h)
+                    } else {
+                        (0, 0)
+                    };
+
+                    toplevel.configure(cfg_w, cfg_h, states);
+                    xdg_surface.configure(self.serial);
                 }
             }
 
-            // we send selection offers to the newly focused client before keyboard.enter
-            self.send_selection_offer(&client, dh);
-            self.send_primary_selection_offer(&client, dh);
+            if let Some(client) = new_focus.client() {
+                self.serial += 1;
 
-            for keyboard in self
-                .keyboards
-                .iter()
-                .filter(|k| k.client().map(|c| c.id()) == Some(client.id()))
-            {
-                keyboard.enter(self.serial, &surface, Vec::new());
+                for (ti, _, state) in self.text_inputs.iter_mut() {
+                    if ti.client().map(|c| c.id()) == Some(client.id()) {
+                        ti.enter(new_focus);
+                        state.surface = Some(new_focus.clone());
+                    }
+                }
 
-                let depressed = self
-                    .xkb_state
-                    .serialize_mods(xkbcommon::xkb::STATE_MODS_DEPRESSED);
-                let latched = self
-                    .xkb_state
-                    .serialize_mods(xkbcommon::xkb::STATE_MODS_LATCHED);
-                let locked = self
-                    .xkb_state
-                    .serialize_mods(xkbcommon::xkb::STATE_MODS_LOCKED);
-                let group = self
-                    .xkb_state
-                    .serialize_layout(xkbcommon::xkb::STATE_LAYOUT_EFFECTIVE);
-                keyboard.modifiers(self.serial, depressed, latched, locked, group);
+                self.send_selection_offer(&client, dh);
+                self.send_primary_selection_offer(&client, dh);
+
+                for keyboard in self
+                    .keyboards
+                    .iter()
+                    .filter(|k| k.client().map(|c| c.id()) == Some(client.id()))
+                {
+                    keyboard.enter(self.serial, new_focus, Vec::new());
+
+                    let depressed = self
+                        .xkb_state
+                        .serialize_mods(xkbcommon::xkb::STATE_MODS_DEPRESSED);
+                    let latched = self
+                        .xkb_state
+                        .serialize_mods(xkbcommon::xkb::STATE_MODS_LATCHED);
+                    let locked = self
+                        .xkb_state
+                        .serialize_mods(xkbcommon::xkb::STATE_MODS_LOCKED);
+                    let group = self
+                        .xkb_state
+                        .serialize_layout(xkbcommon::xkb::STATE_LAYOUT_EFFECTIVE);
+                    keyboard.modifiers(self.serial, depressed, latched, locked, group);
+                }
             }
         }
     }
 
-    pub fn cleanup_surface(&mut self, id: &ObjectId) {
+    pub fn cleanup_surface(&mut self, id: &ObjectId, dh: &wayland_server::DisplayHandle) {
         self.wm.unmap_window(id);
         self.wm.unmap_popup(id);
         self.xdg_to_surface.remove(id);
@@ -681,10 +744,14 @@ impl Composer {
 
         if self.input_focus.as_ref().map(|s| s.id()) == Some(id.clone()) {
             self.input_focus = None;
-        }
-        if self.pointer_focus.as_ref().map(|s| s.id()) == Some(id.clone()) {
             self.set_pointer_focus(None, 0.0, 0.0, 0);
         }
+
+        if self.input_focus.is_none() {
+            let fallback_focus = self.wm.get_focused_window();
+            self.set_input_focus(fallback_focus.clone(), dh);
+        }
+
         if self.pointer_grab.as_ref().map(|s| s.id()) == Some(id.clone()) {
             let mut shifted = false;
             if let Some(sub) = self.subsurfaces.iter().find(|s| s.surface.id() == *id) {
@@ -1001,6 +1068,38 @@ impl Composer {
     pub unsafe fn drop_semaphores(&mut self) {
         for sem in self.dead_semaphores.drain(..) {
             unsafe {
+                self.vkctx.device.destroy_semaphore(sem, None);
+            }
+        }
+    }
+
+    pub fn request_closing_active_client(&mut self) -> bool {
+        if let Some(focused_surface) = &self.input_focus {
+            let focused_id = focused_surface.id();
+
+            let active_window = self
+                .wm
+                .all_windows()
+                .into_iter()
+                .find(|w| w.surface.id() == focused_id);
+
+            if let Some(window) = active_window {
+                if let Some(toplevel) = window.toplevel {
+                    toplevel.close();
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+}
+
+impl Drop for Composer {
+    fn drop(&mut self) {
+        unsafe {
+            self.drop_semaphores();
+            for (_, sem) in self.syncobj_timelines.drain() {
                 self.vkctx.device.destroy_semaphore(sem, None);
             }
         }

@@ -141,20 +141,6 @@ impl Wm {
         }
         None
     }
-
-    fn all_windows(&self) -> Vec<WindowState> {
-        let mut list = Vec::new();
-        for output in &self.outputs {
-            list.extend(output.background.windows.clone());
-            list.extend(output.bottom.windows.clone());
-            for ws in output.workspaces.flatten() {
-                list.extend(ws.windows.clone());
-            }
-            list.extend(output.top.windows.clone());
-            list.extend(output.overlay.windows.clone());
-        }
-        list
-    }
 }
 
 impl WindowManager for Wm {
@@ -169,10 +155,19 @@ impl WindowManager for Wm {
             list.extend(output.top.windows.clone());
             list.extend(output.overlay.windows.clone());
         }
+
+        let drag_id = self.drag_state.as_ref().map(|(id, _, _)| id.clone());
+        let resize_id = self.resize_state.as_ref().map(|(id, ..)| id.clone());
+
+        for win in &mut list {
+            if Some(win.surface.id()) == drag_id || Some(win.surface.id()) == resize_id {
+                win.is_interacting = true;
+            }
+        }
+
         list
     }
 
-    /// Maps a new window with a cascading default position.
     fn map_window(&mut self, surface: WlSurface) {
         if self.outputs.is_empty() {
             return;
@@ -211,6 +206,7 @@ impl WindowManager for Wm {
             exclusive_zone: 0,
             margin: (0, 0, 0, 0),
             keyboard_interactivity: 0,
+            is_interacting: false,
         });
     }
 
@@ -769,6 +765,7 @@ impl WindowManager for Wm {
             exclusive_zone: 0,
             margin: (0, 0, 0, 0),
             keyboard_interactivity: 0,
+            is_interacting: false,
         };
 
         match layer {
@@ -923,7 +920,34 @@ impl WindowManager for Wm {
     }
 
     fn get_focused_window(&self) -> Option<WlSurface> {
-        self.all_windows().last().map(|w| w.surface.clone())
+        if self.outputs.is_empty() {
+            return None;
+        }
+
+        let out = &self.outputs[0];
+
+        if let Some(w) = out.overlay.windows.last() {
+            return Some(w.surface.clone());
+        }
+
+        if let Some(w) = out.top.windows.last() {
+            return Some(w.surface.clone());
+        }
+        if let Some(Slot::Occupied(ws)) = out.workspaces.get(out.active_workspace) {
+            if let Some(w) = ws.windows.last() {
+                return Some(w.surface.clone());
+            }
+        }
+
+        if let Some(w) = out.bottom.windows.last() {
+            return Some(w.surface.clone());
+        }
+
+        if let Some(w) = out.background.windows.last() {
+            return Some(w.surface.clone());
+        }
+
+        None
     }
 
     fn get_surface_position(&self, surface_id: &ObjectId) -> Option<(f64, f64)> {
@@ -1081,6 +1105,75 @@ impl WindowManager for Wm {
                 }
             }
         }
+        false
+    }
+
+    fn focus_before_workspace(&mut self) -> bool {
+        if self.outputs.is_empty() {
+            return false;
+        }
+
+        let out = &mut self.outputs[0];
+        let mut target = out.active_workspace;
+
+        debug!("[wm] trying to go before from (T{target})");
+
+        while target > 0 {
+            target -= 1;
+            if let Some(slot) = out.workspaces.get(target) {
+                if !slot.is_empty() {
+                    out.active_workspace = target;
+                    debug!("[wm] focused before (T{target})");
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    fn focus_after_workspace(&mut self) -> bool {
+        if self.outputs.is_empty() {
+            return false;
+        }
+
+        let output_id = self.outputs[0].id;
+        let current_idx = self.outputs[0].active_workspace;
+        debug!("[wm] trying to go after (T{current_idx})");
+
+        let current_is_empty =
+            if let Some(Slot::Occupied(ws)) = self.outputs[0].workspaces.get(current_idx) {
+                ws.windows.is_empty()
+            } else {
+                true
+            };
+
+        if current_is_empty {
+            return false;
+        }
+
+        let target_idx = current_idx + 1;
+
+        let next_is_occupied = matches!(
+            self.outputs[0].workspaces.get(target_idx),
+            Some(Slot::Occupied(_))
+        );
+
+        if next_is_occupied {
+            self.outputs[0].active_workspace = target_idx;
+            debug!("[wm] focused after (T{target_idx})");
+            return true;
+        } else {
+            if self
+                .create_workspace(output_id, WorkspaceInsertPosition::After(current_idx))
+                .is_some()
+            {
+                self.outputs[0].active_workspace = target_idx;
+                debug!("[wm] focused after (T{target_idx})");
+                return true;
+            }
+        }
+
         false
     }
 }

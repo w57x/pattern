@@ -154,7 +154,7 @@ impl Dispatch<XdgSurface, ()> for Composer {
                         .wm
                         .assign_toplevel(&surface.id(), toplevel.clone(), resource.clone());
                     state.wm.focus_window(&surface.id());
-                    state.set_input_focus(surface.clone(), dhandle);
+                    state.set_input_focus(Some(surface.clone()), dhandle);
 
                     let (cx, cy) = state.cursor_pos;
                     let extra_surfaces = state.get_input_popup_surfaces();

@@ -7,13 +7,16 @@ layout(push_constant) uniform PushConstants {
     vec2 src_offset;  // UV offset
     vec2 src_size;    // UV size
     float border_radius;
-    float _padding;
+    float alpha;
+    float shadow_spread;
+    float shadow_power;
     vec4 color;       // Color for solid quads
 } push;
 
 layout(location = 0) out vec2 fragTexCoord;
 layout(location = 1) out vec2 fragQuadSize;
 layout(location = 2) out float fragBorderRadius;
+layout(location = 3) out float fragAlpha;
 
 // A normalized 1x1 square
 vec2 positions[6] = vec2[](
@@ -35,4 +38,5 @@ void main() {
     fragTexCoord = push.src_offset + (uvs[gl_VertexIndex] * push.src_size);
     fragQuadSize = push.quad_size;
     fragBorderRadius = push.border_radius;
+    fragAlpha = push.alpha;
 }

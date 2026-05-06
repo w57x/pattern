@@ -5,7 +5,25 @@ use std::os::fd::{IntoRawFd, OwnedFd};
 use tracing::{error, warn};
 
 use crate::gpu::buffer::Buffer;
+
 pub mod frame;
+
+pub struct BlurTarget {
+    pub image: vk::Image,
+    pub view: vk::ImageView,
+    pub memory: vk::DeviceMemory,
+    pub descriptor_set: vk::DescriptorSet, // For the shader to sample from THIS image
+    pub framebuffer: vk::Framebuffer,      // For rendering INTO this image
+    pub width: u32,
+    pub height: u32,
+}
+
+pub struct BlurChain {
+    pub targets: Vec<BlurTarget>,
+    pub sampler: vk::Sampler,
+    pub pool: vk::DescriptorPool,
+    pub render_pass: vk::RenderPass,
+}
 
 pub struct VulkanContext {
     pub entry: Entry,
@@ -18,12 +36,53 @@ pub struct VulkanContext {
     pub fence: vk::Fence,
 
     pub render_pass: vk::RenderPass,
+    pub resume_render_pass: vk::RenderPass,
     pub pipeline_layout: vk::PipelineLayout,
     pub color_pipeline_layout: vk::PipelineLayout,
     pub graphics_pipeline: vk::Pipeline,
     pub color_pipeline: vk::Pipeline,
+    pub shadow_pipeline: vk::Pipeline,
 
     pub descriptor_set_layout: vk::DescriptorSetLayout,
+
+    // Blur Pipeline fields
+    pub blur_render_pass: vk::RenderPass,
+    pub blur_pipeline_layout: vk::PipelineLayout,
+    pub blur_pipeline: vk::Pipeline,
+    pub kawase_down_pipeline: vk::Pipeline,
+    pub kawase_up_pipeline: vk::Pipeline,
+}
+
+impl Drop for VulkanContext {
+    fn drop(&mut self) {
+        unsafe {
+            self.device
+                .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+
+            self.device.destroy_pipeline(self.graphics_pipeline, None);
+            self.device.destroy_pipeline(self.color_pipeline, None);
+            self.device.destroy_pipeline(self.shadow_pipeline, None);
+            self.device.destroy_pipeline(self.blur_pipeline, None);
+            self.device
+                .destroy_pipeline(self.kawase_down_pipeline, None);
+            self.device.destroy_pipeline(self.kawase_up_pipeline, None);
+
+            self.device
+                .destroy_pipeline_layout(self.pipeline_layout, None);
+            self.device
+                .destroy_pipeline_layout(self.color_pipeline_layout, None);
+
+            self.device.destroy_render_pass(self.render_pass, None);
+            self.device
+                .destroy_render_pass(self.resume_render_pass, None);
+            self.device.destroy_render_pass(self.blur_render_pass, None);
+
+            self.device.destroy_fence(self.fence, None);
+            self.device.destroy_command_pool(self.command_pool, None);
+            self.device.destroy_device(None);
+            self.instance.destroy_instance(None);
+        }
+    }
 }
 
 impl VulkanContext {
@@ -105,14 +164,34 @@ impl VulkanContext {
                 .expect("Failed to create Fence")
         };
 
-        let render_pass = unsafe { Self::create_render_pass(&device) };
+        let render_pass = unsafe {
+            Self::create_render_pass(
+                &device,
+                vk::ImageLayout::UNDEFINED,
+                vk::AttachmentLoadOp::CLEAR,
+            )
+        };
+        let resume_render_pass = unsafe {
+            Self::create_render_pass(
+                &device,
+                vk::ImageLayout::GENERAL,
+                vk::AttachmentLoadOp::LOAD,
+            )
+        };
+        let blur_render_pass = unsafe { Self::create_render_pass_for_blur(&device) };
+
         let (
             descriptor_set_layout,
             pipeline_layout,
             color_pipeline_layout,
             graphics_pipeline,
             color_pipeline,
-        ) = unsafe { Self::create_graphics_pipeline(&device, render_pass) };
+            shadow_pipeline,
+            blur_pipeline_layout,
+            blur_pipeline,
+            kawase_down_pipeline,
+            kawase_up_pipeline,
+        ) = unsafe { Self::create_graphics_pipeline(&device, render_pass, blur_render_pass) };
 
         Self {
             entry,
@@ -124,11 +203,18 @@ impl VulkanContext {
             command_pool,
             fence,
             render_pass,
+            resume_render_pass,
             pipeline_layout,
             color_pipeline_layout,
             graphics_pipeline,
             color_pipeline,
+            shadow_pipeline,
             descriptor_set_layout,
+            blur_render_pass,
+            blur_pipeline_layout,
+            blur_pipeline,
+            kawase_down_pipeline,
+            kawase_up_pipeline,
         }
     }
 
@@ -172,7 +258,7 @@ impl VulkanContext {
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
-            .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+            .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
 
@@ -233,16 +319,20 @@ impl VulkanContext {
         panic!("Failed to find suitable memory type");
     }
 
-    pub unsafe fn create_render_pass(device: &ash::Device) -> vk::RenderPass {
+    pub unsafe fn create_render_pass(
+        device: &ash::Device,
+        initial_layout: vk::ImageLayout,
+        load_op: vk::AttachmentLoadOp,
+    ) -> vk::RenderPass {
         // NOTE: XRGB8888 -> BGRA8_UNORM
         let format = vk::Format::B8G8R8A8_UNORM;
 
         let color_attachment = vk::AttachmentDescription::default()
             .format(format)
             .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .load_op(load_op)
             .store_op(vk::AttachmentStoreOp::STORE)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .initial_layout(initial_layout)
             .final_layout(vk::ImageLayout::GENERAL);
 
         let color_attachment_ref = vk::AttachmentReference::default()
@@ -287,21 +377,39 @@ impl VulkanContext {
     pub unsafe fn create_graphics_pipeline(
         device: &ash::Device,
         render_pass: vk::RenderPass,
+        blur_render_pass: vk::RenderPass,
     ) -> (
         vk::DescriptorSetLayout,
         vk::PipelineLayout,
         vk::PipelineLayout,
         vk::Pipeline,
         vk::Pipeline,
+        vk::Pipeline,
+        vk::PipelineLayout, // blur pipeline layout
+        vk::Pipeline,       // blur pipeline
+        vk::Pipeline,       // kawase down pipeline
+        vk::Pipeline,       // kawase up pipeline
     ) {
         // Loading the embedded shaders from the Cargo output directory
         let vert_shader_code = include_bytes!(concat!(env!("OUT_DIR"), "/quad.vert.spv"));
         let frag_shader_code = include_bytes!(concat!(env!("OUT_DIR"), "/quad.frag.spv"));
         let solid_shader_code = include_bytes!(concat!(env!("OUT_DIR"), "/solid.frag.spv"));
+        let shadow_shader_code = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.frag.spv"));
+        let blur_shader_code = include_bytes!(concat!(env!("OUT_DIR"), "/blur.frag.spv"));
+        let kawase_down_shader_code =
+            include_bytes!(concat!(env!("OUT_DIR"), "/kawase_down.frag.spv"));
+        let kawase_up_shader_code = include_bytes!(concat!(env!("OUT_DIR"), "/kawase_up.frag.spv"));
 
         let vert_shader_module = unsafe { Self::create_shader_module(device, vert_shader_code) };
         let frag_shader_module = unsafe { Self::create_shader_module(device, frag_shader_code) };
         let solid_shader_module = unsafe { Self::create_shader_module(device, solid_shader_code) };
+        let shadow_shader_module =
+            unsafe { Self::create_shader_module(device, shadow_shader_code) };
+        let blur_shader_module = unsafe { Self::create_shader_module(device, blur_shader_code) };
+        let kawase_down_shader_module =
+            unsafe { Self::create_shader_module(device, kawase_down_shader_code) };
+        let kawase_up_shader_module =
+            unsafe { Self::create_shader_module(device, kawase_up_shader_code) };
 
         let main_function_name =
             unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"main\0") };
@@ -365,7 +473,7 @@ impl VulkanContext {
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
             .blend_enable(true)
-            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+            .src_color_blend_factor(vk::BlendFactor::ONE) // Wayland buffers are pre-multiplied alpha
             .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
             .color_blend_op(vk::BlendOp::ADD)
             .src_alpha_blend_factor(vk::BlendFactor::ONE)
@@ -453,11 +561,143 @@ impl VulkanContext {
                 .expect("Failed to create Solid Graphics Pipeline")[0]
         };
 
+        shader_stages[1] = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(shadow_shader_module)
+            .name(main_function_name);
+
+        let shadow_pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input_info)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisampling)
+            .color_blend_state(&color_blending)
+            .dynamic_state(&dynamic_state_info)
+            .layout(color_pipeline_layout) // Can reuse color pipeline layout as it takes same push constants
+            .render_pass(render_pass)
+            .subpass(0);
+
+        let shadow_pipeline = unsafe {
+            device
+                .create_graphics_pipelines(
+                    vk::PipelineCache::null(),
+                    std::slice::from_ref(&shadow_pipeline_info),
+                    None,
+                )
+                .expect("Failed to create Shadow Graphics Pipeline")[0]
+        };
+
+        shader_stages[1] = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(blur_shader_module)
+            .name(main_function_name);
+
+        let blur_pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input_info)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisampling)
+            .color_blend_state(&color_blending) // Standard blending for blur pass
+            .dynamic_state(&dynamic_state_info)
+            .layout(pipeline_layout) // Reuses standard quad layout (needs a texture to blur)
+            .render_pass(render_pass)
+            .subpass(0);
+
+        let blur_pipeline = unsafe {
+            device
+                .create_graphics_pipelines(
+                    vk::PipelineCache::null(),
+                    std::slice::from_ref(&blur_pipeline_info),
+                    None,
+                )
+                .expect("Failed to create Blur Graphics Pipeline")[0]
+        };
+
+        shader_stages[1] = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(kawase_down_shader_module)
+            .name(main_function_name);
+
+        let kawase_down_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
+            .blend_enable(false);
+
+        let kawase_down_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
+            .logic_op_enable(false)
+            .attachments(std::slice::from_ref(&kawase_down_blend_attachment));
+
+        let kawase_down_pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input_info)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisampling)
+            .color_blend_state(&kawase_down_blend_state)
+            .dynamic_state(&dynamic_state_info)
+            .layout(pipeline_layout)
+            .render_pass(blur_render_pass)
+            .subpass(0);
+
+        let kawase_down_pipeline = unsafe {
+            device
+                .create_graphics_pipelines(
+                    vk::PipelineCache::null(),
+                    std::slice::from_ref(&kawase_down_pipeline_info),
+                    None,
+                )
+                .expect("Failed to create Kawase Down Graphics Pipeline")[0]
+        };
+
+        shader_stages[1] = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(kawase_up_shader_module)
+            .name(main_function_name);
+
+        let kawase_up_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
+            .blend_enable(false);
+
+        let kawase_up_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
+            .logic_op_enable(false)
+            .attachments(std::slice::from_ref(&kawase_up_blend_attachment));
+
+        let kawase_up_pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input_info)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisampling)
+            .color_blend_state(&kawase_up_blend_state)
+            .dynamic_state(&dynamic_state_info)
+            .layout(pipeline_layout)
+            .render_pass(blur_render_pass)
+            .subpass(0);
+
+        let kawase_up_pipeline = unsafe {
+            device
+                .create_graphics_pipelines(
+                    vk::PipelineCache::null(),
+                    std::slice::from_ref(&kawase_up_pipeline_info),
+                    None,
+                )
+                .expect("Failed to create Kawase Up Graphics Pipeline")[0]
+        };
+
         // Cleanup the temporary shader modules now that the pipeline has digested them
         unsafe {
             device.destroy_shader_module(vert_shader_module, None);
             device.destroy_shader_module(frag_shader_module, None);
             device.destroy_shader_module(solid_shader_module, None);
+            device.destroy_shader_module(shadow_shader_module, None);
+            device.destroy_shader_module(blur_shader_module, None);
+            device.destroy_shader_module(kawase_down_shader_module, None);
+            device.destroy_shader_module(kawase_up_shader_module, None);
         }
 
         (
@@ -466,6 +706,11 @@ impl VulkanContext {
             color_pipeline_layout,
             graphics_pipeline,
             color_pipeline,
+            shadow_pipeline,
+            pipeline_layout, // Using the same layout for now
+            blur_pipeline,
+            kawase_down_pipeline,
+            kawase_up_pipeline,
         )
     }
 
@@ -512,9 +757,204 @@ impl VulkanContext {
         (image_view, framebuffer)
     }
 
+    pub unsafe fn create_blur_chain(
+        &self,
+        passes: u32,
+        base_width: u32,
+        base_height: u32,
+    ) -> BlurChain {
+        let sampler_info = vk::SamplerCreateInfo::default()
+            .mag_filter(vk::Filter::LINEAR)
+            .min_filter(vk::Filter::LINEAR)
+            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE);
+        let sampler = unsafe { self.device.create_sampler(&sampler_info, None).unwrap() };
+
+        // Create a single descriptor pool large enough for all passes
+        let pool_sizes = [vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(passes + 1)]; // base capture + passes
+
+        let pool_info = vk::DescriptorPoolCreateInfo::default()
+            .pool_sizes(&pool_sizes)
+            .max_sets(passes + 1);
+
+        let pool = unsafe {
+            self.device
+                .create_descriptor_pool(&pool_info, None)
+                .unwrap()
+        };
+
+        // Create a render pass specifically for rendering to blur targets (no clearing, just STORE)
+        let blur_render_pass = unsafe { Self::create_render_pass_for_blur(&self.device) };
+
+        let mut targets = Vec::new();
+
+        let mut current_w = base_width;
+        let mut current_h = base_height;
+
+        for _i in 0..=passes {
+            let image_info = vk::ImageCreateInfo::default()
+                .image_type(vk::ImageType::TYPE_2D)
+                .extent(vk::Extent3D {
+                    width: current_w,
+                    height: current_h,
+                    depth: 1,
+                })
+                .mip_levels(1)
+                .array_layers(1)
+                .format(vk::Format::B8G8R8A8_UNORM)
+                .tiling(vk::ImageTiling::OPTIMAL)
+                .initial_layout(vk::ImageLayout::UNDEFINED)
+                .usage(
+                    vk::ImageUsageFlags::TRANSFER_DST // for blit capture
+                        | vk::ImageUsageFlags::SAMPLED // for reading as texture
+                        | vk::ImageUsageFlags::COLOR_ATTACHMENT, // for rendering into during passes
+                )
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+            let image = unsafe { self.device.create_image(&image_info, None).unwrap() };
+            let mem_reqs = unsafe { self.device.get_image_memory_requirements(image) };
+
+            let alloc_info = vk::MemoryAllocateInfo::default()
+                .allocation_size(mem_reqs.size)
+                .memory_type_index(self.find_memory_type_index(
+                    mem_reqs.memory_type_bits,
+                    vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                ));
+
+            let memory = unsafe { self.device.allocate_memory(&alloc_info, None).unwrap() };
+            unsafe { self.device.bind_image_memory(image, memory, 0).unwrap() };
+
+            let view_info = vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(vk::Format::B8G8R8A8_UNORM)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .base_mip_level(0)
+                        .level_count(1)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                );
+            let view = unsafe { self.device.create_image_view(&view_info, None).unwrap() };
+
+            // Link the View to the Blur Render Pass via a Framebuffer
+            let fb_info = vk::FramebufferCreateInfo::default()
+                .render_pass(blur_render_pass)
+                .attachments(std::slice::from_ref(&view))
+                .width(current_w)
+                .height(current_h)
+                .layers(1);
+            let framebuffer = unsafe { self.device.create_framebuffer(&fb_info, None).unwrap() };
+
+            // Allocate the Descriptor Set
+            let alloc_info = vk::DescriptorSetAllocateInfo::default()
+                .descriptor_pool(pool)
+                .set_layouts(std::slice::from_ref(&self.descriptor_set_layout));
+
+            let descriptor_set =
+                unsafe { self.device.allocate_descriptor_sets(&alloc_info).unwrap()[0] };
+
+            let desc_image_info = vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(view)
+                .sampler(sampler);
+
+            let write_descriptor_set = vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_set)
+                .dst_binding(0)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(std::slice::from_ref(&desc_image_info));
+
+            unsafe {
+                self.device
+                    .update_descriptor_sets(std::slice::from_ref(&write_descriptor_set), &[])
+            };
+
+            targets.push(BlurTarget {
+                image,
+                view,
+                memory,
+                descriptor_set,
+                framebuffer,
+                width: current_w,
+                height: current_h,
+            });
+
+            current_w = (current_w / 2).max(1);
+            current_h = (current_h / 2).max(1);
+        }
+
+        BlurChain {
+            targets,
+            sampler,
+            pool,
+            render_pass: blur_render_pass,
+        }
+    }
+
+    pub unsafe fn destroy_blur_chain(&self, chain: &BlurChain) {
+        unsafe {
+            for target in &chain.targets {
+                self.device.destroy_framebuffer(target.framebuffer, None);
+                self.device.destroy_image_view(target.view, None);
+                self.device.destroy_image(target.image, None);
+                self.device.free_memory(target.memory, None);
+            }
+            self.device.destroy_render_pass(chain.render_pass, None);
+            self.device.destroy_sampler(chain.sampler, None);
+            self.device.destroy_descriptor_pool(chain.pool, None);
+        }
+    }
+
+    pub unsafe fn create_render_pass_for_blur(device: &ash::Device) -> vk::RenderPass {
+        let format = vk::Format::B8G8R8A8_UNORM;
+
+        let color_attachment = vk::AttachmentDescription::default()
+            .format(format)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::DONT_CARE) // Don't clear, we'll overwrite every pixel
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL); // Immediately ready to be sampled by the next pass
+
+        let color_attachment_ref = vk::AttachmentReference::default()
+            .attachment(0)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+        let subpass = vk::SubpassDescription::default()
+            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+            .color_attachments(std::slice::from_ref(&color_attachment_ref));
+
+        let dependency = vk::SubpassDependency::default()
+            .src_subpass(vk::SUBPASS_EXTERNAL)
+            .dst_subpass(0)
+            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
+
+        let render_pass_info = vk::RenderPassCreateInfo::default()
+            .attachments(std::slice::from_ref(&color_attachment))
+            .subpasses(std::slice::from_ref(&subpass))
+            .dependencies(std::slice::from_ref(&dependency));
+
+        unsafe {
+            device
+                .create_render_pass(&render_pass_info, None)
+                .expect("Failed to create Blur Render Pass")
+        }
+    }
+
     pub unsafe fn draw_frame(
         &self,
         vk_fb: vk::Framebuffer,
+        swapchain_image: vk::Image,
         screen_w: u32,
         screen_h: u32,
         quads: &[DrawCommand],
@@ -522,6 +962,8 @@ impl VulkanContext {
         wait_values: &[u64],
         signal_semaphores: &[vk::Semaphore],
         signal_values: &[u64],
+        blur_chain: Option<&BlurChain>,
+        blur_passes: u32, // New parameter to know how many passes to run
     ) {
         unsafe {
             self.device.reset_fences(&[self.fence]).unwrap();
@@ -543,34 +985,7 @@ impl VulkanContext {
                 .unwrap();
         }
 
-        // Begin the Render Pass
-        let clear_values = [vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [0., 0., 0., 1.],
-            },
-        }];
-
-        let render_pass_begin_info = vk::RenderPassBeginInfo::default()
-            .render_pass(self.render_pass)
-            .framebuffer(vk_fb)
-            .render_area(vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: vk::Extent2D {
-                    width: screen_w,
-                    height: screen_h,
-                },
-            })
-            .clear_values(&clear_values);
-
-        unsafe {
-            self.device.cmd_begin_render_pass(
-                cmd_buffer,
-                &render_pass_begin_info,
-                vk::SubpassContents::INLINE,
-            );
-        }
-
-        // Set dynamic viewport/scissor
+        // Setup dynamic viewport/scissor (will be reused across render passes)
         let viewport = vk::Viewport {
             x: 0.0,
             y: 0.0,
@@ -580,11 +995,6 @@ impl VulkanContext {
             max_depth: 1.0,
         };
 
-        unsafe {
-            self.device
-                .cmd_set_viewport(cmd_buffer, 0, std::slice::from_ref(&viewport));
-        }
-
         let scissor = vk::Rect2D {
             offset: vk::Offset2D { x: 0, y: 0 },
             extent: vk::Extent2D {
@@ -593,16 +1003,397 @@ impl VulkanContext {
             },
         };
 
-        unsafe {
-            self.device
-                .cmd_set_scissor(cmd_buffer, 0, std::slice::from_ref(&scissor));
-        }
+        // Helper closure to start a main render pass
+        let begin_main_pass = |load_op: vk::AttachmentLoadOp| {
+            let clear_values = [vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0., 0., 0., 1.],
+                },
+            }];
 
-        // PAINTER LOGIC
+            let rp = if load_op == vk::AttachmentLoadOp::CLEAR {
+                self.render_pass
+            } else {
+                self.resume_render_pass
+            };
+
+            let render_pass_begin_info = vk::RenderPassBeginInfo::default()
+                .render_pass(rp)
+                .framebuffer(vk_fb)
+                .render_area(scissor)
+                .clear_values(if load_op == vk::AttachmentLoadOp::CLEAR {
+                    &clear_values
+                } else {
+                    &[]
+                });
+
+            unsafe {
+                self.device.cmd_begin_render_pass(
+                    cmd_buffer,
+                    &render_pass_begin_info,
+                    vk::SubpassContents::INLINE,
+                );
+                self.device
+                    .cmd_set_viewport(cmd_buffer, 0, std::slice::from_ref(&viewport));
+                self.device
+                    .cmd_set_scissor(cmd_buffer, 0, std::slice::from_ref(&scissor));
+            }
+        };
+
+        // Begin initial clear pass
+        begin_main_pass(vk::AttachmentLoadOp::CLEAR);
+
         let mut current_pipeline = vk::Pipeline::null();
+        let mut pass_active = true;
 
         for cmd in quads {
+            if !pass_active {
+                // If we paused the pass for a capture, restart it with LOAD (don't clear)
+                begin_main_pass(vk::AttachmentLoadOp::LOAD);
+                current_pipeline = vk::Pipeline::null(); // Reset cached pipeline state
+                pass_active = true;
+            }
+
             match cmd {
+                DrawCommand::BlurCapture => {
+                    // 1. End current pass
+                    unsafe {
+                        self.device.cmd_end_render_pass(cmd_buffer);
+                    }
+                    pass_active = false;
+
+                    if let Some(chain) = blur_chain {
+                        let passes = (blur_passes as usize).min(chain.targets.len() - 1);
+                        if passes == 0 || chain.targets.is_empty() {
+                            continue;
+                        }
+
+                        let target0 = &chain.targets[0];
+
+                        // 2. Memory Barriers to transition swapchain image for blitting
+                        let subresource_range = vk::ImageSubresourceRange::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .base_mip_level(0)
+                            .level_count(1)
+                            .base_array_layer(0)
+                            .layer_count(1);
+
+                        let mut barriers = [
+                            vk::ImageMemoryBarrier::default()
+                                .old_layout(vk::ImageLayout::GENERAL) // End of render pass layout
+                                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                                .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                                .image(swapchain_image)
+                                .subresource_range(subresource_range),
+                            vk::ImageMemoryBarrier::default()
+                                .old_layout(vk::ImageLayout::UNDEFINED)
+                                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                                .src_access_mask(vk::AccessFlags::empty())
+                                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                                .image(target0.image)
+                                .subresource_range(subresource_range),
+                        ];
+
+                        unsafe {
+                            self.device.cmd_pipeline_barrier(
+                                cmd_buffer,
+                                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                                vk::PipelineStageFlags::TRANSFER,
+                                vk::DependencyFlags::empty(),
+                                &[],
+                                &[],
+                                &barriers,
+                            );
+                        }
+
+                        // 3. Blit (Copy) the screen to the target0
+                        let blit = vk::ImageBlit::default()
+                            .src_offsets([
+                                vk::Offset3D { x: 0, y: 0, z: 0 },
+                                vk::Offset3D {
+                                    x: screen_w as i32,
+                                    y: screen_h as i32,
+                                    z: 1,
+                                },
+                            ])
+                            .src_subresource(vk::ImageSubresourceLayers {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                mip_level: 0,
+                                base_array_layer: 0,
+                                layer_count: 1,
+                            })
+                            .dst_offsets([
+                                vk::Offset3D { x: 0, y: 0, z: 0 },
+                                vk::Offset3D {
+                                    x: target0.width as i32,
+                                    y: target0.height as i32,
+                                    z: 1,
+                                },
+                            ])
+                            .dst_subresource(vk::ImageSubresourceLayers {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                mip_level: 0,
+                                base_array_layer: 0,
+                                layer_count: 1,
+                            });
+
+                        unsafe {
+                            self.device.cmd_blit_image(
+                                cmd_buffer,
+                                swapchain_image,
+                                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                                target0.image,
+                                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                std::slice::from_ref(&blit),
+                                vk::Filter::LINEAR,
+                            );
+                        }
+
+                        // 4. Transition swapchain back to GENERAL, and target0 to SHADER_READ
+                        barriers[0].old_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
+                        barriers[0].new_layout = vk::ImageLayout::GENERAL;
+                        barriers[0].src_access_mask = vk::AccessFlags::TRANSFER_READ;
+                        barriers[0].dst_access_mask = vk::AccessFlags::COLOR_ATTACHMENT_WRITE;
+
+                        barriers[1].old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+                        barriers[1].new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+                        barriers[1].src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+                        barriers[1].dst_access_mask = vk::AccessFlags::SHADER_READ;
+
+                        unsafe {
+                            self.device.cmd_pipeline_barrier(
+                                cmd_buffer,
+                                vk::PipelineStageFlags::TRANSFER,
+                                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                                    | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                                vk::DependencyFlags::empty(),
+                                &[],
+                                &[],
+                                &barriers,
+                            );
+                        }
+
+                        // KAWASE PASSES
+                        let render_pass_begin_info =
+                            vk::RenderPassBeginInfo::default().render_pass(chain.render_pass);
+
+                        // Downsample passes
+                        unsafe {
+                            self.device.cmd_bind_pipeline(
+                                cmd_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                self.kawase_down_pipeline,
+                            );
+                        }
+
+                        for i in 0..passes {
+                            let src = &chain.targets[i];
+                            let dst = &chain.targets[i + 1];
+
+                            let area = vk::Rect2D {
+                                offset: vk::Offset2D { x: 0, y: 0 },
+                                extent: vk::Extent2D {
+                                    width: dst.width,
+                                    height: dst.height,
+                                },
+                            };
+                            let vp = vk::Viewport {
+                                x: 0.0,
+                                y: 0.0,
+                                width: dst.width as f32,
+                                height: dst.height as f32,
+                                min_depth: 0.0,
+                                max_depth: 1.0,
+                            };
+
+                            let pass_info = render_pass_begin_info
+                                .framebuffer(dst.framebuffer)
+                                .render_area(area);
+
+                            unsafe {
+                                self.device.cmd_begin_render_pass(
+                                    cmd_buffer,
+                                    &pass_info,
+                                    vk::SubpassContents::INLINE,
+                                );
+                                self.device.cmd_set_viewport(
+                                    cmd_buffer,
+                                    0,
+                                    std::slice::from_ref(&vp),
+                                );
+                                self.device.cmd_set_scissor(
+                                    cmd_buffer,
+                                    0,
+                                    std::slice::from_ref(&area),
+                                );
+
+                                self.device.cmd_bind_descriptor_sets(
+                                    cmd_buffer,
+                                    vk::PipelineBindPoint::GRAPHICS,
+                                    self.pipeline_layout,
+                                    0,
+                                    std::slice::from_ref(&src.descriptor_set),
+                                    &[],
+                                );
+
+                                let push = PushConstants {
+                                    pos: [0.0, 0.0],
+                                    screen_size: [dst.width as f32, dst.height as f32],
+                                    quad_size: [dst.width as f32, dst.height as f32],
+                                    src_offset: [0.0, 0.0],
+                                    src_size: [1.0, 1.0], // blur radius offset
+                                    border_radius: 0.0,
+                                    alpha: 1.0,
+                                    shadow_spread: 0.0,
+                                    shadow_power: 0.0,
+                                    _padding: [0.0; 2],
+                                    color: [1.0, 1.0, 1.0, 1.0],
+                                };
+
+                                let push_bytes = std::slice::from_raw_parts(
+                                    &push as *const _ as *const u8,
+                                    std::mem::size_of::<PushConstants>(),
+                                );
+                                self.device.cmd_push_constants(
+                                    cmd_buffer,
+                                    self.pipeline_layout,
+                                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                                    0,
+                                    push_bytes,
+                                );
+
+                                self.device.cmd_draw(cmd_buffer, 6, 1, 0, 0);
+                                self.device.cmd_end_render_pass(cmd_buffer);
+
+                                // Transition dst to SHADER_READ_ONLY_OPTIMAL for the next pass
+                                let barrier = vk::ImageMemoryBarrier::default()
+                                    .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) // It was left in read_only by renderpass
+                                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                                    .image(dst.image)
+                                    .subresource_range(subresource_range);
+                                self.device.cmd_pipeline_barrier(
+                                    cmd_buffer,
+                                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                                    vk::DependencyFlags::empty(),
+                                    &[],
+                                    &[],
+                                    std::slice::from_ref(&barrier),
+                                );
+                            }
+                        }
+
+                        // Upsample passes
+                        unsafe {
+                            self.device.cmd_bind_pipeline(
+                                cmd_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                self.kawase_up_pipeline,
+                            );
+                        }
+
+                        for i in (0..passes).rev() {
+                            let src = &chain.targets[i + 1];
+                            let dst = &chain.targets[i];
+
+                            let area = vk::Rect2D {
+                                offset: vk::Offset2D { x: 0, y: 0 },
+                                extent: vk::Extent2D {
+                                    width: dst.width,
+                                    height: dst.height,
+                                },
+                            };
+                            let vp = vk::Viewport {
+                                x: 0.0,
+                                y: 0.0,
+                                width: dst.width as f32,
+                                height: dst.height as f32,
+                                min_depth: 0.0,
+                                max_depth: 1.0,
+                            };
+
+                            let pass_info = render_pass_begin_info
+                                .framebuffer(dst.framebuffer)
+                                .render_area(area);
+
+                            unsafe {
+                                self.device.cmd_begin_render_pass(
+                                    cmd_buffer,
+                                    &pass_info,
+                                    vk::SubpassContents::INLINE,
+                                );
+                                self.device.cmd_set_viewport(
+                                    cmd_buffer,
+                                    0,
+                                    std::slice::from_ref(&vp),
+                                );
+                                self.device.cmd_set_scissor(
+                                    cmd_buffer,
+                                    0,
+                                    std::slice::from_ref(&area),
+                                );
+
+                                self.device.cmd_bind_descriptor_sets(
+                                    cmd_buffer,
+                                    vk::PipelineBindPoint::GRAPHICS,
+                                    self.pipeline_layout,
+                                    0,
+                                    std::slice::from_ref(&src.descriptor_set),
+                                    &[],
+                                );
+
+                                let push = PushConstants {
+                                    pos: [0.0, 0.0],
+                                    screen_size: [dst.width as f32, dst.height as f32],
+                                    quad_size: [dst.width as f32, dst.height as f32],
+                                    src_offset: [0.0, 0.0],
+                                    src_size: [1.0, 1.0], // Fix UV scaling
+                                    border_radius: 0.0,
+                                    alpha: 1.0,
+                                    shadow_spread: 2.0, // blur radius offset up (Kawase uses 2.0 or 3.0)
+                                    shadow_power: 0.0,
+                                    _padding: [0.0; 2],
+                                    color: [1.0, 1.0, 1.0, 1.0],
+                                };
+
+                                let push_bytes = std::slice::from_raw_parts(
+                                    &push as *const _ as *const u8,
+                                    std::mem::size_of::<PushConstants>(),
+                                );
+                                self.device.cmd_push_constants(
+                                    cmd_buffer,
+                                    self.pipeline_layout,
+                                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                                    0,
+                                    push_bytes,
+                                );
+
+                                self.device.cmd_draw(cmd_buffer, 6, 1, 0, 0);
+                                self.device.cmd_end_render_pass(cmd_buffer);
+
+                                let barrier = vk::ImageMemoryBarrier::default()
+                                    .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                                    .image(dst.image)
+                                    .subresource_range(subresource_range);
+                                self.device.cmd_pipeline_barrier(
+                                    cmd_buffer,
+                                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                                    vk::DependencyFlags::empty(),
+                                    &[],
+                                    &[],
+                                    std::slice::from_ref(&barrier),
+                                );
+                            }
+                        }
+                    }
+                }
                 DrawCommand::Texture(quad) => {
                     if current_pipeline != self.graphics_pipeline {
                         unsafe {
@@ -633,7 +1424,10 @@ impl VulkanContext {
                         src_offset: [quad.src_x, quad.src_y],
                         src_size: [quad.src_w, quad.src_h],
                         border_radius: quad.border_radius,
-                        _padding: 0.0,
+                        alpha: quad.alpha,
+                        shadow_spread: 0.0,
+                        shadow_power: 0.0,
+                        _padding: [0.0; 2],
                         color: [1.0, 1.0, 1.0, 1.0], // Default color, unused by quad.frag
                     };
 
@@ -675,7 +1469,10 @@ impl VulkanContext {
                         src_offset: [0.0, 0.0],
                         src_size: [1.0, 1.0],
                         border_radius: quad.border_radius,
-                        _padding: 0.0,
+                        alpha: 1.0,
+                        shadow_spread: 0.0,
+                        shadow_power: 0.0,
+                        _padding: [0.0; 2],
                         color: quad.color,
                     };
 
@@ -698,13 +1495,121 @@ impl VulkanContext {
                         self.device.cmd_draw(cmd_buffer, 6, 1, 0, 0);
                     }
                 }
+                DrawCommand::Shadow(quad) => {
+                    if current_pipeline != self.shadow_pipeline {
+                        unsafe {
+                            self.device.cmd_bind_pipeline(
+                                cmd_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                self.shadow_pipeline,
+                            );
+                        }
+                        current_pipeline = self.shadow_pipeline;
+                    }
+
+                    let push_constants = PushConstants {
+                        pos: [quad.x, quad.y],
+                        screen_size: [screen_w as f32, screen_h as f32],
+                        quad_size: [quad.w, quad.h],
+                        src_offset: [0.0, 0.0],
+                        src_size: [1.0, 1.0], // Reverted hack, now using shadow_spread
+                        border_radius: quad.border_radius,
+                        alpha: quad.alpha,
+                        shadow_spread: quad.spread,
+                        shadow_power: quad.power,
+                        _padding: [0.0; 2],
+                        color: quad.color,
+                    };
+
+                    let push_bytes = unsafe {
+                        std::slice::from_raw_parts(
+                            &push_constants as *const _ as *const u8,
+                            std::mem::size_of::<PushConstants>(),
+                        )
+                    };
+
+                    unsafe {
+                        self.device.cmd_push_constants(
+                            cmd_buffer,
+                            self.color_pipeline_layout, // Shared with color pipeline
+                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                            0,
+                            push_bytes,
+                        );
+
+                        self.device.cmd_draw(cmd_buffer, 6, 1, 0, 0);
+                    }
+                }
+                DrawCommand::Blur(quad) => {
+                    if current_pipeline != self.blur_pipeline {
+                        unsafe {
+                            self.device.cmd_bind_pipeline(
+                                cmd_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                self.blur_pipeline,
+                            );
+                        }
+                        current_pipeline = self.blur_pipeline;
+                    }
+
+                    if let Some(chain) = blur_chain {
+                        unsafe {
+                            self.device.cmd_bind_descriptor_sets(
+                                cmd_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                self.blur_pipeline_layout,
+                                0,
+                                std::slice::from_ref(&chain.targets[0].descriptor_set),
+                                &[],
+                            );
+                        }
+                    }
+
+                    let push_constants = PushConstants {
+                        pos: [quad.x, quad.y],
+                        screen_size: [screen_w as f32, screen_h as f32],
+                        quad_size: [quad.w, quad.h],
+                        src_offset: [quad.x / screen_w as f32, quad.y / screen_h as f32],
+                        src_size: [quad.w / screen_w as f32, quad.h / screen_h as f32],
+                        border_radius: quad.border_radius,
+                        alpha: quad.alpha,
+                        shadow_spread: 0.0,
+                        shadow_power: 0.0,
+                        _padding: [0.0; 2],
+                        color: [0.1, 0.1, 0.1, 0.5], // Dimming color overlay
+                    };
+
+                    let push_bytes = unsafe {
+                        std::slice::from_raw_parts(
+                            &push_constants as *const _ as *const u8,
+                            std::mem::size_of::<PushConstants>(),
+                        )
+                    };
+
+                    unsafe {
+                        self.device.cmd_push_constants(
+                            cmd_buffer,
+                            self.blur_pipeline_layout,
+                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                            0,
+                            push_bytes,
+                        );
+
+                        self.device.cmd_draw(cmd_buffer, 6, 1, 0, 0);
+                    }
+                }
             }
         }
 
         // SUBMITINNNNG :)
 
+        if pass_active {
+            unsafe {
+                self.device.cmd_end_render_pass(cmd_buffer);
+            }
+        }
+
         unsafe {
-            self.device.cmd_end_render_pass(cmd_buffer);
             self.device.end_command_buffer(cmd_buffer).unwrap();
         }
 
@@ -1355,7 +2260,10 @@ pub struct PushConstants {
     pub src_offset: [f32; 2],
     pub src_size: [f32; 2],
     pub border_radius: f32,
-    pub _padding: f32,
+    pub alpha: f32,
+    pub shadow_spread: f32,
+    pub shadow_power: f32,
+    pub _padding: [f32; 2], // 8 bytes padding to align vec4 color to 16-byte boundary
     pub color: [f32; 4],
 }
 
@@ -1371,6 +2279,7 @@ pub struct RenderQuad {
     pub src_w: f32,
     pub src_h: f32,
     pub border_radius: f32,
+    pub alpha: f32,
 }
 
 #[derive(Default, Debug)]
@@ -1383,10 +2292,26 @@ pub struct ColorQuad {
     pub border_radius: f32,
 }
 
+#[derive(Default, Debug)]
+pub struct ShadowQuad {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub border_radius: f32,
+    pub spread: f32,
+    pub power: f32,
+    pub alpha: f32,
+    pub color: [f32; 4],
+}
+
 #[derive(Debug)]
 pub enum DrawCommand {
     Texture(RenderQuad),
     Color(ColorQuad),
+    Shadow(ShadowQuad),
+    BlurCapture,
+    Blur(RenderQuad),
 }
 
 impl RenderQuad {

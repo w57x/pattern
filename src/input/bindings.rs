@@ -1,7 +1,7 @@
-use crate::server::Composer;
+use crate::{input::Mods, server::Composer};
 use std::process::Command;
 use wayland_server::protocol::wl_keyboard::KeyState;
-use xkbcommon::xkb::Keysym;
+use xkbcommon::xkb::{Keysym, keysyms};
 
 pub enum BindingAction {
     Handled,
@@ -11,28 +11,51 @@ pub enum BindingAction {
 
 pub fn handle_keybinding(
     state: &mut Composer,
+    dh: &wayland_server::DisplayHandle,
     _key: u32,
     key_state: KeyState,
     keysym: Keysym,
+    mods: Mods,
 ) -> BindingAction {
-    let super_mod = state.xkb_state.mod_name_is_active(
-        &xkbcommon::xkb::MOD_NAME_LOGO,
-        xkbcommon::xkb::STATE_MODS_EFFECTIVE,
-    );
-
-    if key_state == KeyState::Pressed && super_mod {
+    if key_state == KeyState::Pressed && mods.mod4 {
         match keysym.raw() {
-            xkbcommon::xkb::keysyms::KEY_q => {
-                if let Some(active_window) = state.windows.last() {
-                    active_window.close();
-                }
+            keysyms::KEY_q => {
+                state.request_closing_active_client();
                 return BindingAction::Handled;
             }
-            xkbcommon::xkb::keysyms::KEY_e => {
+
+            keysyms::KEY_e => {
                 return BindingAction::Exit;
             }
-            xkbcommon::xkb::keysyms::KEY_t => {
+
+            keysyms::KEY_t => {
                 if let Ok(_c) = Command::new("kitty").spawn() {
+                    return BindingAction::Handled;
+                }
+            }
+
+            keysyms::KEY_s => {
+                if let Ok(_c) = Command::new("seekr").spawn() {
+                    return BindingAction::Handled;
+                }
+            }
+
+            keysyms::KEY_Right => {
+                if mods.alt {
+                    if state.wm.focus_after_workspace() {
+                        state.needs_redraw = true;
+                        state.set_input_focus(state.wm.get_focused_window(), dh);
+                    }
+                    return BindingAction::Handled;
+                }
+            }
+
+            keysyms::KEY_Left => {
+                if mods.alt {
+                    if state.wm.focus_before_workspace() {
+                        state.needs_redraw = true;
+                        state.set_input_focus(state.wm.get_focused_window(), dh);
+                    }
                     return BindingAction::Handled;
                 }
             }

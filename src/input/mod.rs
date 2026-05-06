@@ -14,7 +14,9 @@ use std::rc::Rc;
 use tracing::{debug, warn};
 use wayland_server::Resource;
 use wayland_server::protocol::{wl_keyboard, wl_pointer};
+use xkbcommon::xkb::Keymap;
 
+use crate::animation::math::Vector2;
 use crate::server::Composer;
 
 mod bindings;
@@ -49,24 +51,40 @@ impl LibinputInterface for SeatInterface {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct Vec2 {
-    pub x: f64,
-    pub y: f64,
-}
-
-impl std::fmt::Display for Vec2 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}@{}", self.x, self.y)
-    }
-}
-
 pub struct Input {
     pub context: Libinput,
-    pub cursor: Vec2,
-    pub absolute_offset: Vec2,
-    pub dimension: Vec2,
+    pub cursor: Vector2,
+    pub absolute_offset: Vector2,
+    pub dimension: Vector2,
     pub natural_scroll: bool,
+
+    pub swipe_fingers: u32,
+    pub swipe_dx: f64,
+    pub swipe_triggered: bool,
+}
+
+pub struct Mods {
+    pub alt: bool,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub mod4: bool,
+}
+
+impl Mods {
+    #[rustfmt::skip]
+    pub fn new(keymap: Keymap, depressed: u32) -> Self {
+        let ctrl_index = keymap.mod_get_index(xkbcommon::xkb::MOD_NAME_CTRL); // "Control"
+        let shift_index = keymap.mod_get_index(xkbcommon::xkb::MOD_NAME_SHIFT); // "Shift"
+        let alt_index = keymap.mod_get_index(xkbcommon::xkb::MOD_NAME_ALT); // Usually "Mod1"
+        let super_index = keymap.mod_get_index(xkbcommon::xkb::MOD_NAME_LOGO); // Usually "Mod4"
+
+        let ctrl  = (depressed & (1 << ctrl_index))  != 0;
+        let shift = (depressed & (1 << shift_index)) != 0;
+        let alt   = (depressed & (1 << alt_index))   != 0;
+        let mod4  = (depressed & (1 << super_index)) != 0;
+
+        Self { alt, ctrl, shift, mod4 }
+    }
 }
 
 impl Input {
@@ -81,16 +99,20 @@ impl Input {
         input.udev_assign_seat("seat0").unwrap();
         Self {
             context: input,
-            cursor: Vec2 {
+            cursor: Vector2 {
                 x: width / 2.0,
                 y: height / 2.0,
             },
-            absolute_offset: Vec2 { x: 0.0, y: 0.0 },
-            dimension: Vec2 {
+            absolute_offset: Vector2::default(),
+            dimension: Vector2 {
                 x: width,
                 y: height,
             },
             natural_scroll: true,
+
+            swipe_fingers: 0,
+            swipe_dx: 0.0,
+            swipe_triggered: false,
         }
     }
 
@@ -146,15 +168,6 @@ impl Input {
                     let xkb_keycode = key + 8;
                     let keysym = state.xkb_state.key_get_one_sym(xkb_keycode.into());
 
-                    match handle_keybinding(state, key, key_state, keysym) {
-                        BindingAction::Handled => continue,
-                        BindingAction::Exit => {
-                            should_exit = true;
-                            continue;
-                        }
-                        BindingAction::None => {}
-                    }
-
                     let direction =
                         if key_state == wayland_server::protocol::wl_keyboard::KeyState::Pressed {
                             xkbcommon::xkb::KeyDirection::Down
@@ -176,6 +189,22 @@ impl Input {
                     let group = state
                         .xkb_state
                         .serialize_layout(xkbcommon::xkb::STATE_LAYOUT_EFFECTIVE);
+
+                    match handle_keybinding(
+                        state,
+                        dh,
+                        key,
+                        key_state,
+                        keysym,
+                        Mods::new(state.xkb_state.get_keymap(), depressed),
+                    ) {
+                        BindingAction::Handled => continue,
+                        BindingAction::Exit => {
+                            should_exit = true;
+                            continue;
+                        }
+                        BindingAction::None => {}
+                    }
 
                     // Forward to IME grabs
                     let mut grabbed = false;
@@ -333,7 +362,7 @@ impl Input {
                                         .cloned()
                                         .unwrap_or_else(|| surf.clone());
 
-                                    state.set_input_focus(target_surf.clone(), dh);
+                                    state.set_input_focus(Some(target_surf.clone()), dh);
 
                                     if super_mod {
                                         state.wm.begin_drag(
@@ -449,6 +478,14 @@ impl Input {
                         if let Some(client) = focused.client() {
                             match g {
                                 GestureEvent::Swipe(GestureSwipeEvent::Begin(e)) => {
+                                    self.swipe_fingers = e.finger_count() as u32;
+                                    self.swipe_dx = 0.0;
+                                    self.swipe_triggered = false;
+
+                                    if self.swipe_fingers == 3 {
+                                        continue;
+                                    }
+
                                     for pointer in state
                                         .pointers
                                         .iter()
@@ -469,6 +506,30 @@ impl Input {
                                     }
                                 }
                                 GestureEvent::Swipe(GestureSwipeEvent::Update(e)) => {
+                                    if self.swipe_fingers == 3 {
+                                        if !self.swipe_triggered {
+                                            self.swipe_dx += e.dx();
+
+                                            // Sensitivity threshold. Lower is more sensitive.
+                                            let threshold = 80.0;
+
+                                            // Note: You may need to invert these > < signs
+                                            // depending on your natural_scroll preference
+                                            if self.swipe_dx > threshold {
+                                                if state.wm.focus_before_workspace() {
+                                                    state.needs_redraw = true;
+                                                }
+                                                self.swipe_triggered = true;
+                                            } else if self.swipe_dx < -threshold {
+                                                if state.wm.focus_after_workspace() {
+                                                    state.needs_redraw = true;
+                                                }
+                                                self.swipe_triggered = true;
+                                            }
+                                        }
+                                        continue;
+                                    }
+
                                     for pointer in state
                                         .pointers
                                         .iter()
@@ -485,6 +546,13 @@ impl Input {
                                     }
                                 }
                                 GestureEvent::Swipe(GestureSwipeEvent::End(e)) => {
+                                    if self.swipe_fingers == 3 {
+                                        self.swipe_fingers = 0;
+                                        self.swipe_dx = 0.0;
+                                        self.swipe_triggered = false;
+                                        continue;
+                                    }
+
                                     for pointer in state
                                         .pointers
                                         .iter()
@@ -658,7 +726,7 @@ impl Input {
         }
     }
 
-    fn route_pointer_motion(cursor: Vec2, state: &mut Composer, time: u32) {
+    fn route_pointer_motion(cursor: Vector2, state: &mut Composer, time: u32) {
         if let Some(grabbed_surface) = state.pointer_grab.clone() {
             if let Some((abs_x, abs_y)) = state.get_surface_position(&grabbed_surface.id()) {
                 let local_x = cursor.x - abs_x;

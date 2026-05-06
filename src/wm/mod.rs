@@ -43,6 +43,8 @@ pub struct WindowState {
     pub exclusive_zone: i32,
     pub margin: (i32, i32, i32, i32), // top, right, bottom, left
     pub keyboard_interactivity: u32,
+
+    pub is_interacting: bool,
 }
 
 #[derive(Clone)]
@@ -306,6 +308,11 @@ pub trait WindowManager {
         output_id: usize,
         workspace_id: usize,
     ) -> bool;
+
+    /// Focus the workspace before the current workspace
+    fn focus_before_workspace(&mut self) -> bool;
+    /// Focus the workspace after the current workspace
+    fn focus_after_workspace(&mut self) -> bool;
 }
 
 #[derive(Clone, PartialEq)]
