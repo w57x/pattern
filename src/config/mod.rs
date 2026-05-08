@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -21,12 +22,12 @@ pub enum StoredAction {
     LuaCallback(mlua::RegistryKey),
 }
 
-type BindingsStore = Arc<Mutex<Vec<(String, StoredAction)>>>;
+type BindingsStore = Arc<Mutex<HashMap<String, StoredAction>>>;
 
 pub struct ConfigManager {
-    pub ctxt: Lua,
-    pub config_dir: PathBuf,
     pub bindings_store: BindingsStore,
+    pub config_dir: PathBuf,
+    pub ctxt: Lua,
 }
 
 impl ConfigManager {
@@ -48,7 +49,7 @@ impl ConfigManager {
         Ok(Self {
             ctxt,
             config_dir,
-            bindings_store: Arc::new(Mutex::new(Vec::new())),
+            bindings_store: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -70,7 +71,9 @@ impl ConfigManager {
                 })?;
 
         actions.set("spawn", spawn_fn)?;
+
         pattern.set("actions", actions)?;
+        pattern.set("config_dir", self.config_dir.clone())?;
 
         let bindings = self.bindings_store.clone();
 
@@ -95,7 +98,7 @@ impl ConfigManager {
                     };
 
                     let mut store = bindings.lock().unwrap();
-                    store.push((keys, stored_action));
+                    store.insert(keys, stored_action);
                     Ok(())
                 })?;
 
