@@ -839,6 +839,7 @@ dependencies = [
  "nix",
  "rand",
  "resvg",
+ "thiserror",
  "tracing",
  "tracing-subscriber",
  "udev",

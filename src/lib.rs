@@ -1,4 +1,5 @@
 pub mod animation;
+pub mod config;
 pub mod gpu;
 pub mod input;
 pub mod server;

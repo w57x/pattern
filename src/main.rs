@@ -7,6 +7,7 @@ use drm::control::Device as _;
 use gbm::{BufferObjectFlags, Device, Format};
 use libseat::Seat;
 use nix::{poll::PollTimeout, sys::epoll};
+use pattern::config::ConfigManager;
 use pattern::styler;
 use pattern::vulkan::{DrawCommand, RenderQuad};
 use pattern::wm::impls::floating_wm;
@@ -188,6 +189,10 @@ fn main() {
         Box::new(floating_wm::Wm::new()),
         Box::new(styler::DefaultStyler::new()),
     );
+
+    let mut config_manager = ConfigManager::new(None).expect("Unable to activate the manager");
+    config_manager.load().expect("Unable to load configuration");
+
     let mut input = Input::new(shared_seat.clone(), width as f64, height as f64);
     input.natural_scroll = true; // TODO:(config) Change this to false to disable natural scroll
 
