@@ -476,6 +476,40 @@ impl Input {
 
                     let serial = state.serial;
 
+                    // Handle global 3-finger workspace swiping first (independent of pointer focus)
+                    match &g {
+                        GestureEvent::Swipe(GestureSwipeEvent::Begin(e)) => {
+                            if e.finger_count() == 3 {
+                                self.swipe_fingers = 3;
+                                self.swipe_dx = 0.0;
+                                self.swipe_triggered = false;
+                                state.wm.begin_workspace_swipe();
+                                state.needs_redraw = true;
+                                continue;
+                            }
+                        }
+                        GestureEvent::Swipe(GestureSwipeEvent::Update(e)) => {
+                            if self.swipe_fingers == 3 {
+                                state.wm.update_workspace_swipe(e.dx());
+                                state.needs_redraw = true;
+                                continue;
+                            }
+                        }
+                        GestureEvent::Swipe(GestureSwipeEvent::End(_)) => {
+                            if self.swipe_fingers == 3 {
+                                state.wm.end_workspace_swipe();
+                                self.swipe_fingers = 0;
+                                self.swipe_dx = 0.0;
+                                self.swipe_triggered = false;
+                                state.needs_redraw = true;
+                                state.set_input_focus(state.wm.get_focused_window(), dh);
+                                state.update_pointer_focus(0);
+                                continue;
+                            }
+                        }
+                        _ => {}
+                    }
+
                     if let Some(focused) = &state.pointer_focus {
                         let focused_clone = focused.clone();
                         if let Some(client) = focused.client() {
@@ -484,10 +518,6 @@ impl Input {
                                     self.swipe_fingers = e.finger_count() as u32;
                                     self.swipe_dx = 0.0;
                                     self.swipe_triggered = false;
-
-                                    if self.swipe_fingers == 3 {
-                                        continue;
-                                    }
 
                                     for pointer in state
                                         .pointers
@@ -509,30 +539,6 @@ impl Input {
                                     }
                                 }
                                 GestureEvent::Swipe(GestureSwipeEvent::Update(e)) => {
-                                    if self.swipe_fingers == 3 {
-                                        if !self.swipe_triggered {
-                                            self.swipe_dx += e.dx();
-
-                                            // Sensitivity threshold. Lower is more sensitive.
-                                            let threshold = 80.0;
-
-                                            // Note: You may need to invert these > < signs
-                                            // depending on your natural_scroll preference
-                                            if self.swipe_dx > threshold {
-                                                if state.wm.focus_before_workspace() {
-                                                    state.needs_redraw = true;
-                                                }
-                                                self.swipe_triggered = true;
-                                            } else if self.swipe_dx < -threshold {
-                                                if state.wm.focus_after_workspace() {
-                                                    state.needs_redraw = true;
-                                                }
-                                                self.swipe_triggered = true;
-                                            }
-                                        }
-                                        continue;
-                                    }
-
                                     for pointer in state
                                         .pointers
                                         .iter()
@@ -549,13 +555,6 @@ impl Input {
                                     }
                                 }
                                 GestureEvent::Swipe(GestureSwipeEvent::End(e)) => {
-                                    if self.swipe_fingers == 3 {
-                                        self.swipe_fingers = 0;
-                                        self.swipe_dx = 0.0;
-                                        self.swipe_triggered = false;
-                                        continue;
-                                    }
-
                                     for pointer in state
                                         .pointers
                                         .iter()

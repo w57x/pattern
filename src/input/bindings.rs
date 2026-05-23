@@ -45,6 +45,7 @@ pub fn handle_keybinding(
                     if state.wm.focus_after_workspace() {
                         state.needs_redraw = true;
                         state.set_input_focus(state.wm.get_focused_window(), dh);
+                        state.update_pointer_focus(0);
                     }
                     return BindingAction::Handled;
                 }
@@ -55,6 +56,7 @@ pub fn handle_keybinding(
                     if state.wm.focus_before_workspace() {
                         state.needs_redraw = true;
                         state.set_input_focus(state.wm.get_focused_window(), dh);
+                        state.update_pointer_focus(0);
                     }
                     return BindingAction::Handled;
                 }

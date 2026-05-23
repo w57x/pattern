@@ -355,10 +355,12 @@ fn main() {
 
         if !waiting_for_flip && composer.needs_redraw {
             let now = pattern::utils::time::gettime();
-            let animating =
-                composer
-                    .styler
-                    .tick(now as f64, composer.wm.as_ref(), &composer.surface_textures);
+            let animating = composer.styler.tick(
+                now as f64,
+                composer.wm.as_ref(),
+                &composer.surface_textures,
+                composer.mode.size(),
+            );
             composer.needs_redraw = animating;
 
             // debug!("Rendering frame {}", frame_index);
@@ -424,6 +426,7 @@ fn main() {
                 &composer.surface_to_viewport,
                 &composer.surface_opaque_region,
                 composer.wm.as_ref(),
+                composer.mode.size(),
             );
 
             // Draw IME Popups

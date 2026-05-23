@@ -7,6 +7,8 @@ pub struct Wm {
     pub popups: Vec<PopupState>,
     pub drag_state: Option<(ObjectId, f64, f64)>,
     pub resize_state: Option<(ObjectId, u32, f64, f64, f64, f64, i32, i32, i32, i32)>,
+    pub workspace_swipe_offset: f64,
+    pub is_swiping: bool,
 }
 
 impl Wm {
@@ -16,6 +18,21 @@ impl Wm {
             popups: Vec::new(),
             drag_state: None,
             resize_state: None,
+            workspace_swipe_offset: 0.0,
+            is_swiping: false,
+        }
+    }
+
+    fn ensure_workspace(&mut self, ws_id: usize) {
+        if self.outputs.is_empty() {
+            return;
+        }
+        let out = &mut self.outputs[0];
+        for i in 0..=ws_id {
+            let slot = out.workspaces.get_mut(i).unwrap();
+            if slot.is_empty() {
+                *slot = Slot::Occupied(Workspace::new(i));
+            }
         }
     }
 
@@ -1383,12 +1400,11 @@ impl WindowManager for Wm {
 
         // 2. If the window was found, insert it into the target workspace
         if let Some(window) = target_window {
+            self.ensure_workspace(workspace_id);
             if let Some(output) = self.outputs.iter_mut().find(|o| o.id == output_id) {
-                if let Some(slot) = output.workspaces.get_mut(workspace_id) {
-                    if let Slot::Occupied(ws) = slot {
-                        ws.windows.push(window);
-                        return true;
-                    }
+                if let Some(Slot::Occupied(ws)) = output.workspaces.get_mut(workspace_id) {
+                    ws.windows.push(window);
+                    return true;
                 }
             }
             // Fallback: If target workspace/output doesn't exist, put it back in the current active workspace
@@ -1408,23 +1424,16 @@ impl WindowManager for Wm {
             return false;
         }
 
-        let out = &mut self.outputs[0];
-        let mut target = out.active_workspace;
-
-        debug!("[wm] trying to go before from (T{target})");
-
-        while target > 0 {
-            target -= 1;
-            if let Some(slot) = out.workspaces.get(target) {
-                if !slot.is_empty() {
-                    out.active_workspace = target;
-                    debug!("[wm] focused before (T{target})");
-                    return true;
-                }
-            }
+        let current_ws = self.outputs[0].active_workspace;
+        if current_ws > 0 {
+            let target_ws = current_ws - 1;
+            self.ensure_workspace(target_ws);
+            self.outputs[0].active_workspace = target_ws;
+            debug!("[wm] focused before (T{})", target_ws);
+            true
+        } else {
+            false
         }
-
-        false
     }
 
     fn focus_after_workspace(&mut self) -> bool {
@@ -1432,43 +1441,98 @@ impl WindowManager for Wm {
             return false;
         }
 
-        let output_id = self.outputs[0].id;
-        let current_idx = self.outputs[0].active_workspace;
-        debug!("[wm] trying to go after (T{current_idx})");
-
-        let current_is_empty =
-            if let Some(Slot::Occupied(ws)) = self.outputs[0].workspaces.get(current_idx) {
-                ws.windows.is_empty()
-            } else {
-                true
-            };
-
-        if current_is_empty {
-            return false;
-        }
-
-        let target_idx = current_idx + 1;
-
-        let next_is_occupied = matches!(
-            self.outputs[0].workspaces.get(target_idx),
-            Some(Slot::Occupied(_))
-        );
-
-        if next_is_occupied {
-            self.outputs[0].active_workspace = target_idx;
-            debug!("[wm] focused after (T{target_idx})");
-            return true;
+        let current_ws = self.outputs[0].active_workspace;
+        if current_ws < usize::MAX {
+            let target_ws = current_ws + 1;
+            self.ensure_workspace(target_ws);
+            self.outputs[0].active_workspace = target_ws;
+            debug!("[wm] focused after (T{})", target_ws);
+            true
         } else {
-            if self
-                .create_workspace(output_id, WorkspaceInsertPosition::After(current_idx))
-                .is_some()
-            {
-                self.outputs[0].active_workspace = target_idx;
-                debug!("[wm] focused after (T{target_idx})");
-                return true;
+            false
+        }
+    }
+
+    fn begin_workspace_swipe(&mut self) {
+        self.workspace_swipe_offset = 0.0;
+        self.is_swiping = true;
+    }
+
+    fn update_workspace_swipe(&mut self, dx: f64) {
+        if self.is_swiping {
+            let active_ws = self.get_active_workspace();
+            let new_offset = self.workspace_swipe_offset + dx * 3.0;
+            if active_ws == 0 && new_offset > 0.0 {
+                self.workspace_swipe_offset = 0.0;
+            } else if active_ws == usize::MAX && new_offset < 0.0 {
+                self.workspace_swipe_offset = 0.0;
+            } else {
+                if new_offset < 0.0 && active_ws < usize::MAX {
+                    let target_ws = active_ws + 1;
+                    self.ensure_workspace(target_ws);
+                }
+                self.workspace_swipe_offset = new_offset;
             }
         }
+    }
 
-        false
+    fn end_workspace_swipe(&mut self) {
+        if !self.is_swiping {
+            return;
+        }
+        self.is_swiping = false;
+
+        let threshold = 180.0;
+        let offset = self.workspace_swipe_offset;
+        if offset > threshold {
+            self.focus_before_workspace();
+        } else if offset < -threshold {
+            self.focus_after_workspace();
+        }
+    }
+
+    fn get_workspace_offset(&self) -> f64 {
+        if self.is_swiping {
+            self.workspace_swipe_offset
+        } else {
+            0.0
+        }
+    }
+
+    fn is_workspace_swiping(&self) -> bool {
+        self.is_swiping
+    }
+
+    fn get_active_workspace(&self) -> usize {
+        if self.outputs.is_empty() {
+            0
+        } else {
+            self.outputs[0].active_workspace
+        }
+    }
+
+    fn get_workspace_windows_by_id(&self, workspace_id: usize) -> Vec<WindowState> {
+        if self.outputs.is_empty() {
+            return Vec::new();
+        }
+        let out = &self.outputs[0];
+        if let Some(Slot::Occupied(ws)) = out.workspaces.get(workspace_id) {
+            return ws.windows.clone();
+        }
+        Vec::new()
+    }
+
+    fn get_workspace_id_for_window(&self, surface_id: &ObjectId) -> Option<usize> {
+        if self.outputs.is_empty() {
+            return None;
+        }
+        for output in &self.outputs {
+            for ws in output.workspaces.flatten() {
+                if ws.windows.iter().any(|w| &w.surface.id() == surface_id) {
+                    return Some(ws.id);
+                }
+            }
+        }
+        None
     }
 }

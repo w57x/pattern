@@ -749,7 +749,11 @@ impl Composer {
 
         if self.input_focus.as_ref().map(|s| s.id()) == Some(id.clone()) {
             self.input_focus = None;
+        }
+
+        if self.pointer_focus.as_ref().map(|s| s.id()) == Some(id.clone()) {
             self.set_pointer_focus(None, 0.0, 0.0, 0);
+            self.update_pointer_focus(0);
         }
 
         if self.input_focus.is_none() {
@@ -990,6 +994,33 @@ impl Composer {
                 device.primary_selection(None);
             }
         }
+    }
+
+    pub fn update_pointer_focus(&mut self, time: u32) {
+        if let Some(grabbed_surface) = self.pointer_grab.clone() {
+            if let Some((abs_x, abs_y)) = self.get_surface_position(&grabbed_surface.id()) {
+                let (cx, cy) = self.cursor_pos;
+                let local_x = cx - abs_x;
+                let local_y = cy - abs_y;
+                self.set_pointer_focus(Some(grabbed_surface), local_x, local_y, time);
+                return;
+            }
+        }
+
+        let (cx, cy) = self.cursor_pos;
+        let extra_surfaces = self.get_input_popup_surfaces();
+        let hit = self.styler.hit_test(
+            cx,
+            cy,
+            &self.subsurfaces,
+            &self.surface_textures,
+            &self.viewports,
+            &self.surface_to_viewport,
+            &self.surface_input_region,
+            self.wm.as_ref(),
+            &extra_surfaces,
+        );
+        self.set_pointer_focus(hit.surface, hit.local_x, hit.local_y, time);
     }
 
     pub fn set_pointer_focus(

@@ -116,7 +116,9 @@ pub struct OutputState {
 impl OutputState {
     pub fn new(id: usize) -> Self {
         let mut wx = SlotVec::new(10);
-        wx.insert_before(1, Workspace::new(0));
+        for i in 0..10 {
+            *wx.get_mut(i).unwrap() = Slot::Occupied(Workspace::new(i));
+        }
         Self {
             id,
             workspaces: wx,
@@ -350,6 +352,23 @@ pub trait WindowManager {
     fn focus_before_workspace(&mut self) -> bool;
     /// Focus the workspace after the current workspace
     fn focus_after_workspace(&mut self) -> bool;
+
+    /// Begin workspace swiping gesture
+    fn begin_workspace_swipe(&mut self);
+    /// Update workspace swiping gesture progress
+    fn update_workspace_swipe(&mut self, dx: f64);
+    /// End workspace swiping gesture
+    fn end_workspace_swipe(&mut self);
+    /// Get the current horizontal offset of the workspace in pixels
+    fn get_workspace_offset(&self) -> f64;
+    /// Check if workspace is currently swiping
+    fn is_workspace_swiping(&self) -> bool;
+    /// Get the active workspace index
+    fn get_active_workspace(&self) -> usize;
+    /// Get all windows of a specific workspace
+    fn get_workspace_windows_by_id(&self, workspace_id: usize) -> Vec<WindowState>;
+    /// Get the workspace ID of a window
+    fn get_workspace_id_for_window(&self, surface_id: &ObjectId) -> Option<usize>;
 }
 
 #[derive(Clone, PartialEq)]
@@ -412,7 +431,7 @@ where
         }
 
         if index > self.inner.len() {
-            let extended_with = vec![Slot::Empty::<T>; index - self.inner.len()];
+            let extended_with = vec![Slot::Empty::<T>; index - self.inner.len() + 1];
             self.inner.extend(extended_with);
             return Some(&mut self.inner[index]);
         }

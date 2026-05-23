@@ -27,6 +27,7 @@ pub struct AnimatedWindow {
     pub is_ssd: bool,
     pub texture_snapshot: Option<SurfaceTexture>,
     pub render_layer: u32,
+    pub workspace_id: Option<usize>,
 }
 
 impl AnimatedWindow {
@@ -52,6 +53,7 @@ impl AnimatedWindow {
             is_ssd,
             texture_snapshot: None,
             render_layer,
+            workspace_id: None,
         }
     }
 }
@@ -68,6 +70,7 @@ pub trait Styler {
         now_ms: f64,
         wm: &dyn crate::wm::WindowManager,
         textures: &HashMap<ObjectId, SurfaceTexture>,
+        screen_size: (u16, u16),
     ) -> bool;
 
     /// Generates a list of draw commands for the current frame.
@@ -82,6 +85,7 @@ pub trait Styler {
         surface_to_viewport: &HashMap<ObjectId, ObjectId>,
         opaque_regions: &HashMap<ObjectId, Vec<crate::wm::Rect>>,
         wm: &dyn crate::wm::WindowManager,
+        screen_size: (u16, u16),
     ) -> Vec<DrawCommand>;
 
     /// Performs a hit-test to find the surface under the cursor.
@@ -129,6 +133,11 @@ pub struct DefaultStyler {
     pub frame_counter: u64,
     pub config: AnimationTree,
     pub style: StyleConfig,
+    pub workspace_offset: crate::animation::AnimatedValue,
+    pub active_workspace: usize,
+    pub prev_active_workspace: Option<usize>,
+    pub is_swiping: bool,
+    pub screen_size: (u16, u16),
 }
 
 impl DefaultStyler {
@@ -138,6 +147,11 @@ impl DefaultStyler {
             frame_counter: 0,
             config: AnimationTree::default(),
             style: StyleConfig::default(),
+            workspace_offset: crate::animation::AnimatedValue::new(0.0),
+            active_workspace: 0,
+            prev_active_workspace: None,
+            is_swiping: false,
+            screen_size: (1920, 1080),
         }
     }
 
@@ -160,6 +174,42 @@ impl DefaultStyler {
             );
         }
         (0.0, 0.0)
+    }
+
+    fn get_workspace_offset_for_surface(
+        &self,
+        surface_id: &ObjectId,
+        wm: &dyn crate::wm::WindowManager,
+    ) -> f64 {
+        let mut target_id = surface_id.clone();
+        let screen_w = self.screen_size.0 as f64;
+        loop {
+            if let Some(anim_win) = self.windows.get(&target_id) {
+                if let Some(ws_id) = anim_win.workspace_id {
+                    let active_ws = wm.get_active_workspace();
+                    let ws_offset = self.workspace_offset.current;
+                    let factor = 1.3; // Parallax factor to prevent adjacent workspaces peeking in
+                    if ws_id == active_ws {
+                        return ws_offset;
+                    } else if ws_id < active_ws {
+                        return (ws_offset - screen_w * (active_ws - ws_id) as f64) * factor;
+                    } else {
+                        return (ws_offset + screen_w * (ws_id - active_ws) as f64) * factor;
+                    }
+                }
+                return 0.0;
+            }
+            if let Some(popup) = wm
+                .get_popups()
+                .iter()
+                .find(|p| &p.surface.id() == &target_id)
+            {
+                target_id = popup.parent_surface_id.clone();
+            } else {
+                break;
+            }
+        }
+        0.0
     }
 
     fn draw_surface_recursive(
@@ -341,15 +391,42 @@ impl DefaultStyler {
         None
     }
 
-    #[rustfmt::skip]
-    fn get_visible_logical_windows(&self, wm: &dyn crate::wm::WindowManager) -> Vec<crate::wm::WindowState> {
+    fn get_visible_logical_windows(
+        &self,
+        wm: &dyn crate::wm::WindowManager,
+    ) -> Vec<crate::wm::WindowState> {
         let mut visible_ids = std::collections::HashSet::new();
 
-        for w in wm.get_background() { visible_ids.insert(w.surface.id()); }
-        for w in wm.get_bottom() { visible_ids.insert(w.surface.id()); }
-        for w in wm.get_workspace_windows() { visible_ids.insert(w.surface.id()); }
-        for w in wm.get_top() { visible_ids.insert(w.surface.id()); }
-        for w in wm.get_overlay() { visible_ids.insert(w.surface.id()); }
+        for w in wm.get_background() {
+            visible_ids.insert(w.surface.id());
+        }
+        for w in wm.get_bottom() {
+            visible_ids.insert(w.surface.id());
+        }
+
+        let active_ws = wm.get_active_workspace();
+        for w in wm.get_workspace_windows_by_id(active_ws) {
+            visible_ids.insert(w.surface.id());
+        }
+
+        // Only load and render adjacent workspaces if we are swiping or transitioning
+        if self.is_swiping || self.workspace_offset.current.abs() > 0.001 {
+            if active_ws > 0 {
+                for w in wm.get_workspace_windows_by_id(active_ws - 1) {
+                    visible_ids.insert(w.surface.id());
+                }
+            }
+            for w in wm.get_workspace_windows_by_id(active_ws + 1) {
+                visible_ids.insert(w.surface.id());
+            }
+        }
+
+        for w in wm.get_top() {
+            visible_ids.insert(w.surface.id());
+        }
+        for w in wm.get_overlay() {
+            visible_ids.insert(w.surface.id());
+        }
 
         // We filter the complete list to preserve the `is_interacting` flag set by all_windows()
         wm.all_windows()
@@ -365,9 +442,92 @@ impl Styler for DefaultStyler {
         now_ms: f64,
         wm: &dyn crate::wm::WindowManager,
         textures: &HashMap<ObjectId, SurfaceTexture>,
+        screen_size: (u16, u16),
     ) -> bool {
         let mut animating = false;
         self.frame_counter += 1;
+        self.screen_size = screen_size;
+
+        // 0. Update workspace transition animations
+        let wm_active_ws = wm.get_active_workspace();
+        let wm_is_swiping = wm.is_workspace_swiping();
+        let screen_w = screen_size.0 as f64;
+
+        if wm_is_swiping {
+            self.workspace_offset.current = wm.get_workspace_offset();
+            self.workspace_offset.target = wm.get_workspace_offset();
+            self.workspace_offset.duration = 0.0;
+            self.is_swiping = true;
+
+            // Show adjacent workspace during swipe
+            if self.workspace_offset.current > 0.0 {
+                self.prev_active_workspace = if self.active_workspace > 0 {
+                    Some(self.active_workspace - 1)
+                } else {
+                    None
+                };
+            } else if self.workspace_offset.current < 0.0 {
+                self.prev_active_workspace = Some(self.active_workspace + 1);
+            } else {
+                self.prev_active_workspace = None;
+            }
+        } else if self.is_swiping {
+            self.is_swiping = false;
+
+            if wm_active_ws != self.active_workspace {
+                if wm_active_ws > self.active_workspace {
+                    self.workspace_offset.current = screen_w + self.workspace_offset.current;
+                } else {
+                    self.workspace_offset.current = -screen_w + self.workspace_offset.current;
+                }
+                self.prev_active_workspace = Some(self.active_workspace);
+                self.active_workspace = wm_active_ws;
+
+                self.workspace_offset.start = self.workspace_offset.current;
+                self.workspace_offset.set_target(
+                    0.0,
+                    now_ms,
+                    self.config.workspaces_in.duration,
+                    self.config.workspaces_in.curve,
+                );
+            } else {
+                self.workspace_offset.start = self.workspace_offset.current;
+                self.workspace_offset.set_target(
+                    0.0,
+                    now_ms,
+                    self.config.workspaces_out.duration,
+                    self.config.workspaces_out.curve,
+                );
+            }
+        } else {
+            if self.active_workspace != wm_active_ws {
+                let slide_in_offset = if wm_active_ws > self.active_workspace {
+                    screen_w
+                } else {
+                    -screen_w
+                };
+
+                self.prev_active_workspace = Some(self.active_workspace);
+                self.active_workspace = wm_active_ws;
+
+                self.workspace_offset.current = slide_in_offset;
+                self.workspace_offset.start = slide_in_offset;
+                self.workspace_offset.set_target(
+                    0.0,
+                    now_ms,
+                    self.config.workspaces_in.duration,
+                    self.config.workspaces_in.curve,
+                );
+            }
+        }
+
+        if self.workspace_offset.tick(now_ms) {
+            animating = true;
+        } else {
+            if !self.is_swiping {
+                self.prev_active_workspace = None;
+            }
+        }
 
         let all_logical_windows = self.get_visible_logical_windows(wm);
 
@@ -391,6 +551,12 @@ impl Styler for DefaultStyler {
                 anim_win.last_seen = self.frame_counter;
                 anim_win.is_ssd = is_ssd;
                 anim_win.render_layer = render_layer;
+
+                if render_layer == 2 {
+                    if let Some(ws_id) = wm.get_workspace_id_for_window(&id) {
+                        anim_win.workspace_id = Some(ws_id);
+                    }
+                }
 
                 if let Some(tex) = textures.get(&id) {
                     anim_win.texture_snapshot = Some(tex.clone());
@@ -461,6 +627,9 @@ impl Styler for DefaultStyler {
                 new_anim_win.last_seen = self.frame_counter;
                 if let Some(tex) = textures.get(&id) {
                     new_anim_win.texture_snapshot = Some(tex.clone());
+                }
+                if render_layer == 2 {
+                    new_anim_win.workspace_id = wm.get_workspace_id_for_window(&id);
                 }
 
                 let in_cfg = &self.config.windows_in;
@@ -544,6 +713,7 @@ impl Styler for DefaultStyler {
         surface_to_viewport: &HashMap<ObjectId, ObjectId>,
         _opaque_regions: &HashMap<ObjectId, Vec<crate::wm::Rect>>,
         wm: &dyn crate::wm::WindowManager,
+        _screen_size: (u16, u16),
     ) -> Vec<DrawCommand> {
         let mut draw_list = Vec::new();
 
@@ -564,6 +734,8 @@ impl Styler for DefaultStyler {
 
         for id in render_order {
             if let Some(anim_win) = self.windows.get(&id) {
+                let win_offset = self.get_workspace_offset_for_surface(&id, wm);
+
                 let surface = all_logical
                     .iter()
                     .find(|w| w.surface.id() == id)
@@ -583,7 +755,7 @@ impl Styler for DefaultStyler {
 
                     self.draw_surface_recursive(
                         &surf,
-                        anim_win.x.current + x_offset,
+                        anim_win.x.current + x_offset + win_offset,
                         anim_win.y.current + y_offset,
                         subsurfaces,
                         textures,
@@ -605,7 +777,7 @@ impl Styler for DefaultStyler {
                     let x_offset = (sw - lw) / 2.0;
                     let y_offset = (sh - lh) / 2.0;
 
-                    let final_x = anim_win.x.current + x_offset;
+                    let final_x = anim_win.x.current + x_offset + win_offset;
                     let final_y = anim_win.y.current + y_offset;
 
                     if self.style.blur.enabled && anim_win.is_ssd {
@@ -670,7 +842,8 @@ impl Styler for DefaultStyler {
         // 2. Draw popups (on top of windows)
         for popup in wm.get_popups() {
             let (abs_x, abs_y) = wm.get_absolute_position(&popup.surface.id());
-            let surf_x = abs_x - popup.geometry.x as f64;
+            let win_offset = self.get_workspace_offset_for_surface(&popup.surface.id(), wm);
+            let surf_x = abs_x - popup.geometry.x as f64 + win_offset;
             let surf_y = abs_y - popup.geometry.y as f64;
 
             self.draw_surface_recursive(
@@ -725,7 +898,8 @@ impl Styler for DefaultStyler {
 
         for popup in wm.get_popups().iter().rev() {
             let (abs_x, abs_y) = wm.get_absolute_position(&popup.surface.id());
-            let surf_x = abs_x - popup.geometry.x as f64;
+            let win_offset = self.get_workspace_offset_for_surface(&popup.surface.id(), wm);
+            let surf_x = abs_x - popup.geometry.x as f64 + win_offset;
             let surf_y = abs_y - popup.geometry.y as f64;
 
             if let Some(hit) = self.hit_test_recursive(
@@ -758,9 +932,11 @@ impl Styler for DefaultStyler {
                 .iter()
                 .any(|w| w.parent_id.as_ref() == Some(&win.surface.id()));
 
+            let win_offset = self.get_workspace_offset_for_surface(&win.surface.id(), wm);
+
             if let Some(hit) = self.hit_test_recursive(
                 &win.surface,
-                win.x,
+                win.x + win_offset,
                 win.y,
                 cursor_x,
                 cursor_y,
