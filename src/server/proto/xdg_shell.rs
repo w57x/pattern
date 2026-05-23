@@ -246,7 +246,11 @@ impl Dispatch<XdgSurface, ()> for Composer {
                     );
                 }
             }
-            xdg_surface::Request::AckConfigure { .. } => {}
+            xdg_surface::Request::AckConfigure { serial } => {
+                if let Some(surface) = state.xdg_to_surface.get(&resource.id()) {
+                    state.wm.ack_configure(&surface.id(), serial);
+                }
+            }
             xdg_surface::Request::Destroy => {
                 if let Some(surface) = state.xdg_to_surface.get(&resource.id()) {
                     state.wm.unmap_window(&surface.id());
@@ -320,7 +324,7 @@ impl Dispatch<XdgToplevel, ()> for Composer {
         resource: &XdgToplevel,
         request: xdg_toplevel::Request,
         _data: &(),
-        _dhandle: &wayland_server::DisplayHandle,
+        dhandle: &wayland_server::DisplayHandle,
         _data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
         match request {
@@ -335,11 +339,13 @@ impl Dispatch<XdgToplevel, ()> for Composer {
                 state.wm.set_window_parent(&resource.id(), parent_id);
             }
             xdg_toplevel::Request::Move { seat: _, serial: _ } => {
+                state.serial += 1;
                 state.wm.begin_interactive_move(
                     &resource.id(),
                     state.cursor_pos.0,
                     state.cursor_pos.1,
                     state.mode.size(),
+                    state.serial,
                 );
             }
 
@@ -348,36 +354,53 @@ impl Dispatch<XdgToplevel, ()> for Composer {
                 serial: _,
                 edges,
             } => {
+                state.serial += 1;
                 state.wm.begin_interactive_resize(
                     &resource.id(),
                     edges.into(),
                     state.cursor_pos.0,
                     state.cursor_pos.1,
                     state.mode.size(),
+                    state.serial,
                 );
             }
             xdg_toplevel::Request::SetMaximized => {
+                state.serial += 1;
                 state
                     .wm
-                    .set_maximized(&resource.id(), true, state.mode.size());
+                    .set_maximized(&resource.id(), true, state.mode.size(), state.serial);
             }
             xdg_toplevel::Request::UnsetMaximized => {
+                state.serial += 1;
                 state
                     .wm
-                    .set_maximized(&resource.id(), false, state.mode.size());
+                    .set_maximized(&resource.id(), false, state.mode.size(), state.serial);
             }
             xdg_toplevel::Request::SetFullscreen { output: _ } => {
+                state.serial += 1;
                 state
                     .wm
-                    .set_fullscreen(&resource.id(), true, state.mode.size());
+                    .set_fullscreen(&resource.id(), true, state.mode.size(), state.serial);
             }
             xdg_toplevel::Request::UnsetFullscreen => {
+                state.serial += 1;
                 state
                     .wm
-                    .set_fullscreen(&resource.id(), false, state.mode.size());
+                    .set_fullscreen(&resource.id(), false, state.mode.size(), state.serial);
             }
             xdg_toplevel::Request::SetMinimized => {
-                state.wm.set_minimized(&resource.id());
+                if let Some(refocus_id) = state.wm.set_minimized(&resource.id()) {
+                    if let Some(refocus_surface) = state
+                        .surfaces
+                        .iter()
+                        .find(|s| s.id() == refocus_id)
+                        .cloned()
+                    {
+                        state.set_input_focus(Some(refocus_surface), dhandle);
+                    }
+                } else {
+                    state.set_input_focus(None, dhandle);
+                }
             }
             xdg_toplevel::Request::Destroy => {
                 if let Some(surface) = state.xdg_to_surface.get(&resource.id()) {

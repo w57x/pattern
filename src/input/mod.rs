@@ -365,19 +365,22 @@ impl Input {
                                     state.set_input_focus(Some(target_surf.clone()), dh);
 
                                     if super_mod {
+                                        state.serial += 1;
                                         state.wm.begin_drag(
                                             &target_surf.id(),
                                             self.cursor.x,
                                             self.cursor.y,
                                             state.mode.size(),
+                                            state.serial,
                                         );
                                     }
                                 }
                                 state.pointer_grab = Some(surf.clone());
                             }
                         } else if is_left_click && !is_pressed {
+                            state.serial += 1;
                             state.wm.end_drag();
-                            state.wm.end_resize();
+                            state.wm.end_resize(state.serial);
                             state.pointer_grab = None;
                         }
 

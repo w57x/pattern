@@ -207,6 +207,8 @@ impl WindowManager for Wm {
             margin: (0, 0, 0, 0),
             keyboard_interactivity: 0,
             is_interacting: false,
+            sent_configures: Vec::new(),
+            acknowledged_serial: None,
         });
     }
 
@@ -411,7 +413,13 @@ impl WindowManager for Wm {
         }
     }
 
-    fn set_maximized(&mut self, toplevel_id: &ObjectId, maximized: bool, screen_size: (u16, u16)) {
+    fn set_maximized(
+        &mut self,
+        toplevel_id: &ObjectId,
+        maximized: bool,
+        screen_size: (u16, u16),
+        serial: u32,
+    ) {
         let child_id = self
             .all_windows()
             .iter()
@@ -433,34 +441,44 @@ impl WindowManager for Wm {
                     }
                 };
 
-                if maximized && !window.maximized {
-                    window.saved_geometry = Some((window.x, window.y, window.w, window.h));
-                    window.x = -window.geometry.x as f64;
-                    window.y = -window.geometry.y as f64;
-                    window.maximized = true;
-                } else if !maximized && window.maximized {
-                    if let Some((x, y, w, h)) = window.saved_geometry.take() {
-                        window.x = x;
-                        window.y = y;
-                        window.w = w;
-                        window.h = h;
-                    }
-                    window.maximized = false;
-                }
+                let config = if let Some(existing) = window
+                    .sent_configures
+                    .iter_mut()
+                    .find(|c| c.serial == serial)
+                {
+                    existing.maximized = maximized;
+                    existing.w = target_w;
+                    existing.h = target_h;
+                    existing.clone()
+                } else {
+                    let c = ConfigureState {
+                        serial,
+                        maximized,
+                        fullscreen: window.fullscreen,
+                        resizing: false,
+                        edges: 0,
+                        w: target_w,
+                        h: target_h,
+                        x: None,
+                        y: None,
+                    };
+                    window.sent_configures.push(c.clone());
+                    c
+                };
 
                 if let (Some(toplevel), Some(xdg_surface)) = (&window.toplevel, &window.xdg_surface)
                 {
                     use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
                     let mut states = Vec::new();
                     states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
-                    if window.maximized {
+                    if config.maximized {
                         states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
                     }
-                    if window.fullscreen {
+                    if config.fullscreen {
                         states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
                     }
-                    toplevel.configure(target_w, target_h, states);
-                    xdg_surface.configure(0);
+                    toplevel.configure(config.w, config.h, states);
+                    xdg_surface.configure(serial);
                 }
             }
         }
@@ -471,6 +489,7 @@ impl WindowManager for Wm {
         toplevel_id: &ObjectId,
         fullscreen: bool,
         screen_size: (u16, u16),
+        serial: u32,
     ) {
         let child_id = self
             .all_windows()
@@ -493,20 +512,30 @@ impl WindowManager for Wm {
                     }
                 };
 
-                if fullscreen && !window.fullscreen {
-                    window.saved_geometry = Some((window.x, window.y, window.w, window.h));
-                    window.x = -window.geometry.x as f64;
-                    window.y = -window.geometry.y as f64;
-                    window.fullscreen = true;
-                } else if !fullscreen && window.fullscreen {
-                    if let Some((x, y, w, h)) = window.saved_geometry.take() {
-                        window.x = x;
-                        window.y = y;
-                        window.w = w;
-                        window.h = h;
-                    }
-                    window.fullscreen = false;
-                }
+                let config = if let Some(existing) = window
+                    .sent_configures
+                    .iter_mut()
+                    .find(|c| c.serial == serial)
+                {
+                    existing.fullscreen = fullscreen;
+                    existing.w = target_w;
+                    existing.h = target_h;
+                    existing.clone()
+                } else {
+                    let c = ConfigureState {
+                        serial,
+                        maximized: window.maximized,
+                        fullscreen,
+                        resizing: false,
+                        edges: 0,
+                        w: target_w,
+                        h: target_h,
+                        x: None,
+                        y: None,
+                    };
+                    window.sent_configures.push(c.clone());
+                    c
+                };
 
                 if let (Some(toplevel), Some(xdg_surface)) = (&window.toplevel, &window.xdg_surface)
                 {
@@ -516,20 +545,47 @@ impl WindowManager for Wm {
                     if window.maximized {
                         states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
                     }
-                    if window.fullscreen {
+                    if config.fullscreen {
                         states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
                     }
-                    toplevel.configure(target_w, target_h, states);
-                    xdg_surface.configure(0);
+                    toplevel.configure(config.w, config.h, states);
+                    xdg_surface.configure(serial);
                 }
             }
         }
     }
 
-    fn set_minimized(&mut self, toplevel_id: &ObjectId) {
-        if let Some(window) = self.find_window_by_toplevel_mut(toplevel_id) {
-            window.minimized = true;
+    fn set_minimized(&mut self, toplevel_id: &ObjectId) -> Option<ObjectId> {
+        let child_id = self
+            .all_windows()
+            .iter()
+            .find(|w| w.toplevel.as_ref().map(|t| t.id()) == Some(toplevel_id.clone()))
+            .map(|w| w.surface.id());
+        if let Some(id) = child_id {
+            if let Some(window) = self.find_window_mut(&id) {
+                window.minimized = true;
+            }
+            // If the minimized window had focus, refocus the next top window in the same workspace
+            let active_ws = self.outputs[0].active_workspace;
+            let mut target_to_focus = None;
+            if let Some(slot) = self.outputs[0].workspaces.get(active_ws) {
+                if let Slot::Occupied(ws) = slot {
+                    if let Some(next_focus) = ws
+                        .windows
+                        .iter()
+                        .rev()
+                        .find(|w| !w.minimized && w.surface.id() != id)
+                    {
+                        target_to_focus = Some(next_focus.surface.id());
+                    }
+                }
+            }
+            if let Some(refocus_id) = target_to_focus {
+                self.focus_window(&refocus_id);
+                return Some(refocus_id);
+            }
         }
+        None
     }
 
     fn set_modal(&mut self, toplevel_id: &ObjectId, modal: bool) {
@@ -544,6 +600,7 @@ impl WindowManager for Wm {
         cursor_x: f64,
         cursor_y: f64,
         screen_size: (u16, u16),
+        serial: u32,
     ) {
         let target_surface_id = self.all_windows().iter().find_map(|w| {
             if let Some(top) = &w.toplevel {
@@ -555,9 +612,9 @@ impl WindowManager for Wm {
         });
 
         if let Some(surface_id) = target_surface_id {
-            self.set_fullscreen(toplevel_id, false, screen_size);
-            self.set_maximized(toplevel_id, false, screen_size);
-            self.begin_drag(&surface_id, cursor_x, cursor_y, screen_size);
+            self.set_fullscreen(toplevel_id, false, screen_size, serial);
+            self.set_maximized(toplevel_id, false, screen_size, serial);
+            self.begin_drag(&surface_id, cursor_x, cursor_y, screen_size, serial);
         }
     }
 
@@ -568,9 +625,10 @@ impl WindowManager for Wm {
         cursor_x: f64,
         cursor_y: f64,
         screen_size: (u16, u16),
+        serial: u32,
     ) {
-        self.set_fullscreen(toplevel_id, false, screen_size);
-        self.set_maximized(toplevel_id, false, screen_size);
+        self.set_fullscreen(toplevel_id, false, screen_size, serial);
+        self.set_maximized(toplevel_id, false, screen_size, serial);
 
         let window_info = self
             .all_windows()
@@ -601,13 +659,14 @@ impl WindowManager for Wm {
         cursor_x: f64,
         cursor_y: f64,
         screen_size: (u16, u16),
+        serial: u32,
     ) {
         let toplevel_id = self
             .find_window(surface_id)
             .and_then(|w| w.toplevel.as_ref().map(|t| t.id()));
         if let Some(id) = toplevel_id {
-            self.set_fullscreen(&id, false, screen_size);
-            self.set_maximized(&id, false, screen_size);
+            self.set_fullscreen(&id, false, screen_size, serial);
+            self.set_maximized(&id, false, screen_size, serial);
         }
 
         if let Some(window) = self.find_window(surface_id) {
@@ -676,37 +735,71 @@ impl WindowManager for Wm {
                     new_gh = 100.0;
                 }
 
-                window.x = new_gx - window.geometry.x as f64;
-                window.y = new_gy - window.geometry.y as f64;
+                let target_x = new_gx - window.geometry.x as f64;
+                let target_y = new_gy - window.geometry.y as f64;
+
+                let config = ConfigureState {
+                    serial,
+                    maximized: window.maximized,
+                    fullscreen: window.fullscreen,
+                    resizing: true,
+                    edges,
+                    w: new_gw as i32,
+                    h: new_gh as i32,
+                    x: Some(target_x),
+                    y: Some(target_y),
+                };
+                window.sent_configures.push(config);
 
                 if let (Some(toplevel), Some(xdg_surface)) = (&window.toplevel, &window.xdg_surface)
                 {
-                    let state_val =
-                        wayland_protocols::xdg::shell::server::xdg_toplevel::State::Resizing as u32;
-                    let mut states_bytes = state_val.to_ne_bytes().to_vec();
-                    let act_val =
-                        wayland_protocols::xdg::shell::server::xdg_toplevel::State::Activated
-                            as u32;
-                    states_bytes.extend_from_slice(&act_val.to_ne_bytes());
+                    use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+                    let mut states = Vec::new();
+                    states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
+                    states.extend_from_slice(&(State::Resizing as u32).to_ne_bytes());
+                    if window.maximized {
+                        states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
+                    }
+                    if window.fullscreen {
+                        states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
+                    }
 
-                    toplevel.configure(new_gw as i32, new_gh as i32, states_bytes);
+                    toplevel.configure(new_gw as i32, new_gh as i32, states);
                     xdg_surface.configure(serial);
                 }
             }
         }
     }
 
-    fn end_resize(&mut self) {
+    fn end_resize(&mut self, serial: u32) {
         if let Some((id, ..)) = self.resize_state.take() {
             if let Some(window) = self.find_window_mut(&id) {
+                let config = ConfigureState {
+                    serial,
+                    maximized: window.maximized,
+                    fullscreen: window.fullscreen,
+                    resizing: false,
+                    edges: 0,
+                    w: window.w,
+                    h: window.h,
+                    x: None,
+                    y: None,
+                };
+                window.sent_configures.push(config);
+
                 if let (Some(toplevel), Some(xdg_surface)) = (&window.toplevel, &window.xdg_surface)
                 {
-                    let act_val =
-                        wayland_protocols::xdg::shell::server::xdg_toplevel::State::Activated
-                            as u32;
-                    let states_bytes = act_val.to_ne_bytes().to_vec();
-                    toplevel.configure(0, 0, states_bytes);
-                    xdg_surface.configure(1);
+                    use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+                    let mut states = Vec::new();
+                    states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
+                    if window.maximized {
+                        states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
+                    }
+                    if window.fullscreen {
+                        states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
+                    }
+                    toplevel.configure(0, 0, states);
+                    xdg_surface.configure(serial);
                 }
             }
         }
@@ -716,6 +809,92 @@ impl WindowManager for Wm {
         if let Some(window) = self.find_window_mut(surface_id) {
             window.w = w;
             window.h = h;
+        }
+    }
+
+    fn ack_configure(&mut self, surface_id: &ObjectId, serial: u32) {
+        if let Some(window) = self.find_window_mut(surface_id) {
+            window.acknowledged_serial = Some(serial);
+        }
+    }
+
+    fn apply_committed_configure(&mut self, surface_id: &ObjectId, actual_w: i32, actual_h: i32) {
+        let mut target_config = None;
+        if let Some(window) = self.find_window_mut(surface_id) {
+            if let Some(serial) = window.acknowledged_serial.take() {
+                if let Some(idx) = window
+                    .sent_configures
+                    .iter()
+                    .position(|c| c.serial == serial)
+                {
+                    target_config = Some(window.sent_configures[idx].clone());
+                    window.sent_configures.drain(0..=idx);
+                }
+            }
+        }
+
+        if let Some(config) = target_config {
+            if let Some(window) = self.find_window_mut(surface_id) {
+                // Apply fullscreen
+                if config.fullscreen && !window.fullscreen {
+                    window.saved_geometry = Some((window.x, window.y, window.w, window.h));
+                    window.x = -window.geometry.x as f64;
+                    window.y = -window.geometry.y as f64;
+                    window.w = config.w;
+                    window.h = config.h;
+                    window.fullscreen = true;
+                    window.maximized = false;
+                } else if !config.fullscreen && window.fullscreen {
+                    if let Some((x, y, w, h)) = window.saved_geometry.take() {
+                        window.x = x;
+                        window.y = y;
+                        window.w = w;
+                        window.h = h;
+                    }
+                    window.fullscreen = false;
+                }
+
+                // Apply maximized
+                if !window.fullscreen {
+                    if config.maximized && !window.maximized {
+                        window.saved_geometry = Some((window.x, window.y, window.w, window.h));
+                        window.x = -window.geometry.x as f64;
+                        window.y = -window.geometry.y as f64;
+                        window.w = config.w;
+                        window.h = config.h;
+                        window.maximized = true;
+                    } else if !config.maximized && window.maximized {
+                        if let Some((x, y, w, h)) = window.saved_geometry.take() {
+                            window.x = x;
+                            window.y = y;
+                            window.w = w;
+                            window.h = h;
+                        }
+                        window.maximized = false;
+                    } else if window.maximized {
+                        window.x = -window.geometry.x as f64;
+                        window.y = -window.geometry.y as f64;
+                        window.w = config.w;
+                        window.h = config.h;
+                    }
+                }
+
+                // Apply resizing updates with exact edge adjustments
+                if config.resizing && !window.maximized && !window.fullscreen {
+                    if config.edges & 4 != 0 {
+                        // Resizing left
+                        let old_right_edge = window.x + window.geometry.x as f64 + window.w as f64;
+                        window.x = old_right_edge - window.geometry.x as f64 - actual_w as f64;
+                    }
+                    if config.edges & 1 != 0 {
+                        // Resizing top
+                        let old_bottom_edge = window.y + window.geometry.y as f64 + window.h as f64;
+                        window.y = old_bottom_edge - window.geometry.y as f64 - actual_h as f64;
+                    }
+                    window.w = actual_w;
+                    window.h = actual_h;
+                }
+            }
         }
     }
 
@@ -766,6 +945,8 @@ impl WindowManager for Wm {
             margin: (0, 0, 0, 0),
             keyboard_interactivity: 0,
             is_interacting: false,
+            sent_configures: Vec::new(),
+            acknowledged_serial: None,
         };
 
         match layer {

@@ -145,9 +145,32 @@ impl Dispatch<WlSurface, ()> for Composer {
                     }
                 }
 
+                let mut actual_size = None;
+                if let Some(buffer) = state.surface_buffers.get(&surface.id()) {
+                    if let Some(buffer_info) = state.buffers.get(&buffer.id()) {
+                        actual_size = Some((buffer_info.width, buffer_info.height));
+                    } else if let Some(dmabuf) = state.dmabuffers.get(&buffer.id()) {
+                        actual_size = Some((dmabuf.width as i32, dmabuf.height as i32));
+                    }
+                }
+
+                let (actual_w, actual_h) = actual_size.unwrap_or_else(|| {
+                    state
+                        .wm
+                        .all_windows()
+                        .iter()
+                        .find(|w| w.surface.id() == surface.id())
+                        .map(|w| (w.w, w.h))
+                        .unwrap_or((0, 0))
+                });
+
                 if let Some(geometry) = state.pending_geometry.remove(&surface.id()) {
                     state.wm.set_window_geometry(&surface.id(), geometry);
                 }
+
+                state
+                    .wm
+                    .apply_committed_configure(&surface.id(), actual_w, actual_h);
 
                 if let Some((x, y)) = state.pending_popup_positions.remove(&surface.id()) {
                     state.wm.update_popup_position(&surface.id(), x, y);

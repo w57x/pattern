@@ -13,6 +13,19 @@ pub struct Rect {
     pub h: i32,
 }
 
+#[derive(Clone, Debug)]
+pub struct ConfigureState {
+    pub serial: u32,
+    pub maximized: bool,
+    pub fullscreen: bool,
+    pub resizing: bool,
+    pub edges: u32,
+    pub w: i32,
+    pub h: i32,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+}
+
 /// Represents the state of a single window (toplevel or layer shell surface) in the compositor.
 #[derive(Clone)]
 pub struct WindowState {
@@ -45,6 +58,9 @@ pub struct WindowState {
     pub keyboard_interactivity: u32,
 
     pub is_interacting: bool,
+
+    pub sent_configures: Vec<ConfigureState>,
+    pub acknowledged_serial: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -165,13 +181,25 @@ pub trait WindowManager {
     fn set_window_geometry(&mut self, surface_id: &ObjectId, geometry: Rect);
 
     /// Sets the maximized state for the specified toplevel.
-    fn set_maximized(&mut self, toplevel_id: &ObjectId, maximized: bool, screen_size: (u16, u16));
+    fn set_maximized(
+        &mut self,
+        toplevel_id: &ObjectId,
+        maximized: bool,
+        screen_size: (u16, u16),
+        serial: u32,
+    );
 
     /// Sets the fullscreen state for the specified toplevel.
-    fn set_fullscreen(&mut self, toplevel_id: &ObjectId, fullscreen: bool, screen_size: (u16, u16));
+    fn set_fullscreen(
+        &mut self,
+        toplevel_id: &ObjectId,
+        fullscreen: bool,
+        screen_size: (u16, u16),
+        serial: u32,
+    );
 
     /// Minimizes the specified toplevel window.
-    fn set_minimized(&mut self, toplevel_id: &ObjectId);
+    fn set_minimized(&mut self, toplevel_id: &ObjectId) -> Option<ObjectId>;
 
     /// Sets or unsets the modal state for the specified toplevel.
     fn set_modal(&mut self, toplevel_id: &ObjectId, modal: bool);
@@ -183,6 +211,7 @@ pub trait WindowManager {
         cursor_x: f64,
         cursor_y: f64,
         screen_size: (u16, u16),
+        serial: u32,
     );
 
     /// Begins an interactive resize operation for the specified toplevel.
@@ -193,6 +222,7 @@ pub trait WindowManager {
         cursor_x: f64,
         cursor_y: f64,
         screen_size: (u16, u16),
+        serial: u32,
     );
 
     /// Begins a drag operation for the specified surface.
@@ -202,6 +232,7 @@ pub trait WindowManager {
         cursor_x: f64,
         cursor_y: f64,
         screen_size: (u16, u16),
+        serial: u32,
     );
 
     /// Updates the current drag position.
@@ -214,10 +245,16 @@ pub trait WindowManager {
     fn update_resize(&mut self, cursor_x: f64, cursor_y: f64, serial: u32);
 
     /// Ends the current resize operation.
-    fn end_resize(&mut self);
+    fn end_resize(&mut self, serial: u32);
 
     /// Refreshes the internal window dimensions, usually in response to a client configure ack.
     fn refresh_window_dimensions(&mut self, surface_id: &ObjectId, w: i32, h: i32);
+
+    /// Acknowledges a configuration serial for a window.
+    fn ack_configure(&mut self, surface_id: &ObjectId, serial: u32);
+
+    /// Applies the acknowledged configure state on surface commit.
+    fn apply_committed_configure(&mut self, surface_id: &ObjectId, actual_w: i32, actual_h: i32);
 
     // Layer Shell Management
 

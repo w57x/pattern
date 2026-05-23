@@ -354,7 +354,7 @@ impl DefaultStyler {
         // We filter the complete list to preserve the `is_interacting` flag set by all_windows()
         wm.all_windows()
             .into_iter()
-            .filter(|w| visible_ids.contains(&w.surface.id()))
+            .filter(|w| visible_ids.contains(&w.surface.id()) && !w.minimized)
             .collect()
     }
 }
