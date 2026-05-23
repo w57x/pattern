@@ -141,6 +141,167 @@ impl Wm {
         }
         None
     }
+
+    fn get_root_parent_id(&self, surface_id: &ObjectId) -> ObjectId {
+        let mut current_id = surface_id.clone();
+        while let Some(win) = self.find_window(&current_id) {
+            if let Some(pid) = &win.parent_id {
+                if let Some(parent_win) = self
+                    .all_windows()
+                    .iter()
+                    .find(|w| w.toplevel.as_ref().map(|t| t.id()) == Some(pid.clone()))
+                {
+                    current_id = parent_win.surface.id();
+                    continue;
+                }
+            }
+            break;
+        }
+        current_id
+    }
+
+    fn get_descendants_ordered(&self, surface_id: &ObjectId) -> Vec<ObjectId> {
+        let mut ordered = vec![surface_id.clone()];
+        let mut index = 0;
+        while index < ordered.len() {
+            let current_id = &ordered[index];
+            if let Some(win) = self.find_window(current_id) {
+                if let Some(toplevel) = &win.toplevel {
+                    let tid = toplevel.id();
+                    for w in self.all_windows() {
+                        if w.parent_id.as_ref() == Some(&tid) {
+                            let child_surf_id = w.surface.id();
+                            if !ordered.contains(&child_surf_id) {
+                                ordered.push(child_surf_id);
+                            }
+                        }
+                    }
+                }
+            }
+            index += 1;
+        }
+        ordered
+    }
+
+    fn get_transient_group(&self, surface_id: &ObjectId) -> Vec<ObjectId> {
+        let mut group = Vec::new();
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(surface_id.clone());
+        group.push(surface_id.clone());
+
+        while let Some(current_id) = queue.pop_front() {
+            if let Some(win) = self.find_window(&current_id) {
+                if let Some(pid) = &win.parent_id {
+                    if let Some(parent_win) = self
+                        .all_windows()
+                        .iter()
+                        .find(|w| w.toplevel.as_ref().map(|t| t.id()) == Some(pid.clone()))
+                    {
+                        let parent_surf_id = parent_win.surface.id();
+                        if !group.contains(&parent_surf_id) {
+                            group.push(parent_surf_id.clone());
+                            queue.push_back(parent_surf_id);
+                        }
+                    }
+                }
+                if let Some(toplevel) = &win.toplevel {
+                    let tid = toplevel.id();
+                    for w in self.all_windows() {
+                        if w.parent_id.as_ref() == Some(&tid) {
+                            let child_surf_id = w.surface.id();
+                            if !group.contains(&child_surf_id) {
+                                group.push(child_surf_id.clone());
+                                queue.push_back(child_surf_id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        group
+    }
+
+    fn restack_window_group(&mut self, surface_id: &ObjectId) {
+        let root_id = self.get_root_parent_id(surface_id);
+        let ordered_ids = self.get_descendants_ordered(&root_id);
+        for id in ordered_ids {
+            for out in &mut self.outputs {
+                if let Some(idx) = out
+                    .background
+                    .windows
+                    .iter()
+                    .position(|w| w.surface.id() == id)
+                {
+                    let w = out.background.windows.remove(idx);
+                    out.background.windows.push(w);
+                }
+                if let Some(idx) = out.bottom.windows.iter().position(|w| w.surface.id() == id) {
+                    let w = out.bottom.windows.remove(idx);
+                    out.bottom.windows.push(w);
+                }
+                for ws in out.workspaces.flatten_mut() {
+                    if let Some(idx) = ws.windows.iter().position(|w| w.surface.id() == id) {
+                        let w = ws.windows.remove(idx);
+                        ws.windows.push(w);
+                    }
+                }
+                if let Some(idx) = out.top.windows.iter().position(|w| w.surface.id() == id) {
+                    let w = out.top.windows.remove(idx);
+                    out.top.windows.push(w);
+                }
+                if let Some(idx) = out
+                    .overlay
+                    .windows
+                    .iter()
+                    .position(|w| w.surface.id() == id)
+                {
+                    let w = out.overlay.windows.remove(idx);
+                    out.overlay.windows.push(w);
+                }
+            }
+        }
+    }
+
+    fn maintain_transient_constraints(&mut self) {
+        let mut updates = Vec::new();
+        let windows = self.all_windows();
+        for w in &windows {
+            if let Some(ref parent_tid) = w.parent_id {
+                if let Some(parent) = windows
+                    .iter()
+                    .find(|pw| pw.toplevel.as_ref().map(|t| t.id()) == Some(parent_tid.clone()))
+                {
+                    let child_w = if w.geometry.w > 0 { w.geometry.w } else { w.w };
+                    let child_h = if w.geometry.h > 0 { w.geometry.h } else { w.h };
+                    let parent_w = if parent.geometry.w > 0 {
+                        parent.geometry.w
+                    } else {
+                        parent.w
+                    };
+                    let parent_h = if parent.geometry.h > 0 {
+                        parent.geometry.h
+                    } else {
+                        parent.h
+                    };
+
+                    let target_center_x =
+                        parent.x + parent.geometry.x as f64 + (parent_w as f64) / 2.0;
+                    let target_center_y =
+                        parent.y + parent.geometry.y as f64 + (parent_h as f64) / 2.0;
+
+                    let new_x = target_center_x - (w.geometry.x as f64) - (child_w as f64) / 2.0;
+                    let new_y = target_center_y - (w.geometry.y as f64) - (child_h as f64) / 2.0;
+                    updates.push((w.surface.id(), new_x, new_y));
+                }
+            }
+        }
+        for (sid, x, y) in updates {
+            if let Some(w) = self.find_window_mut(&sid) {
+                w.x = x;
+                w.y = y;
+            }
+        }
+    }
 }
 
 impl WindowManager for Wm {
@@ -245,13 +406,19 @@ impl WindowManager for Wm {
             target_id = popup.parent_surface_id.clone();
         }
 
-        let has_transient_child = self
-            .all_windows()
-            .iter()
-            .any(|w| w.parent_id.as_ref() == Some(&target_id));
+        let target_toplevel_id = self
+            .find_window(&target_id)
+            .and_then(|w| w.toplevel.as_ref().map(|t| t.id()));
+        let has_transient_child = if let Some(ref tid) = target_toplevel_id {
+            self.all_windows()
+                .iter()
+                .any(|w| w.parent_id.as_ref() == Some(tid))
+        } else {
+            false
+        };
         if has_transient_child {
             if let Some(child_id) = self.all_windows().iter().find_map(|w| {
-                if w.parent_id.as_ref() == Some(&target_id) {
+                if w.parent_id.as_ref() == target_toplevel_id.as_ref() {
                     Some(w.surface.id())
                 } else {
                     None
@@ -261,59 +428,7 @@ impl WindowManager for Wm {
             }
         }
 
-        for out in &mut self.outputs {
-            if let Some(idx) = out
-                .background
-                .windows
-                .iter()
-                .position(|w| w.surface.id() == target_id)
-            {
-                let w = out.background.windows.remove(idx);
-                out.background.windows.push(w);
-                return target_id;
-            }
-
-            if let Some(idx) = out
-                .bottom
-                .windows
-                .iter()
-                .position(|w| w.surface.id() == target_id)
-            {
-                let w = out.bottom.windows.remove(idx);
-                out.bottom.windows.push(w);
-                return target_id;
-            }
-
-            for ws in out.workspaces.flatten_mut() {
-                if let Some(idx) = ws.windows.iter().position(|w| w.surface.id() == target_id) {
-                    let w = ws.windows.remove(idx);
-                    ws.windows.push(w);
-                    return target_id;
-                }
-            }
-
-            if let Some(idx) = out
-                .top
-                .windows
-                .iter()
-                .position(|w| w.surface.id() == target_id)
-            {
-                let w = out.top.windows.remove(idx);
-                out.top.windows.push(w);
-                return target_id;
-            }
-
-            if let Some(idx) = out
-                .overlay
-                .windows
-                .iter()
-                .position(|w| w.surface.id() == target_id)
-            {
-                let w = out.overlay.windows.remove(idx);
-                out.overlay.windows.push(w);
-                return target_id;
-            }
-        }
+        self.restack_window_group(&target_id);
         target_id
     }
 
@@ -361,17 +476,6 @@ impl WindowManager for Wm {
     }
 
     fn set_window_parent(&mut self, toplevel_id: &ObjectId, parent_id: Option<ObjectId>) {
-        let mut parent_info = None;
-        if let Some(pid) = &parent_id {
-            if let Some(w) = self
-                .all_windows()
-                .iter()
-                .find(|w| w.toplevel.as_ref().map(|t| t.id()) == Some(pid.clone()))
-            {
-                parent_info = Some(((w.x, w.y), (w.w, w.h), w.geometry));
-            }
-        }
-
         let child_id = self
             .all_windows()
             .iter()
@@ -380,15 +484,9 @@ impl WindowManager for Wm {
         if let Some(cid) = child_id {
             if let Some(child) = self.find_window_mut(&cid) {
                 child.parent_id = parent_id;
-                if let Some((pos, _dim, geom)) = parent_info {
-                    let lpx = pos.0 + geom.x as f64 + (geom.w as f64) / 2.0;
-                    let lpy = pos.1 + geom.y as f64 + (geom.h as f64) / 2.0;
-                    let child_geom = child.geometry;
-                    child.x = lpx - (child_geom.x as f64) - (child_geom.w as f64) / 2.0;
-                    child.y = lpy - (child_geom.y as f64) - (child_geom.h as f64) / 2.0;
-                }
             }
         }
+        self.maintain_transient_constraints();
     }
 
     fn set_window_ssd(&mut self, toplevel_id: &ObjectId, enabled: bool) {
@@ -411,6 +509,7 @@ impl WindowManager for Wm {
         {
             popup.geometry = geometry;
         }
+        self.maintain_transient_constraints();
     }
 
     fn set_maximized(
@@ -680,11 +779,24 @@ impl WindowManager for Wm {
 
     fn update_drag(&mut self, cursor_x: f64, cursor_y: f64) {
         if let Some((drag_id, off_x, off_y)) = self.drag_state.clone() {
-            if let Some(window) = self.find_window_mut(&drag_id) {
-                window.x = cursor_x - off_x;
-                window.y = cursor_y - off_y;
+            if let Some(window) = self.find_window(&drag_id) {
+                let target_x = cursor_x - off_x;
+                let target_y = cursor_y - off_y;
+                let dx = target_x - window.x;
+                let dy = target_y - window.y;
+
+                if dx != 0.0 || dy != 0.0 {
+                    let group = self.get_transient_group(&drag_id);
+                    for id in group {
+                        if let Some(w) = self.find_window_mut(&id) {
+                            w.x += dx;
+                            w.y += dy;
+                        }
+                    }
+                }
             }
         }
+        self.maintain_transient_constraints();
     }
 
     fn end_drag(&mut self) {
@@ -810,6 +922,7 @@ impl WindowManager for Wm {
             window.w = w;
             window.h = h;
         }
+        self.maintain_transient_constraints();
     }
 
     fn ack_configure(&mut self, surface_id: &ObjectId, serial: u32) {
@@ -896,6 +1009,7 @@ impl WindowManager for Wm {
                 }
             }
         }
+        self.maintain_transient_constraints();
     }
 
     fn map_layer_surface(

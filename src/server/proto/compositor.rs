@@ -59,7 +59,7 @@ impl Dispatch<WlSurface, ()> for Composer {
         surface: &WlSurface,
         request: wayland_server::protocol::wl_surface::Request,
         _data: &(),
-        _dhandle: &wayland_server::DisplayHandle,
+        dhandle: &wayland_server::DisplayHandle,
         data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
         use crate::vulkan::SurfaceTexture;
@@ -488,18 +488,7 @@ impl Dispatch<WlSurface, ()> for Composer {
                 state.pending_scales.insert(surface.id(), scale);
             }
             wayland_server::protocol::wl_surface::Request::Destroy => {
-                state.wm.unmap_window(&surface.id());
-                state.wm.unmap_popup(&surface.id());
-                state.surfaces.retain(|s| s.id() != surface.id());
-                state.surface_textures.remove(&surface.id());
-                if let Some(vp_id) = state.surface_to_viewport.remove(&surface.id()) {
-                    state.viewports.remove(&vp_id);
-                }
-                if let Some(active_buf) = state.active_dmabufs.remove(&surface.id()) {
-                    active_buf.release();
-                }
-                state.pending_syncobj_state.remove(&surface.id());
-                state.syncobj_state.remove(&surface.id());
+                state.cleanup_surface(&surface.id(), dhandle);
             }
             _ => {}
         }

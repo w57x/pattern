@@ -734,9 +734,14 @@ impl Composer {
     pub fn cleanup_surface(&mut self, id: &ObjectId, dh: &wayland_server::DisplayHandle) {
         self.wm.unmap_window(id);
         self.wm.unmap_popup(id);
-        self.xdg_to_surface.remove(id);
+        self.xdg_to_surface.retain(|_, surface| surface.id() != *id);
         self.surface_textures.remove(id);
-        self.active_dmabufs.remove(id);
+        if let Some(active_buf) = self.active_dmabufs.remove(id) {
+            active_buf.release();
+        }
+        if let Some(vp_id) = self.surface_to_viewport.remove(id) {
+            self.viewports.remove(&vp_id);
+        }
         self.pending_syncobj_state.remove(id);
         self.syncobj_state.remove(id);
         self.surface_buffers.remove(id);

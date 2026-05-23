@@ -65,7 +65,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Composer {
         resource: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
         request: zwlr_layer_surface_v1::Request,
         _data: &(),
-        _dhandle: &wayland_server::DisplayHandle,
+        dhandle: &wayland_server::DisplayHandle,
         _data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
         let surface_id = if let Some(surface) = state.xdg_to_surface.get(&resource.id()) {
@@ -179,8 +179,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Composer {
             }
             zwlr_layer_surface_v1::Request::AckConfigure { serial: _ } => {}
             zwlr_layer_surface_v1::Request::Destroy => {
-                state.wm.unmap_window(&surface_id);
-                state.xdg_to_surface.remove(&resource.id());
+                state.cleanup_surface(&surface_id, dhandle);
                 state.wm.recalculate_layer_layout(state.mode.size());
             }
             _ => {}

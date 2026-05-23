@@ -252,9 +252,8 @@ impl Dispatch<XdgSurface, ()> for Composer {
                 }
             }
             xdg_surface::Request::Destroy => {
-                if let Some(surface) = state.xdg_to_surface.get(&resource.id()) {
-                    state.wm.unmap_window(&surface.id());
-                    state.wm.unmap_popup(&surface.id());
+                if let Some(surface) = state.xdg_to_surface.get(&resource.id()).cloned() {
+                    state.cleanup_surface(&surface.id(), dhandle);
                 }
                 state.xdg_to_surface.remove(&resource.id());
             }
@@ -275,8 +274,14 @@ impl Dispatch<XdgPopup, ()> for Composer {
     ) {
         match request {
             xdg_popup::Request::Destroy => {
-                if let Some(surface) = state.xdg_to_surface.get(&resource.id()) {
-                    state.wm.unmap_popup(&surface.id());
+                let popup_surface_id = state
+                    .wm
+                    .get_popups()
+                    .iter()
+                    .find(|p| p.xdg_popup.id() == resource.id())
+                    .map(|p| p.surface.id());
+                if let Some(sid) = popup_surface_id {
+                    state.wm.unmap_popup(&sid);
                 }
             }
             xdg_popup::Request::Grab { .. } => {}
@@ -403,8 +408,14 @@ impl Dispatch<XdgToplevel, ()> for Composer {
                 }
             }
             xdg_toplevel::Request::Destroy => {
-                if let Some(surface) = state.xdg_to_surface.get(&resource.id()) {
-                    state.wm.unmap_window(&surface.id());
+                let surface_id = state
+                    .wm
+                    .all_windows()
+                    .iter()
+                    .find(|w| w.toplevel.as_ref().map(|t| t.id()) == Some(resource.id()))
+                    .map(|w| w.surface.id());
+                if let Some(sid) = surface_id {
+                    state.cleanup_surface(&sid, dhandle);
                 }
                 state.windows.retain(|w| w.id() != resource.id());
                 return;
