@@ -421,88 +421,127 @@ impl Input {
                                         CompositorCommand::DragWindow => {
                                             if let Some(surf) = &hit_surface {
                                                 if !state.is_input_popup(&surf.id()) {
-                                                    let focused_id =
-                                                        state.wm.focus_window(&surf.id());
-                                                    let target_surf = state
-                                                        .surfaces
-                                                        .iter()
-                                                        .find(|s| s.id() == focused_id)
-                                                        .cloned()
-                                                        .unwrap_or_else(|| surf.clone());
-                                                    state.set_input_focus(
-                                                        Some(target_surf.clone()),
-                                                        dh,
-                                                    );
+                                                    let is_layer_shell = {
+                                                        let mut target_id = surf.id();
+                                                        let popups = state.wm.get_popups();
+                                                        while let Some(popup) = popups
+                                                            .iter()
+                                                            .find(|p| p.surface.id() == target_id)
+                                                        {
+                                                            target_id =
+                                                                popup.parent_surface_id.clone();
+                                                        }
+                                                        state.wm.all_windows().iter().any(|w| {
+                                                            w.surface.id() == target_id
+                                                                && w.layer_surface.is_some()
+                                                        })
+                                                    };
+                                                    if !is_layer_shell {
+                                                        let focused_id =
+                                                            state.wm.focus_window(&surf.id());
+                                                        let target_surf = state
+                                                            .surfaces
+                                                            .iter()
+                                                            .find(|s| s.id() == focused_id)
+                                                            .cloned()
+                                                            .unwrap_or_else(|| surf.clone());
+                                                        state.set_input_focus(
+                                                            Some(target_surf.clone()),
+                                                            dh,
+                                                        );
 
-                                                    state.serial += 1;
-                                                    state.wm.begin_drag(
-                                                        &target_surf.id(),
-                                                        self.cursor.x,
-                                                        self.cursor.y,
-                                                        state.mode.size(),
-                                                        state.serial,
-                                                    );
+                                                        state.serial += 1;
+                                                        state.wm.begin_drag(
+                                                            &target_surf.id(),
+                                                            self.cursor.x,
+                                                            self.cursor.y,
+                                                            state.mode.size(),
+                                                            state.serial,
+                                                        );
+                                                    }
                                                 }
                                             }
                                         }
                                         CompositorCommand::ResizeWindow => {
                                             if let Some(surf) = &hit_surface {
                                                 if !state.is_input_popup(&surf.id()) {
-                                                    let focused_id =
-                                                        state.wm.focus_window(&surf.id());
-                                                    let target_surf = state
-                                                        .surfaces
-                                                        .iter()
-                                                        .find(|s| s.id() == focused_id)
-                                                        .cloned()
-                                                        .unwrap_or_else(|| surf.clone());
-                                                    state.set_input_focus(
-                                                        Some(target_surf.clone()),
-                                                        dh,
-                                                    );
-
-                                                    if let Some(win) =
-                                                        state.wm.all_windows().iter().find(|w| {
-                                                            w.surface.id() == target_surf.id()
+                                                    let is_layer_shell = {
+                                                        let mut target_id = surf.id();
+                                                        let popups = state.wm.get_popups();
+                                                        while let Some(popup) = popups
+                                                            .iter()
+                                                            .find(|p| p.surface.id() == target_id)
+                                                        {
+                                                            target_id =
+                                                                popup.parent_surface_id.clone();
+                                                        }
+                                                        state.wm.all_windows().iter().any(|w| {
+                                                            w.surface.id() == target_id
+                                                                && w.layer_surface.is_some()
                                                         })
-                                                    {
-                                                        let win_offset = state
-                                                            .styler
-                                                            .get_workspace_offset_for_surface(
-                                                                &win.surface.id(),
-                                                                state.wm.as_ref(),
-                                                            );
-                                                        let wx = win.x + win_offset;
-                                                        let wy = win.y;
-                                                        let ww = win.w as f64;
-                                                        let wh = win.h as f64;
-                                                        let center_x = wx + ww / 2.0;
-                                                        let center_y = wy + wh / 2.0;
+                                                    };
+                                                    if !is_layer_shell {
+                                                        let focused_id =
+                                                            state.wm.focus_window(&surf.id());
+                                                        let target_surf = state
+                                                            .surfaces
+                                                            .iter()
+                                                            .find(|s| s.id() == focused_id)
+                                                            .cloned()
+                                                            .unwrap_or_else(|| surf.clone());
+                                                        state.set_input_focus(
+                                                            Some(target_surf.clone()),
+                                                            dh,
+                                                        );
 
-                                                        let mut edges = 0;
-                                                        if self.cursor.x < center_x {
-                                                            edges |= 4; // Left
-                                                        } else {
-                                                            edges |= 8; // Right
-                                                        }
-                                                        if self.cursor.y < center_y {
-                                                            edges |= 1; // Top
-                                                        } else {
-                                                            edges |= 2; // Bottom
-                                                        }
+                                                        if let Some(win) = state
+                                                            .wm
+                                                            .all_windows()
+                                                            .iter()
+                                                            .find(|w| {
+                                                                w.surface.id() == target_surf.id()
+                                                            })
+                                                        {
+                                                            let win_offset = state
+                                                                .styler
+                                                                .get_workspace_offset_for_surface(
+                                                                    &win.surface.id(),
+                                                                    state.wm.as_ref(),
+                                                                );
+                                                            let wx = win.x + win_offset;
+                                                            let wy = win.y;
+                                                            let ww = win.w as f64;
+                                                            let wh = win.h as f64;
+                                                            let center_x = wx + ww / 2.0;
+                                                            let center_y = wy + wh / 2.0;
 
-                                                        let toplevel_id =
-                                                            win.toplevel.as_ref().map(|t| t.id());
-                                                        if let Some(toplevel_id) = toplevel_id {
-                                                            state.serial += 1;
-                                                            state.wm.begin_interactive_resize(
-                                                                &toplevel_id,
-                                                                edges,
-                                                                self.cursor.x,
-                                                                self.cursor.y,
-                                                                state.mode.size(),
-                                                                state.serial,
-                                                            );
+                                                            let mut edges = 0;
+                                                            if self.cursor.x < center_x {
+                                                                edges |= 4; // Left
+                                                            } else {
+                                                                edges |= 8; // Right
+                                                            }
+                                                            if self.cursor.y < center_y {
+                                                                edges |= 1; // Top
+                                                            } else {
+                                                                edges |= 2; // Bottom
+                                                            }
+
+                                                            let toplevel_id = win
+                                                                .toplevel
+                                                                .as_ref()
+                                                                .map(|t| t.id());
+                                                            if let Some(toplevel_id) = toplevel_id {
+                                                                state.serial += 1;
+                                                                state.wm.begin_interactive_resize(
+                                                                    &toplevel_id,
+                                                                    edges,
+                                                                    self.cursor.x,
+                                                                    self.cursor.y,
+                                                                    state.mode.size(),
+                                                                    state.serial,
+                                                                );
+                                                            }
                                                         }
                                                     }
                                                 }
