@@ -39,12 +39,11 @@ impl Card {
 
         let drm_fd = nix::unistd::dup(&drm_device).unwrap();
         let gpu_file = std::fs::File::from(drm_fd);
-
-        // let mut options = std::fs::OpenOptions::new();
-        // options.read(true);
-        // options.write(true);
-        // Card(options.open(path).unwrap())
-        Card(gpu_file, drm_device)
+        let card = Card(gpu_file, drm_device);
+        use drm::{ClientCapability, Device as _};
+        let _ = card.set_client_capability(ClientCapability::UniversalPlanes, true);
+        let _ = card.set_client_capability(ClientCapability::Atomic, true);
+        card
     }
 
     pub fn find_primary_gpu() -> Option<std::path::PathBuf> {
@@ -60,6 +59,89 @@ impl Card {
             return device.devnode().map(|p| p.to_path_buf());
         }
 
+        None
+    }
+
+    pub fn find_property(
+        &self,
+        handle: impl drm::control::ResourceHandle,
+        name: &str,
+    ) -> Option<drm::control::property::Handle> {
+        use drm::control::Device;
+        if let Ok(props) = self.get_properties(handle) {
+            let (handles, _) = props.as_props_and_values();
+            for &prop_handle in handles {
+                if let Ok(info) = self.get_property(prop_handle) {
+                    if info.name().to_str() == Ok(name) {
+                        return Some(prop_handle);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn find_primary_plane(
+        &self,
+        crtc_handle: drm::control::crtc::Handle,
+    ) -> Option<drm::control::plane::Handle> {
+        use drm::control::Device;
+        let resources = self.resource_handles().ok()?;
+        let planes = self.plane_handles().ok()?;
+
+        for plane_handle in planes {
+            let plane_info = self.get_plane(plane_handle).ok()?;
+
+            let compatible_crtcs = resources.filter_crtcs(plane_info.possible_crtcs());
+            if !compatible_crtcs.contains(&crtc_handle) {
+                continue;
+            }
+
+            if let Ok(props) = self.get_properties(plane_handle) {
+                let (prop_handles, prop_values) = props.as_props_and_values();
+                for (&prop_handle, &prop_value) in prop_handles.iter().zip(prop_values.iter()) {
+                    if let Ok(prop_info) = self.get_property(prop_handle) {
+                        if prop_info.name().to_str() == Ok("type") {
+                            if prop_value == (drm::control::PlaneType::Primary as u32).into() {
+                                return Some(plane_handle);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn find_cursor_plane(
+        &self,
+        crtc_handle: drm::control::crtc::Handle,
+    ) -> Option<drm::control::plane::Handle> {
+        use drm::control::Device;
+        let resources = self.resource_handles().ok()?;
+        let planes = self.plane_handles().ok()?;
+
+        for plane_handle in planes {
+            let plane_info = self.get_plane(plane_handle).ok()?;
+
+            let compatible_crtcs = resources.filter_crtcs(plane_info.possible_crtcs());
+            if !compatible_crtcs.contains(&crtc_handle) {
+                continue;
+            }
+
+            if let Ok(props) = self.get_properties(plane_handle) {
+                let (prop_handles, prop_values) = props.as_props_and_values();
+                for (&prop_handle, &prop_value) in prop_handles.iter().zip(prop_values.iter()) {
+                    if let Ok(prop_info) = self.get_property(prop_handle) {
+                        if prop_info.name().to_str() == Ok("type") {
+                            if prop_value == (drm::control::PlaneType::Cursor as u32).into() {
+                                return Some(plane_handle);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         None
     }
 
@@ -141,9 +223,40 @@ impl Card {
                 if let Some(mode) = connector.modes().get(0) {
                     info!("Selected mode: {:?}", mode.name());
 
-                    // Match this connector to a CRTC (The display controller)
                     let crtc_handle = find_crtc(self, &resources, &connector);
                     info!("Linked to CRTC: {:?}", crtc_handle);
+
+                    let crtc_info = self.get_crtc(crtc_handle).expect("Failed to get CRTC info");
+                    let gamma_size = crtc_info.gamma_length();
+
+                    let primary_plane = self
+                        .find_primary_plane(crtc_handle)
+                        .expect("Failed to find primary plane compatible with CRTC");
+
+                    let crtc_active_prop = self
+                        .find_property(crtc_handle, "ACTIVE")
+                        .expect("Failed to find CRTC ACTIVE property");
+                    let crtc_mode_id_prop = self
+                        .find_property(crtc_handle, "MODE_ID")
+                        .expect("Failed to find CRTC MODE_ID property");
+                    let crtc_gamma_lut_prop = self
+                        .find_property(crtc_handle, "GAMMA_LUT")
+                        .expect("Failed to find CRTC GAMMA_LUT property");
+                    let plane_crtc_id_prop = self
+                        .find_property(primary_plane, "CRTC_ID")
+                        .expect("Failed to find Plane CRTC_ID property");
+                    let plane_fb_id_prop = self
+                        .find_property(primary_plane, "FB_ID")
+                        .expect("Failed to find Plane FB_ID property");
+                    let conn_crtc_id_prop = self
+                        .find_property(connector_handle, "CRTC_ID")
+                        .expect("Failed to find Connector CRTC_ID property");
+
+                    let cursor_plane = self.find_cursor_plane(crtc_handle);
+                    let cursor_crtc_id_prop =
+                        cursor_plane.and_then(|p| self.find_property(p, "CRTC_ID"));
+                    let cursor_fb_id_prop =
+                        cursor_plane.and_then(|p| self.find_property(p, "FB_ID"));
 
                     resource = Some(CardInfo {
                         mode: mode.clone(),
@@ -151,6 +264,17 @@ impl Card {
                         connector_handle,
                         name: output_name,
                         description: output_description,
+                        gamma_size,
+                        primary_plane,
+                        crtc_active_prop,
+                        crtc_mode_id_prop,
+                        crtc_gamma_lut_prop,
+                        plane_crtc_id_prop,
+                        plane_fb_id_prop,
+                        conn_crtc_id_prop,
+                        cursor_plane,
+                        cursor_crtc_id_prop,
+                        cursor_fb_id_prop,
                     });
 
                     break;
@@ -179,6 +303,15 @@ impl std::fmt::Display for Card {
     }
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
+pub struct DrmColorLut {
+    pub red: u16,
+    pub green: u16,
+    pub blue: u16,
+    pub reserved: u16,
+}
+
 #[derive(Clone)]
 #[allow(unused)]
 pub struct CardInfo {
@@ -187,6 +320,17 @@ pub struct CardInfo {
     pub connector_handle: drm::control::connector::Handle,
     pub name: String,
     pub description: String,
+    pub gamma_size: u32,
+    pub primary_plane: drm::control::plane::Handle,
+    pub crtc_active_prop: drm::control::property::Handle,
+    pub crtc_mode_id_prop: drm::control::property::Handle,
+    pub crtc_gamma_lut_prop: drm::control::property::Handle,
+    pub plane_crtc_id_prop: drm::control::property::Handle,
+    pub plane_fb_id_prop: drm::control::property::Handle,
+    pub conn_crtc_id_prop: drm::control::property::Handle,
+    pub cursor_plane: Option<drm::control::plane::Handle>,
+    pub cursor_crtc_id_prop: Option<drm::control::property::Handle>,
+    pub cursor_fb_id_prop: Option<drm::control::property::Handle>,
 }
 
 fn find_crtc(

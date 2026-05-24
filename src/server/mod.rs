@@ -246,6 +246,7 @@ pub struct Composer {
     pub pending_scales: HashMap<ObjectId, i32>,
     pub viewports: HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
     pub surface_to_viewport: HashMap<ObjectId, ObjectId>,
+    pub pending_gamma: Option<Vec<crate::gpu::DrmColorLut>>,
 
     pub data_sources: HashMap<ObjectId, (wl_data_source::WlDataSource, Vec<String>)>,
     pub data_control_sources: HashMap<
@@ -383,7 +384,7 @@ impl Composer {
             window_surfaces: Vec::new(),
             wm,
             styler,
-            cursor_pos: (0., 0.),
+            cursor_pos: (mode.size().0 as f64 / 2.0, mode.size().1 as f64 / 2.0),
 
             pending_frame_callbacks: HashMap::new(),
             active_frame_callbacks: Vec::new(),
@@ -436,6 +437,7 @@ impl Composer {
             pending_scales: HashMap::new(),
             viewports: HashMap::new(),
             surface_to_viewport: HashMap::new(),
+            pending_gamma: None,
 
             data_sources: HashMap::new(),
             data_control_sources: HashMap::new(),

@@ -5,6 +5,7 @@ pub mod data_control;
 pub mod decoration;
 pub mod dmabuf;
 pub mod fifo;
+pub mod gamma_control;
 pub mod input_method;
 pub mod layer_shell;
 pub mod linux_drm_syncobj;

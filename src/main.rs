@@ -4,6 +4,8 @@ use std::{cell::RefCell, os::fd::AsFd, rc::Rc, sync::Arc};
 
 use ash::vk;
 use drm::control::Device as _;
+use drm::control::atomic::AtomicModeReq;
+use drm::control::AtomicCommitFlags;
 use gbm::{BufferObjectFlags, Device, Format};
 use libseat::Seat;
 use nix::{poll::PollTimeout, sys::epoll};
@@ -39,6 +41,7 @@ use wayland_protocols::xdg::dialog::v1::server::xdg_wm_dialog_v1::XdgWmDialogV1;
 use wayland_protocols::xdg::activation::v1::server::xdg_activation_v1::XdgActivationV1;
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1;
 use wayland_protocols_wlr::data_control::v1::server::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
+use wayland_protocols_wlr::gamma_control::v1::server::zwlr_gamma_control_manager_v1::ZwlrGammaControlManagerV1;
 use wayland_protocols_wlr::layer_shell::v1::server::zwlr_layer_shell_v1::ZwlrLayerShellV1;
 use wayland_server::protocol::wl_data_device_manager::WlDataDeviceManager;
 use wayland_protocols::wp::linux_drm_syncobj::v1::server::wp_linux_drm_syncobj_manager_v1::WpLinuxDrmSyncobjManagerV1;
@@ -163,6 +166,7 @@ fn main() {
     dh.create_global::<Composer, ZwpInputMethodManagerV2, ()>(1, ());
     dh.create_global::<Composer, ZwpVirtualKeyboardManagerV1, ()>(1, ());
     dh.create_global::<Composer, ZwlrDataControlManagerV1, ()>(2, ());
+    dh.create_global::<Composer, ZwlrGammaControlManagerV1, ()>(1, ());
 
     let socket = ListeningSocket::bind_auto("wayland", 0..32).unwrap();
     let socket_name = socket.socket_name().unwrap().to_string_lossy().into_owned();
@@ -280,6 +284,7 @@ fn main() {
 
     let mut waiting_for_flip = false;
     let mut running = true;
+    let mut active_gamma_blob: Option<u64> = None;
 
     debug!("Started :)");
 
@@ -624,36 +629,119 @@ fn main() {
                 composer.drop_semaphores();
             }
 
-            if initial_modeset {
-                // Clear any hardware cursor that might be lingering
-                #[allow(deprecated)]
-                let _ = card.set_cursor::<Buffer<()>>(info.crtc_handle, None);
+            let mut gamma_to_apply: Option<u64> = None;
+            if let Some(lut) = composer.pending_gamma.take() {
+                if let Some(old_blob) = active_gamma_blob.take() {
+                    let _ = card.destroy_property_blob(old_blob);
+                }
 
-                card.set_crtc(
+                if lut.is_empty() {
+                    gamma_to_apply = Some(0);
+                } else {
+                    match card.create_property_blob(lut.as_slice()) {
+                        Ok(blob) => {
+                            let blob_id = match blob {
+                                drm::control::property::Value::Blob(id) => id,
+                                _ => 0,
+                            };
+                            if blob_id > 0 {
+                                active_gamma_blob = Some(blob_id);
+                                gamma_to_apply = Some(blob_id);
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to create property blob for GAMMA_LUT: {:?}", e);
+                        }
+                    }
+                }
+            }
+
+            if initial_modeset {
+                let mode_blob = card
+                    .create_property_blob(&info.mode)
+                    .expect("Failed to create mode blob");
+                let mut req = AtomicModeReq::new();
+
+                req.add_property(
                     info.crtc_handle,
-                    Some(frame.fb_handle),
-                    (0, 0),
-                    &[info.connector_handle],
-                    Some(info.mode),
-                )
-                .expect("Failed to set CRTC");
+                    info.crtc_active_prop,
+                    drm::control::property::Value::UnsignedRange(1),
+                );
+                req.add_property(info.crtc_handle, info.crtc_mode_id_prop, mode_blob);
+                req.add_property(
+                    info.connector_handle,
+                    info.conn_crtc_id_prop,
+                    drm::control::property::Value::CRTC(Some(info.crtc_handle)),
+                );
+                req.add_property(
+                    info.primary_plane,
+                    info.plane_crtc_id_prop,
+                    drm::control::property::Value::CRTC(Some(info.crtc_handle)),
+                );
+                req.add_property(
+                    info.primary_plane,
+                    info.plane_fb_id_prop,
+                    drm::control::property::Value::Framebuffer(Some(frame.fb_handle)),
+                );
+
+                // Clear any hardware cursor plane atomically
+                if let Some(cursor_plane) = info.cursor_plane {
+                    if let Some(cursor_crtc_id_prop) = info.cursor_crtc_id_prop {
+                        req.add_property(
+                            cursor_plane,
+                            cursor_crtc_id_prop,
+                            drm::control::property::Value::CRTC(None),
+                        );
+                    }
+                    if let Some(cursor_fb_id_prop) = info.cursor_fb_id_prop {
+                        req.add_property(
+                            cursor_plane,
+                            cursor_fb_id_prop,
+                            drm::control::property::Value::Framebuffer(None),
+                        );
+                    }
+                }
+
+                if let Some(gamma_val) = gamma_to_apply {
+                    req.add_property(
+                        info.crtc_handle,
+                        info.crtc_gamma_lut_prop,
+                        drm::control::property::Value::Blob(gamma_val),
+                    );
+                }
+
+                card.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, req)
+                    .expect("Failed to set initial atomic CRTC modeset");
 
                 initial_modeset = false;
                 frame_index += 1;
                 composer.needs_redraw = true;
             } else {
-                match card.page_flip(
-                    info.crtc_handle,
-                    frame.fb_handle,
-                    drm::control::PageFlipFlags::EVENT,
-                    None, // No user data for now
+                let mut req = AtomicModeReq::new();
+                req.add_property(
+                    info.primary_plane,
+                    info.plane_fb_id_prop,
+                    drm::control::property::Value::Framebuffer(Some(frame.fb_handle)),
+                );
+
+                if let Some(gamma_val) = gamma_to_apply {
+                    req.add_property(
+                        info.crtc_handle,
+                        info.crtc_gamma_lut_prop,
+                        drm::control::property::Value::Blob(gamma_val),
+                    );
+                }
+
+                match card.atomic_commit(
+                    AtomicCommitFlags::PAGE_FLIP_EVENT | AtomicCommitFlags::NONBLOCK,
+                    req,
                 ) {
                     Ok(_) => {
                         waiting_for_flip = true;
                         frame_index += 1;
                     }
                     Err(e) => {
-                        error!("Failed to page flip: {}", e);
+                        error!("Failed to page flip atomically: {}", e);
                         composer.needs_redraw = true; // Try again next loop
                     }
                 }
@@ -666,6 +754,10 @@ fn main() {
     info!("Tearing down swapchain");
     for frame in swapchain {
         unsafe { frame.destroy(&vkctx.device, &card) };
+    }
+
+    if let Some(blob_id) = active_gamma_blob {
+        let _ = card.destroy_property_blob(blob_id);
     }
 
     // we drop the composer, ensuring all Arc<VulkanTextureInner> references are dropped
