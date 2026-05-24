@@ -352,6 +352,8 @@ pub trait WindowManager {
     fn focus_before_workspace(&mut self) -> bool;
     /// Focus the workspace after the current workspace
     fn focus_after_workspace(&mut self) -> bool;
+    /// Focus a specific workspace by ID
+    fn focus_workspace(&mut self, id: usize) -> bool;
 
     /// Begin workspace swiping gesture
     fn begin_workspace_swipe(&mut self);
@@ -373,6 +375,11 @@ pub trait WindowManager {
     fn is_resizing(&self) -> bool;
     /// Check if dragging is in progress
     fn is_dragging(&self) -> bool;
+
+    /// Check if workspace compaction shifted the active workspace in this frame
+    fn take_compaction_occurred(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, PartialEq)]

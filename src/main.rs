@@ -180,6 +180,9 @@ fn main() {
     let vkctx = Rc::new(VulkanContext::new());
     info!("Vulkan Ready. Entering the void.");
 
+    let mut config_manager = ConfigManager::new(None).expect("Unable to activate the manager");
+    config_manager.load().expect("Unable to load configuration");
+
     let mut composer = Composer::init(
         vkctx.clone(),
         info.mode.clone(),
@@ -188,13 +191,27 @@ fn main() {
         table_fd,
         Box::new(floating_wm::Wm::new()),
         Box::new(styler::DefaultStyler::new()),
+        config_manager,
     );
 
-    let mut config_manager = ConfigManager::new(None).expect("Unable to activate the manager");
-    config_manager.load().expect("Unable to load configuration");
+    let initial_style = {
+        let cfg = composer.config_manager.config.lock().unwrap();
+        cfg.style.clone()
+    };
+    composer.styler.update_style(initial_style);
+
+    composer
+        .config_manager
+        .run_hook("@start")
+        .unwrap_or_else(|e| {
+            error!("Failed to run @start hook: {:?}", e);
+        });
 
     let mut input = Input::new(shared_seat.clone(), width as f64, height as f64);
-    input.natural_scroll = true; // TODO:(config) Change this to false to disable natural scroll
+    input.natural_scroll = {
+        let cfg = composer.config_manager.config.lock().unwrap();
+        cfg.input.natural_scroll
+    };
 
     let epoll = epoll::Epoll::new(epoll::EpollCreateFlags::empty()).unwrap();
 
@@ -353,8 +370,15 @@ fn main() {
             }
         }
 
+        composer.process_config_commands(&dh);
+
         if !waiting_for_flip && composer.needs_redraw {
             let now = pattern::utils::time::gettime();
+            let style = {
+                let cfg = composer.config_manager.config.lock().unwrap();
+                cfg.style.clone()
+            };
+            composer.styler.update_style(style);
             let animating = composer.styler.tick(
                 now as f64,
                 composer.wm.as_ref(),

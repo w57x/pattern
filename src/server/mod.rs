@@ -52,6 +52,7 @@ use wayland_protocols_misc::zwp_input_method_v2::server::{
 };
 
 use crate::{
+    config::CompositorCommand,
     gpu::CardInfo,
     server::cursor_loader::CursorManager,
     vulkan::{SurfaceTexture, VulkanContext},
@@ -187,6 +188,7 @@ pub struct Composer {
     pub wm: Box<dyn crate::wm::WindowManager>,
     pub styler: Box<dyn crate::styler::Styler>,
     pub cursor_pos: (f64, f64),
+    pub config_manager: crate::config::ConfigManager,
 
     pub pending_frame_callbacks: HashMap<ObjectId, Vec<WlCallback>>,
     pub active_frame_callbacks: Vec<WlCallback>,
@@ -312,18 +314,34 @@ impl Composer {
         dmabuf_table_fd: std::os::unix::io::OwnedFd,
         wm: Box<dyn crate::wm::WindowManager>,
         styler: Box<dyn crate::styler::Styler>,
+        config_manager: crate::config::ConfigManager,
     ) -> Self {
         use nix::unistd::{ftruncate, write};
         use xkbcommon::xkb;
 
+        let (layout, variant, model, options, rules) = {
+            let cfg = config_manager.config.lock().unwrap();
+            (
+                cfg.input.kb_layout.clone(),
+                cfg.input.kb_variant.clone(),
+                cfg.input.kb_model.clone(),
+                cfg.input.kb_options.clone(),
+                cfg.input.kb_rules.clone(),
+            )
+        };
+
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
         let keymap = xkb::Keymap::new_from_names(
             &context,
-            "evdev",
-            "pc105",
-            "be",
-            "oss",
-            None,
+            if rules.is_empty() { "evdev" } else { &rules },
+            if model.is_empty() { "pc105" } else { &model },
+            &layout,
+            &variant,
+            if options.is_empty() {
+                None
+            } else {
+                Some(options)
+            },
             xkb::KEYMAP_COMPILE_NO_FLAGS,
         )
         .expect("Failed to create XKB Keymap");
@@ -374,6 +392,7 @@ impl Composer {
             keymap_fd,
             keymap_size,
             xkb_state,
+            config_manager,
 
             pointers: Vec::new(),
             swipe_gestures: HashMap::new(),
@@ -451,6 +470,195 @@ impl Composer {
 }
 
 impl Composer {
+    pub fn update_keymap(
+        &mut self,
+        layout: &str,
+        variant: &str,
+        model: &str,
+        options: &str,
+        rules: &str,
+    ) {
+        use nix::unistd::{ftruncate, write};
+        use std::os::fd::AsFd;
+        use xkbcommon::xkb;
+
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap = xkb::Keymap::new_from_names(
+            &context,
+            if rules.is_empty() { "evdev" } else { rules },
+            if model.is_empty() { "pc105" } else { model },
+            layout,
+            variant,
+            if options.is_empty() {
+                None
+            } else {
+                Some(options.to_string())
+            },
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )
+        .unwrap_or_else(|| {
+            xkb::Keymap::new_from_names(
+                &context,
+                "evdev",
+                "pc105",
+                "us",
+                "",
+                None,
+                xkb::KEYMAP_COMPILE_NO_FLAGS,
+            )
+            .expect("Failed to create fallback US keymap")
+        });
+
+        let keymap_string = keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);
+        let keymap_bytes = keymap_string.as_bytes();
+        let keymap_size = keymap_bytes.len() as u32 + 1;
+
+        let keymap_fd = memfd_create(
+            "pattern-keymap",
+            MFdFlags::MFD_CLOEXEC | MFdFlags::MFD_ALLOW_SEALING,
+        )
+        .unwrap();
+
+        ftruncate(keymap_fd.as_fd(), keymap_size as i64).unwrap();
+        write(keymap_fd.as_fd(), keymap_bytes).unwrap();
+        write(keymap_fd.as_fd(), &[0]).unwrap();
+
+        self.keymap_fd = keymap_fd;
+        self.keymap_size = keymap_size;
+        self.xkb_state = xkb::State::new(&keymap);
+
+        // Notify active keyboards
+        for keyboard in &self.keyboards {
+            keyboard.keymap(
+                wayland_server::protocol::wl_keyboard::KeymapFormat::XkbV1,
+                self.keymap_fd.as_fd(),
+                self.keymap_size,
+            );
+        }
+    }
+
+    pub fn process_config_commands(&mut self, dh: &wayland_server::DisplayHandle) {
+        let commands = {
+            let mut queue = self.config_manager.pending_commands.lock().unwrap();
+            std::mem::take(&mut *queue)
+        };
+
+        for cmd in commands {
+            match cmd {
+                CompositorCommand::Quit => {
+                    std::process::exit(0);
+                }
+                CompositorCommand::Exec { full_sh_cmd } => {
+                    let _ = std::process::Command::new("sh")
+                        .args(&["-c", &full_sh_cmd])
+                        .spawn();
+                }
+                CompositorCommand::CloseWindow { id } => {
+                    if let Some(win_id) = id {
+                        if let Some(window) = self
+                            .wm
+                            .all_windows()
+                            .into_iter()
+                            .find(|w| w.surface.id().protocol_id() == win_id)
+                        {
+                            if let Some(toplevel) = &window.toplevel {
+                                toplevel.close();
+                            }
+                        }
+                    } else {
+                        self.request_closing_active_client();
+                    }
+                }
+                CompositorCommand::FullscreenWindow { id, toggle, value } => {
+                    self.request_fullscreen_window(id, toggle, value);
+                }
+                CompositorCommand::FocusWorkspace { id, next, previous } => {
+                    let success = if next {
+                        self.wm.focus_after_workspace()
+                    } else if previous {
+                        self.wm.focus_before_workspace()
+                    } else if let Some(ws_id) = id {
+                        self.wm.focus_workspace(ws_id)
+                    } else {
+                        false
+                    };
+
+                    if success {
+                        self.needs_redraw = true;
+                        self.set_input_focus(self.wm.get_focused_window(), dh);
+                        self.update_pointer_focus(0);
+                    }
+                }
+                CompositorCommand::MoveWindowToWorkspace { id, workspace } => {
+                    let target_id = if let Some(win_id) = id {
+                        self.wm
+                            .all_windows()
+                            .into_iter()
+                            .find(|w| w.surface.id().protocol_id() == win_id)
+                            .map(|w| w.surface.id())
+                    } else {
+                        self.wm.get_focused_window().map(|s| s.id())
+                    };
+
+                    if let Some(surface_id) = target_id {
+                        self.wm.move_window_to_workspace(&surface_id, 0, workspace);
+                        self.needs_redraw = true;
+                        self.set_input_focus(self.wm.get_focused_window(), dh);
+                        self.update_pointer_focus(0);
+                    }
+                }
+                CompositorCommand::DragWindow | CompositorCommand::ResizeWindow => {}
+            }
+        }
+    }
+
+    pub fn request_fullscreen_window(&mut self, id: Option<u32>, toggle: bool, force_val: bool) {
+        let toplevel_id = if let Some(win_id) = id {
+            self.wm
+                .all_windows()
+                .into_iter()
+                .find(|w| w.surface.id().protocol_id() == win_id)
+                .and_then(|w| w.toplevel.as_ref().map(|t| t.id()))
+        } else {
+            // Find active focused window
+            if let Some(focused_surface) = &self.input_focus {
+                let focused_id = focused_surface.id();
+                self.wm
+                    .all_windows()
+                    .into_iter()
+                    .find(|w| w.surface.id() == focused_id)
+                    .and_then(|w| w.toplevel.as_ref().map(|t| t.id()))
+            } else {
+                None
+            }
+        };
+
+        if let Some(toplevel_id) = toplevel_id {
+            let current_fullscreen = self
+                .wm
+                .all_windows()
+                .into_iter()
+                .find(|w| w.toplevel.as_ref().map(|t| t.id()) == Some(toplevel_id.clone()))
+                .map(|w| w.fullscreen)
+                .unwrap_or(false);
+
+            let target_fullscreen = if toggle {
+                !current_fullscreen
+            } else {
+                force_val
+            };
+
+            self.serial += 1;
+            self.wm.set_fullscreen(
+                &toplevel_id,
+                target_fullscreen,
+                self.mode.size(),
+                self.serial,
+            );
+            self.needs_redraw = true;
+        }
+    }
+
     pub fn load_cursor_shape(&mut self, shape: wp_cursor_shape_device_v1::Shape) {
         self.cursor_manager.get_or_load(shape, &self.vkctx)
     }

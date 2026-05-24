@@ -45,7 +45,11 @@ impl Dispatch<WlSeat, ()> for Composer {
                 keyboard.keymap(wl_keyboard::KeymapFormat::XkbV1, fd, state.keymap_size);
 
                 if keyboard.version() >= 4 {
-                    keyboard.repeat_info(35, 300);
+                    let (rate, delay) = {
+                        let cfg = state.config_manager.config.lock().unwrap();
+                        (cfg.input.repeat_rate as i32, cfg.input.repeat_delay as i32)
+                    };
+                    keyboard.repeat_info(rate, delay);
                 }
 
                 if let Some(focused_surface) = &state.input_focus {

@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use crate::wm::*;
 use tracing::debug;
 use wayland_server::Resource;
@@ -9,6 +11,7 @@ pub struct Wm {
     pub resize_state: Option<(ObjectId, u32, f64, f64, f64, f64, i32, i32, i32, i32)>,
     pub workspace_swipe_offset: f64,
     pub is_swiping: bool,
+    pub compaction_occurred: Cell<bool>,
 }
 
 impl Wm {
@@ -20,6 +23,7 @@ impl Wm {
             resize_state: None,
             workspace_swipe_offset: 0.0,
             is_swiping: false,
+            compaction_occurred: Cell::new(false),
         }
     }
 
@@ -33,6 +37,61 @@ impl Wm {
             if slot.is_empty() {
                 *slot = Slot::Occupied(Workspace::new(i));
             }
+        }
+    }
+
+    fn compact_workspaces(&mut self) {
+        if self.outputs.is_empty() {
+            return;
+        }
+        let out = &mut self.outputs[0];
+
+        let ws_count = out.workspaces.inner.len();
+        let mut new_workspaces = vec![Slot::Empty; ws_count];
+        let mut write_idx = 0;
+        let mut active_ws_shifted = out.active_workspace;
+
+        for read_idx in 0..ws_count {
+            if let Some(Slot::Occupied(ws)) = out.workspaces.get(read_idx) {
+                if !ws.windows.is_empty() || read_idx == out.active_workspace {
+                    let mut compacted_ws = ws.clone();
+                    compacted_ws.id = write_idx;
+                    new_workspaces[write_idx] = Slot::Occupied(compacted_ws);
+                    if read_idx == out.active_workspace {
+                        active_ws_shifted = write_idx;
+                    }
+                    write_idx += 1;
+                }
+            }
+        }
+
+        // Fill remaining slots with empty workspaces
+        for idx in write_idx..ws_count {
+            new_workspaces[idx] = Slot::Occupied(Workspace::new(idx));
+        }
+
+        out.workspaces.inner = new_workspaces;
+        if out.active_workspace != active_ws_shifted {
+            out.active_workspace = active_ws_shifted;
+            self.compaction_occurred.set(true);
+        }
+    }
+
+    fn max_allowed_workspace(&self) -> usize {
+        let mut max_occupied = None;
+        if !self.outputs.is_empty() {
+            let out = &self.outputs[0];
+            for ws in out.workspaces.flatten() {
+                if !ws.windows.is_empty() {
+                    if max_occupied.map_or(true, |max| ws.id > max) {
+                        max_occupied = Some(ws.id);
+                    }
+                }
+            }
+        }
+        match max_occupied {
+            Some(idx) => idx + 1,
+            None => 0,
         }
     }
 
@@ -415,6 +474,7 @@ impl WindowManager for Wm {
                 self.resize_state = None;
             }
         }
+        self.compact_workspaces();
     }
 
     fn focus_window(&mut self, surface_id: &ObjectId) -> ObjectId {
@@ -1154,27 +1214,42 @@ impl WindowManager for Wm {
                     continue;
                 }
 
-                // Simple layout based on anchor
                 // Top=1, Bottom=2, Left=4, Right=8
-                let mut x = win.margin.3 as f64; // Left margin
-                let mut y = win.margin.0 as f64; // Top margin
+                let x;
+                let y;
 
+                // Vertical positioning and height
                 if (win.anchor & 1) != 0 && (win.anchor & 2) != 0 {
                     // Top and Bottom anchored
-                    win.h = screen_h - win.margin.0 - win.margin.2;
+                    win.h = (screen_h - win.margin.0 - win.margin.2).max(0);
                     win.geometry.h = win.h;
+                    y = win.margin.0 as f64;
+                } else if (win.anchor & 1) != 0 {
+                    // Top anchored only
+                    y = win.margin.0 as f64;
                 } else if (win.anchor & 2) != 0 {
-                    // Bottom anchored
+                    // Bottom anchored only
                     y = (screen_h - win.h - win.margin.2) as f64;
+                } else {
+                    // Centered vertically
+                    y = ((screen_h - win.h) / 2) as f64;
                 }
 
+                // Horizontal positioning and width
                 if (win.anchor & 4) != 0 && (win.anchor & 8) != 0 {
                     // Left and Right anchored
-                    win.w = screen_w - win.margin.1 - win.margin.3;
+                    win.w = (screen_w - win.margin.1 - win.margin.3).max(0);
                     win.geometry.w = win.w;
+                    x = win.margin.3 as f64;
+                } else if (win.anchor & 4) != 0 {
+                    // Left anchored only
+                    x = win.margin.3 as f64;
                 } else if (win.anchor & 8) != 0 {
-                    // Right anchored
+                    // Right anchored only
                     x = (screen_w - win.w - win.margin.1) as f64;
+                } else {
+                    // Centered horizontally
+                    x = ((screen_w - win.w) / 2) as f64;
                 }
 
                 win.x = x;
@@ -1407,6 +1482,7 @@ impl WindowManager for Wm {
             if let Some(output) = self.outputs.iter_mut().find(|o| o.id == output_id) {
                 if let Some(Slot::Occupied(ws)) = output.workspaces.get_mut(workspace_id) {
                     ws.windows.push(window);
+                    self.compact_workspaces();
                     return true;
                 }
             }
@@ -1418,6 +1494,7 @@ impl WindowManager for Wm {
                     ws.windows.push(window);
                 }
             }
+            self.compact_workspaces();
         }
         false
     }
@@ -1447,6 +1524,9 @@ impl WindowManager for Wm {
         let current_ws = self.outputs[0].active_workspace;
         if current_ws < usize::MAX {
             let target_ws = current_ws + 1;
+            if target_ws > self.max_allowed_workspace() {
+                return false;
+            }
             self.ensure_workspace(target_ws);
             self.outputs[0].active_workspace = target_ws;
             debug!("[wm] focused after (T{})", target_ws);
@@ -1454,6 +1534,19 @@ impl WindowManager for Wm {
         } else {
             false
         }
+    }
+
+    fn focus_workspace(&mut self, id: usize) -> bool {
+        if self.outputs.is_empty() {
+            return false;
+        }
+        if id > self.max_allowed_workspace() {
+            return false;
+        }
+        self.ensure_workspace(id);
+        self.outputs[0].active_workspace = id;
+        debug!("[wm] focused workspace {}", id);
+        true
     }
 
     fn begin_workspace_swipe(&mut self) {
@@ -1470,11 +1563,16 @@ impl WindowManager for Wm {
             } else if active_ws == usize::MAX && new_offset < 0.0 {
                 self.workspace_swipe_offset = 0.0;
             } else {
+                let mut allowed_offset = new_offset;
                 if new_offset < 0.0 && active_ws < usize::MAX {
                     let target_ws = active_ws + 1;
-                    self.ensure_workspace(target_ws);
+                    if target_ws > self.max_allowed_workspace() {
+                        allowed_offset = 0.0;
+                    } else {
+                        self.ensure_workspace(target_ws);
+                    }
                 }
-                self.workspace_swipe_offset = new_offset;
+                self.workspace_swipe_offset = allowed_offset;
             }
         }
     }
@@ -1545,5 +1643,9 @@ impl WindowManager for Wm {
 
     fn is_dragging(&self) -> bool {
         self.drag_state.is_some()
+    }
+
+    fn take_compaction_occurred(&self) -> bool {
+        self.compaction_occurred.take()
     }
 }

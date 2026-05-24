@@ -135,6 +135,9 @@ pub trait Styler {
     ) -> f64 {
         0.0
     }
+
+    /// Update the styling configuration dynamically.
+    fn update_style(&mut self, _style: StyleConfig) {}
 }
 
 pub struct DefaultStyler {
@@ -446,6 +449,10 @@ impl DefaultStyler {
 }
 
 impl Styler for DefaultStyler {
+    fn update_style(&mut self, style: StyleConfig) {
+        self.style = style;
+    }
+
     fn get_workspace_offset_for_surface(
         &self,
         surface_id: &ObjectId,
@@ -470,7 +477,15 @@ impl Styler for DefaultStyler {
         let wm_is_swiping = wm.is_workspace_swiping();
         let screen_w = screen_size.0 as f64;
 
-        if wm_is_swiping {
+        if wm.take_compaction_occurred() {
+            self.active_workspace = wm_active_ws;
+            self.workspace_offset.current = 0.0;
+            self.workspace_offset.target = 0.0;
+            self.workspace_offset.start = 0.0;
+            self.workspace_offset.duration = 0.0;
+            self.prev_active_workspace = None;
+            self.is_swiping = false;
+        } else if wm_is_swiping {
             self.workspace_offset.current = wm.get_workspace_offset();
             self.workspace_offset.target = wm.get_workspace_offset();
             self.workspace_offset.duration = 0.0;
@@ -546,6 +561,9 @@ impl Styler for DefaultStyler {
             }
         }
 
+        let focused_surface = wm.get_focused_window();
+        let focused_id = focused_surface.as_ref().map(|s| s.id());
+
         let all_logical_windows = self.get_visible_logical_windows(wm);
 
         // 1. Reconciliation: Map WM state into Styler state
@@ -619,8 +637,24 @@ impl Styler for DefaultStyler {
                     anim_win.is_closing = false;
                     let in_cfg = &self.config.windows_in;
                     if in_cfg.enabled {
+                        let target_opacity = if render_layer == 2 {
+                            let is_active = Some(id.clone()) == focused_id;
+                            if logical_win.fullscreen {
+                                self.style.fullscreen_opacity
+                            } else if is_active {
+                                self.style.active_opacity
+                            } else {
+                                if self.style.dim_inactive {
+                                    self.style.inactive_opacity * self.style.dim_strength
+                                } else {
+                                    self.style.inactive_opacity
+                                }
+                            }
+                        } else {
+                            1.0
+                        };
                         anim_win.alpha.set_target(
-                            1.0,
+                            target_opacity,
                             now_ms,
                             self.config.fade_in.duration,
                             self.config.fade_in.curve,
@@ -628,6 +662,36 @@ impl Styler for DefaultStyler {
                         anim_win
                             .scale
                             .set_target(1.0, now_ms, in_cfg.duration, in_cfg.curve);
+                    }
+                } else {
+                    // Update opacity target for standard windows
+                    if render_layer == 2 {
+                        let is_active = Some(id.clone()) == focused_id;
+                        let target_opacity = if logical_win.fullscreen {
+                            self.style.fullscreen_opacity
+                        } else if is_active {
+                            self.style.active_opacity
+                        } else {
+                            if self.style.dim_inactive {
+                                self.style.inactive_opacity * self.style.dim_strength
+                            } else {
+                                self.style.inactive_opacity
+                            }
+                        };
+                        anim_win.alpha.set_target(
+                            target_opacity,
+                            now_ms,
+                            self.config.fade_in.duration,
+                            self.config.fade_in.curve,
+                        );
+                    } else {
+                        // Ensure non-normal layers target 1.0
+                        anim_win.alpha.set_target(
+                            1.0,
+                            now_ms,
+                            self.config.fade_in.duration,
+                            self.config.fade_in.curve,
+                        );
                     }
                 }
             } else {
@@ -649,6 +713,23 @@ impl Styler for DefaultStyler {
                     new_anim_win.workspace_id = wm.get_workspace_id_for_window(&id);
                 }
 
+                let target_opacity = if render_layer == 2 {
+                    let is_active = Some(id.clone()) == focused_id;
+                    if logical_win.fullscreen {
+                        self.style.fullscreen_opacity
+                    } else if is_active {
+                        self.style.active_opacity
+                    } else {
+                        if self.style.dim_inactive {
+                            self.style.inactive_opacity * self.style.dim_strength
+                        } else {
+                            self.style.inactive_opacity
+                        }
+                    }
+                } else {
+                    1.0
+                };
+
                 let in_cfg = &self.config.windows_in;
                 if in_cfg.enabled {
                     if in_cfg.style_name == "popin" {
@@ -656,7 +737,7 @@ impl Styler for DefaultStyler {
                         new_anim_win.scale.start = 0.8;
                     }
                     new_anim_win.alpha.set_target(
-                        1.0,
+                        target_opacity,
                         now_ms,
                         self.config.fade_in.duration,
                         self.config.fade_in.curve,
@@ -665,8 +746,8 @@ impl Styler for DefaultStyler {
                         .scale
                         .set_target(1.0, now_ms, in_cfg.duration, in_cfg.curve);
                 } else {
-                    new_anim_win.alpha.current = 1.0;
-                    new_anim_win.alpha.target = 1.0;
+                    new_anim_win.alpha.current = target_opacity;
+                    new_anim_win.alpha.target = target_opacity;
                     new_anim_win.scale.current = 1.0;
                     new_anim_win.scale.target = 1.0;
                 }
@@ -745,6 +826,8 @@ impl Styler for DefaultStyler {
             }
         }
 
+        let is_sliding = self.is_swiping || self.workspace_offset.current.abs() > 0.001;
+
         let get_sort_key = |id: &ObjectId| -> u32 {
             if let Some(win) = all_logical.iter().find(|w| &w.surface.id() == id) {
                 let is_fullscreen = win.fullscreen && win.layer_surface.is_none();
@@ -761,12 +844,14 @@ impl Styler for DefaultStyler {
                 };
                 match base_layer {
                     2 if is_fullscreen => 4,
-                    4 => 5,
+                    3 if is_sliding => 5,
+                    4 => 6,
                     other => other,
                 }
             } else if let Some(anim_win) = self.windows.get(id) {
                 match anim_win.render_layer {
-                    4 => 5,
+                    3 if is_sliding => 5,
+                    4 => 6,
                     other => other,
                 }
             } else {
@@ -971,6 +1056,8 @@ impl Styler for DefaultStyler {
         all_windows.extend(wm.get_top());
         all_windows.extend(wm.get_overlay());
 
+        let is_sliding = self.is_swiping || self.workspace_offset.current.abs() > 0.001;
+
         let get_sort_key = |win: &crate::wm::WindowState| -> u32 {
             let is_fullscreen = win.fullscreen && win.layer_surface.is_none();
             let base_layer = if win.layer_surface.is_none() {
@@ -986,7 +1073,8 @@ impl Styler for DefaultStyler {
             };
             match base_layer {
                 2 if is_fullscreen => 4,
-                4 => 5,
+                3 if is_sliding => 5,
+                4 => 6,
                 other => other,
             }
         };
