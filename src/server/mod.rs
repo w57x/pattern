@@ -602,6 +602,7 @@ impl Composer {
 
                     if let Some(surface_id) = target_id {
                         self.wm.move_window_to_workspace(&surface_id, 0, workspace);
+                        self.wm.focus_workspace(workspace as usize);
                         self.needs_redraw = true;
                         self.set_input_focus(self.wm.get_focused_window(), dh);
                         self.update_pointer_focus(0);

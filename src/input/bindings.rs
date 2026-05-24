@@ -81,6 +81,7 @@ pub fn execute_compositor_command(
                 state
                     .wm
                     .move_window_to_workspace(&surface_id, 0, *workspace);
+                state.wm.focus_workspace(*workspace as usize);
                 state.needs_redraw = true;
                 state.set_input_focus(state.wm.get_focused_window(), dh);
                 state.update_pointer_focus(0);
