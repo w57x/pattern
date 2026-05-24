@@ -1,4 +1,4 @@
-use crate::config::keybinds::{KeyPattern, KeySpec};
+use crate::config::keybinds::{KeyPattern, KeySpec, keysym_to_lower};
 use crate::config::{CompositorCommand, StoredAction};
 use crate::{input::Mods, server::Composer};
 use std::process::Command;
@@ -107,9 +107,10 @@ pub fn handle_keybinding(
         return BindingAction::None;
     }
 
+    let lower_keysym = keysym_to_lower(keysym);
     let key_pattern_keysym = KeyPattern {
         mods,
-        key: KeySpec::Keysym(keysym.raw()),
+        key: KeySpec::Keysym(lower_keysym.raw()),
     };
     let key_pattern_keycode = KeyPattern {
         mods,

@@ -52,8 +52,20 @@ pub fn parse_keybind(chord: &str) -> Option<KeyPattern> {
         if keysym.raw() == xkb::keysyms::KEY_NoSymbol {
             return None;
         }
-        KeySpec::Keysym(keysym.raw())
+        let lower_keysym = keysym_to_lower(keysym);
+        KeySpec::Keysym(lower_keysym.raw())
     };
 
     Some(KeyPattern { mods, key })
+}
+
+pub fn keysym_to_lower(keysym: xkb::Keysym) -> xkb::Keysym {
+    let name = xkb::keysym_get_name(keysym);
+    let lower_name = name.to_lowercase();
+    let lower_keysym = xkb::keysym_from_name(&lower_name, xkb::KEYSYM_CASE_INSENSITIVE);
+    if lower_keysym.raw() == xkb::keysyms::KEY_NoSymbol {
+        keysym
+    } else {
+        lower_keysym
+    }
 }
