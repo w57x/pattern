@@ -126,6 +126,15 @@ pub trait Styler {
     fn blur_passes(&self) -> u32 {
         0
     }
+
+    /// Returns the workspace offset for a given surface.
+    fn get_workspace_offset_for_surface(
+        &self,
+        _surface_id: &ObjectId,
+        _wm: &dyn crate::wm::WindowManager,
+    ) -> f64 {
+        0.0
+    }
 }
 
 pub struct DefaultStyler {
@@ -437,6 +446,14 @@ impl DefaultStyler {
 }
 
 impl Styler for DefaultStyler {
+    fn get_workspace_offset_for_surface(
+        &self,
+        surface_id: &ObjectId,
+        wm: &dyn crate::wm::WindowManager,
+    ) -> f64 {
+        self.get_workspace_offset_for_surface(surface_id, wm)
+    }
+
     fn tick(
         &mut self,
         now_ms: f64,
@@ -728,9 +745,38 @@ impl Styler for DefaultStyler {
             }
         }
 
+        let get_sort_key = |id: &ObjectId| -> u32 {
+            if let Some(win) = all_logical.iter().find(|w| &w.surface.id() == id) {
+                let is_fullscreen = win.fullscreen && win.layer_surface.is_none();
+                let base_layer = if win.layer_surface.is_none() {
+                    2
+                } else {
+                    match win.layer {
+                        0 => 0,
+                        1 => 1,
+                        2 => 3,
+                        3 => 4,
+                        _ => 3,
+                    }
+                };
+                match base_layer {
+                    2 if is_fullscreen => 4,
+                    4 => 5,
+                    other => other,
+                }
+            } else if let Some(anim_win) = self.windows.get(id) {
+                match anim_win.render_layer {
+                    4 => 5,
+                    other => other,
+                }
+            } else {
+                2
+            }
+        };
+
         // Sort stably by render_layer so we don't break the WM's internal focus order,
         // but we ensure layers (background, workspace, overlay) are respected.
-        render_order.sort_by_key(|id| self.windows.get(id).map(|w| w.render_layer).unwrap_or(2));
+        render_order.sort_by_key(|id| get_sort_key(id));
 
         for id in render_order {
             if let Some(anim_win) = self.windows.get(&id) {
@@ -924,6 +970,27 @@ impl Styler for DefaultStyler {
         all_windows.extend(wm.get_workspace_windows());
         all_windows.extend(wm.get_top());
         all_windows.extend(wm.get_overlay());
+
+        let get_sort_key = |win: &crate::wm::WindowState| -> u32 {
+            let is_fullscreen = win.fullscreen && win.layer_surface.is_none();
+            let base_layer = if win.layer_surface.is_none() {
+                2
+            } else {
+                match win.layer {
+                    0 => 0,
+                    1 => 1,
+                    2 => 3,
+                    3 => 4,
+                    _ => 3,
+                }
+            };
+            match base_layer {
+                2 if is_fullscreen => 4,
+                4 => 5,
+                other => other,
+            }
+        };
+        all_windows.sort_by_key(|win| get_sort_key(win));
 
         let all_windows_cloned = all_windows.clone();
 

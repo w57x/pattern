@@ -369,6 +369,10 @@ pub trait WindowManager {
     fn get_workspace_windows_by_id(&self, workspace_id: usize) -> Vec<WindowState>;
     /// Get the workspace ID of a window
     fn get_workspace_id_for_window(&self, surface_id: &ObjectId) -> Option<usize>;
+    /// Check if resizing is in progress
+    fn is_resizing(&self) -> bool;
+    /// Check if dragging is in progress
+    fn is_dragging(&self) -> bool;
 }
 
 #[derive(Clone, PartialEq)]

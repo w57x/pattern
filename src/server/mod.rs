@@ -583,14 +583,9 @@ impl Composer {
 
     pub fn set_input_focus(
         &mut self,
-        surface: Option<WlSurface>,
+        mut surface: Option<WlSurface>,
         dh: &wayland_server::DisplayHandle,
     ) {
-        if self.input_focus.as_ref().map(|s| s.id()) == surface.as_ref().map(|s| s.id()) {
-            return;
-        }
-
-        let mut can_focus = true;
         if let Some(surf) = &surface {
             if let Some(win) = self
                 .wm
@@ -599,12 +594,12 @@ impl Composer {
                 .find(|w| w.surface.id() == surf.id())
             {
                 if win.layer_surface.is_some() && win.keyboard_interactivity == 0 {
-                    can_focus = false;
+                    surface = None;
                 }
             }
         }
 
-        if !can_focus {
+        if self.input_focus.as_ref().map(|s| s.id()) == surface.as_ref().map(|s| s.id()) {
             return;
         }
 
@@ -997,6 +992,11 @@ impl Composer {
     }
 
     pub fn update_pointer_focus(&mut self, time: u32) {
+        if self.wm.is_resizing() || self.wm.is_dragging() {
+            self.set_pointer_focus(None, 0.0, 0.0, time);
+            return;
+        }
+
         if let Some(grabbed_surface) = self.pointer_grab.clone() {
             if let Some((abs_x, abs_y)) = self.get_surface_position(&grabbed_surface.id()) {
                 let (cx, cy) = self.cursor_pos;
@@ -1093,11 +1093,9 @@ impl Composer {
         }
 
         // cleaning up cursor if needed
-        if let Some(old_id) = old_client_id {
-            if new_client_id != Some(old_id) {
-                self.cursor_surface = None;
-                self.cursor_shape = None;
-            }
+        if old_client_id != new_client_id {
+            self.cursor_surface = None;
+            self.cursor_shape = None;
         }
     }
 

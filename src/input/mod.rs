@@ -352,7 +352,35 @@ impl Input {
                         let hit_surface = hit.surface;
 
                         if is_left_click && is_pressed {
-                            if let Some(surf) = &hit_surface {
+                            if let Some((surf, edges, _shape)) =
+                                find_resize_edge_under_cursor(self.cursor, state)
+                            {
+                                let toplevel_id = state
+                                    .wm
+                                    .all_windows()
+                                    .iter()
+                                    .find(|w| w.surface.id() == surf.id())
+                                    .and_then(|w| w.toplevel.as_ref().map(|t| t.id()));
+                                if let Some(toplevel_id) = toplevel_id {
+                                    state.serial += 1;
+                                    state.wm.begin_interactive_resize(
+                                        &toplevel_id,
+                                        edges,
+                                        self.cursor.x,
+                                        self.cursor.y,
+                                        state.mode.size(),
+                                        state.serial,
+                                    );
+                                    let focused_id = state.wm.focus_window(&surf.id());
+                                    let target_surf = state
+                                        .surfaces
+                                        .iter()
+                                        .find(|s| s.id() == focused_id)
+                                        .cloned()
+                                        .unwrap_or_else(|| surf.clone());
+                                    state.set_input_focus(Some(target_surf), dh);
+                                }
+                            } else if let Some(surf) = &hit_surface {
                                 if !state.is_input_popup(&surf.id()) {
                                     let focused_id = state.wm.focus_window(&surf.id());
                                     let target_surf = state
@@ -729,6 +757,16 @@ impl Input {
     }
 
     fn route_pointer_motion(cursor: Vector2, state: &mut Composer, time: u32) {
+        if state.wm.is_resizing() || state.wm.is_dragging() {
+            return;
+        }
+
+        if let Some((_surf, _edges, shape)) = find_resize_edge_under_cursor(cursor, state) {
+            state.cursor_shape = Some(shape);
+            state.set_pointer_focus(None, 0.0, 0.0, time);
+            return;
+        }
+
         if let Some(grabbed_surface) = state.pointer_grab.clone() {
             if let Some((abs_x, abs_y)) = state.get_surface_position(&grabbed_surface.id()) {
                 let local_x = cursor.x - abs_x;
@@ -753,4 +791,89 @@ impl Input {
 
         state.set_pointer_focus(hit.surface, hit.local_x, hit.local_y, time);
     }
+}
+
+fn find_resize_edge_under_cursor(
+    cursor: Vector2,
+    state: &Composer,
+) -> Option<(
+    wayland_server::protocol::wl_surface::WlSurface,
+    u32,
+    wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_device_v1::Shape,
+)> {
+    use wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_device_v1::Shape;
+
+    if state.outputs.is_empty() {
+        return None;
+    }
+    let active_ws = state.wm.get_active_workspace();
+
+    // Iterate in reverse render order (topmost first)
+    let mut windows = state.wm.all_windows();
+    windows.retain(|w| {
+        w.layer_surface.is_none() && w.ssd && !w.maximized && !w.fullscreen && !w.minimized
+    });
+    windows.reverse();
+
+    let border_width = 8.0;
+
+    for win in windows {
+        let ws_id = state.wm.get_workspace_id_for_window(&win.surface.id());
+        if ws_id.is_some() && ws_id != Some(active_ws) {
+            continue;
+        }
+
+        let win_offset = state
+            .styler
+            .get_workspace_offset_for_surface(&win.surface.id(), state.wm.as_ref());
+        let wx = win.x + win_offset;
+        let wy = win.y;
+        let ww = win.w as f64;
+        let wh = win.h as f64;
+
+        let cx = cursor.x;
+        let cy = cursor.y;
+
+        if cx >= wx - border_width
+            && cx <= wx + ww + border_width
+            && cy >= wy - border_width
+            && cy <= wy + wh + border_width
+        {
+            let is_left = cx >= wx - border_width && cx <= wx + border_width;
+            let is_right = cx >= wx + ww - border_width && cx <= wx + ww + border_width;
+            let is_top = cy >= wy - border_width && cy <= wy + border_width;
+            let is_bottom = cy >= wy + wh - border_width && cy <= wy + wh + border_width;
+
+            let mut edges = 0;
+            if is_top {
+                edges |= 1;
+            }
+            if is_bottom {
+                edges |= 2;
+            }
+            if is_left {
+                edges |= 4;
+            }
+            if is_right {
+                edges |= 8;
+            }
+
+            if edges != 0 {
+                let shape = match edges {
+                    1 => Shape::NResize,
+                    2 => Shape::SResize,
+                    4 => Shape::WResize,
+                    8 => Shape::EResize,
+                    5 => Shape::NwResize,
+                    9 => Shape::NeResize,
+                    6 => Shape::SwResize,
+                    10 => Shape::SeResize,
+                    _ => Shape::Default,
+                };
+                return Some((win.surface.clone(), edges, shape));
+            }
+        }
+    }
+
+    None
 }

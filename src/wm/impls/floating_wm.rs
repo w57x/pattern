@@ -1238,24 +1238,27 @@ impl WindowManager for Wm {
 
         let out = &self.outputs[0];
 
-        if let Some(w) = out.overlay.windows.last() {
+        let focusable =
+            |w: &&WindowState| w.layer_surface.is_none() || w.keyboard_interactivity > 0;
+
+        if let Some(w) = out.overlay.windows.iter().filter(focusable).last() {
             return Some(w.surface.clone());
         }
 
-        if let Some(w) = out.top.windows.last() {
+        if let Some(w) = out.top.windows.iter().filter(focusable).last() {
             return Some(w.surface.clone());
         }
         if let Some(Slot::Occupied(ws)) = out.workspaces.get(out.active_workspace) {
-            if let Some(w) = ws.windows.last() {
+            if let Some(w) = ws.windows.iter().filter(focusable).last() {
                 return Some(w.surface.clone());
             }
         }
 
-        if let Some(w) = out.bottom.windows.last() {
+        if let Some(w) = out.bottom.windows.iter().filter(focusable).last() {
             return Some(w.surface.clone());
         }
 
-        if let Some(w) = out.background.windows.last() {
+        if let Some(w) = out.background.windows.iter().filter(focusable).last() {
             return Some(w.surface.clone());
         }
 
@@ -1534,5 +1537,13 @@ impl WindowManager for Wm {
             }
         }
         None
+    }
+
+    fn is_resizing(&self) -> bool {
+        self.resize_state.is_some()
+    }
+
+    fn is_dragging(&self) -> bool {
+        self.drag_state.is_some()
     }
 }
