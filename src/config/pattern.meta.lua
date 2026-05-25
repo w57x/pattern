@@ -35,6 +35,7 @@ function pattern.config(fragment) end
 
 ---@class InputGesturesConfig
 ---@field workspace_swipe_invert boolean Inverts the direction of workspace swipe gestures.
+---@field workspace_swipe_threshold? number The delta threshold in pixels to trigger a workspace switch on swipe.
 
 ---Registering or updating a gesture (keyed by fingers count).
 ---@param config GestureConfig Gesture configuration parameters.

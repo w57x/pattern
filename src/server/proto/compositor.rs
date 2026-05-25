@@ -202,7 +202,9 @@ impl Dispatch<WlSurface, ()> for Composer {
                             .wm
                             .set_layer_keyboard_interactivity(&surface.id(), interactivity);
                     }
-                    state.wm.recalculate_layer_layout(state.mode.size());
+                    state
+                        .wm
+                        .recalculate_layer_layout(state.mode.size(), state.serial);
                 }
 
                 // Apply subsurface positions (parent-commit double-buffered)

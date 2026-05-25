@@ -74,9 +74,19 @@ impl Default for InputConfig {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct GesturesConfig {
     pub workspace_swipe_invert: bool,
+    pub workspace_swipe_threshold: f64,
+}
+
+impl Default for GesturesConfig {
+    fn default() -> Self {
+        Self {
+            workspace_swipe_invert: true,
+            workspace_swipe_threshold: 300.0,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -327,6 +337,7 @@ impl ConfigManager {
 
             update_table!(table, "gestures", gestures_table => {
                 update_field!(gestures_table, cfg.gestures.workspace_swipe_invert, "workspace_swipe_invert", bool);
+                update_field!(gestures_table, cfg.gestures.workspace_swipe_threshold, "workspace_swipe_threshold", f64);
             });
 
             update_table!(table, "style", style_table => {

@@ -938,6 +938,14 @@ impl Composer {
     }
 
     pub fn cleanup_surface(&mut self, id: &ObjectId, dh: &wayland_server::DisplayHandle) {
+        let is_layer_surface = self
+            .wm
+            .all_windows()
+            .iter()
+            .find(|w| &w.surface.id() == id)
+            .map(|w| w.layer_surface.is_some())
+            .unwrap_or(false);
+
         self.wm.unmap_window(id);
         self.wm.unmap_popup(id);
         self.xdg_to_surface.retain(|_, surface| surface.id() != *id);
@@ -983,6 +991,12 @@ impl Composer {
         self.surfaces.retain(|s| &s.id() != id);
         self.subsurfaces.retain(|s| &s.surface.id() != id);
         self.input_popups.retain(|(_, s, _)| &s.id() != id);
+
+        if is_layer_surface {
+            self.serial += 1;
+            let size = self.mode.size();
+            self.wm.recalculate_layer_layout(size, self.serial);
+        }
     }
 
     pub fn broadcast_selection_offer(&self, dh: &wayland_server::DisplayHandle) {

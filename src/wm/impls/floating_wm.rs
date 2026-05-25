@@ -414,14 +414,16 @@ impl WindowManager for Wm {
         let ws = ws_slot.unwrap_mut();
         let offset = (ws.windows.len() * 30) as f64;
 
+        let (usable_x, usable_y) = (out.usable_area.x as f64, out.usable_area.y as f64);
+
         ws.windows.push(WindowState {
             surface,
             xdg_surface: None,
             toplevel: None,
             layer_surface: None,
             parent_id: None,
-            x: 100.0 + offset,
-            y: 100.0 + offset,
+            x: usable_x + 100.0 + offset,
+            y: usable_y + 100.0 + offset,
             w: 800,
             h: 600,
             geometry: Rect {
@@ -601,6 +603,13 @@ impl WindowManager for Wm {
             .iter()
             .find(|w| w.toplevel.as_ref().map(|t| t.id()) == Some(toplevel_id.clone()))
             .map(|w| w.surface.id());
+        let usable = self.outputs.first().map(|o| o.usable_area).unwrap_or(Rect {
+            x: 0,
+            y: 0,
+            w: screen_size.0 as i32,
+            h: screen_size.1 as i32,
+        });
+
         if let Some(id) = child_id {
             if let Some(window) = self.find_window_mut(&id) {
                 if window.maximized == maximized {
@@ -608,7 +617,7 @@ impl WindowManager for Wm {
                 }
 
                 let (target_w, target_h) = if maximized {
-                    (screen_size.0 as i32, screen_size.1 as i32)
+                    (usable.w, usable.h)
                 } else {
                     if let Some((_, _, w, h)) = window.saved_geometry {
                         (w, h)
@@ -1009,6 +1018,11 @@ impl WindowManager for Wm {
     }
 
     fn apply_committed_configure(&mut self, surface_id: &ObjectId, actual_w: i32, actual_h: i32) {
+        let (usable_x, usable_y) = self
+            .outputs
+            .first()
+            .map(|o| (o.usable_area.x, o.usable_area.y))
+            .unwrap_or((0, 0));
         let mut target_config = None;
         if let Some(window) = self.find_window_mut(surface_id) {
             if let Some(serial) = window.acknowledged_serial.take() {
@@ -1048,8 +1062,8 @@ impl WindowManager for Wm {
                 if !window.fullscreen {
                     if config.maximized && !window.maximized {
                         window.saved_geometry = Some((window.x, window.y, window.w, window.h));
-                        window.x = -window.geometry.x as f64;
-                        window.y = -window.geometry.y as f64;
+                        window.x = usable_x as f64 - window.geometry.x as f64;
+                        window.y = usable_y as f64 - window.geometry.y as f64;
                         window.w = config.w;
                         window.h = config.h;
                         window.maximized = true;
@@ -1062,8 +1076,8 @@ impl WindowManager for Wm {
                         }
                         window.maximized = false;
                     } else if window.maximized {
-                        window.x = -window.geometry.x as f64;
-                        window.y = -window.geometry.y as f64;
+                        window.x = usable_x as f64 - window.geometry.x as f64;
+                        window.y = usable_y as f64 - window.geometry.y as f64;
                         window.w = config.w;
                         window.h = config.h;
                     }
@@ -1189,14 +1203,20 @@ impl WindowManager for Wm {
         }
     }
 
-    fn recalculate_layer_layout(&mut self, screen_size: (u16, u16)) {
+    fn recalculate_layer_layout(&mut self, screen_size: (u16, u16), serial: u32) {
         if self.outputs.is_empty() {
             return;
         }
 
-        // Very basic layout calculation
-        // A complete implementation would handle exclusive zones, anchors, and margins properly
         let out = &mut self.outputs[0];
+
+        let screen_w = screen_size.0 as i32;
+        let screen_h = screen_size.1 as i32;
+
+        let mut u_top = 0;
+        let mut u_bottom = screen_h;
+        let mut u_left = 0;
+        let mut u_right = screen_w;
 
         let layers = vec![
             &mut out.background.windows,
@@ -1205,51 +1225,53 @@ impl WindowManager for Wm {
             &mut out.overlay.windows,
         ];
 
-        let screen_w = screen_size.0 as i32;
-        let screen_h = screen_size.1 as i32;
-
         for layer_list in layers {
             for win in layer_list.iter_mut() {
                 if win.layer_surface.is_none() {
                     continue;
                 }
 
-                // Top=1, Bottom=2, Left=4, Right=8
+                let (box_top, box_bottom, box_left, box_right) = if win.exclusive_zone == -1 {
+                    (0, screen_h, 0, screen_w)
+                } else {
+                    (u_top, u_bottom, u_left, u_right)
+                };
+
                 let x;
                 let y;
 
                 // Vertical positioning and height
                 if (win.anchor & 1) != 0 && (win.anchor & 2) != 0 {
                     // Top and Bottom anchored
-                    win.h = (screen_h - win.margin.0 - win.margin.2).max(0);
+                    win.h = (box_bottom - box_top - win.margin.0 - win.margin.2).max(0);
                     win.geometry.h = win.h;
-                    y = win.margin.0 as f64;
+                    y = (box_top + win.margin.0) as f64;
                 } else if (win.anchor & 1) != 0 {
                     // Top anchored only
-                    y = win.margin.0 as f64;
+                    y = (box_top + win.margin.0) as f64;
                 } else if (win.anchor & 2) != 0 {
                     // Bottom anchored only
-                    y = (screen_h - win.h - win.margin.2) as f64;
+                    y = (box_bottom - win.h - win.margin.2) as f64;
                 } else {
                     // Centered vertically
-                    y = ((screen_h - win.h) / 2) as f64;
+                    y = (box_top + (box_bottom - box_top - win.h) / 2) as f64;
                 }
 
                 // Horizontal positioning and width
                 if (win.anchor & 4) != 0 && (win.anchor & 8) != 0 {
                     // Left and Right anchored
-                    win.w = (screen_w - win.margin.1 - win.margin.3).max(0);
+                    win.w = (box_right - box_left - win.margin.3 - win.margin.1).max(0);
                     win.geometry.w = win.w;
-                    x = win.margin.3 as f64;
+                    x = (box_left + win.margin.3) as f64;
                 } else if (win.anchor & 4) != 0 {
                     // Left anchored only
-                    x = win.margin.3 as f64;
+                    x = (box_left + win.margin.3) as f64;
                 } else if (win.anchor & 8) != 0 {
                     // Right anchored only
-                    x = (screen_w - win.w - win.margin.1) as f64;
+                    x = (box_right - win.w - win.margin.1) as f64;
                 } else {
                     // Centered horizontally
-                    x = ((screen_w - win.w) / 2) as f64;
+                    x = (box_left + (box_right - box_left - win.w) / 2) as f64;
                 }
 
                 win.x = x;
@@ -1258,6 +1280,54 @@ impl WindowManager for Wm {
                 // Configure surface
                 if let Some(ls) = &win.layer_surface {
                     ls.configure(0, win.w as u32, win.h as u32);
+                }
+
+                // Update usable area bounds if this window has a valid exclusive zone
+                let set_bits = win.anchor.count_ones();
+                if (set_bits == 1 || set_bits == 3) && win.exclusive_zone > 0 {
+                    if (win.anchor & 1) != 0 && (win.anchor & 2) == 0 {
+                        u_top = box_top + win.exclusive_zone;
+                    } else if (win.anchor & 2) != 0 && (win.anchor & 1) == 0 {
+                        u_bottom = box_bottom - win.exclusive_zone;
+                    } else if (win.anchor & 4) != 0 && (win.anchor & 8) == 0 {
+                        u_left = box_left + win.exclusive_zone;
+                    } else if (win.anchor & 8) != 0 && (win.anchor & 4) == 0 {
+                        u_right = box_right - win.exclusive_zone;
+                    }
+                }
+            }
+        }
+
+        // Store the calculated usable area
+        out.usable_area = Rect {
+            x: u_left,
+            y: u_top,
+            w: (u_right - u_left).max(0),
+            h: (u_bottom - u_top).max(0),
+        };
+
+        // Update maximized windows to fit the new usable area
+        for out in &mut self.outputs {
+            let usable = out.usable_area;
+            for ws in out.workspaces.flatten_mut() {
+                for win in &mut ws.windows {
+                    if win.maximized && !win.fullscreen {
+                        win.w = usable.w;
+                        win.h = usable.h;
+                        win.x = usable.x as f64 - win.geometry.x as f64;
+                        win.y = usable.y as f64 - win.geometry.y as f64;
+
+                        if let (Some(toplevel), Some(xdg_surface)) =
+                            (&win.toplevel, &win.xdg_surface)
+                        {
+                            use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+                            let mut states = Vec::new();
+                            states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
+                            states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
+                            toplevel.configure(win.w, win.h, states);
+                            xdg_surface.configure(serial);
+                        }
+                    }
                 }
             }
         }
@@ -1577,13 +1647,12 @@ impl WindowManager for Wm {
         }
     }
 
-    fn end_workspace_swipe(&mut self) {
+    fn end_workspace_swipe(&mut self, threshold: f64) {
         if !self.is_swiping {
             return;
         }
         self.is_swiping = false;
 
-        let threshold = 180.0;
         let offset = self.workspace_swipe_offset;
         if offset > threshold {
             self.focus_before_workspace();

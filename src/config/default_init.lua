@@ -32,6 +32,7 @@ p.config({
 
 	gestures = {
 		workspace_swipe_invert = true,
+		workspace_swipe_threshold = 300.0,
 	},
 })
 

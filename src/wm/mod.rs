@@ -111,6 +111,7 @@ pub struct OutputState {
     pub bottom: DisplayLayerState,
     pub top: DisplayLayerState,
     pub overlay: DisplayLayerState,
+    pub usable_area: Rect,
 }
 
 impl OutputState {
@@ -127,6 +128,7 @@ impl OutputState {
             bottom: DisplayLayerState::new(),
             top: DisplayLayerState::new(),
             overlay: DisplayLayerState::new(),
+            usable_area: Rect::default(),
         }
     }
 }
@@ -292,7 +294,7 @@ pub trait WindowManager {
     fn set_layer_keyboard_interactivity(&mut self, surface_id: &ObjectId, interactivity: u32);
 
     /// Recalculates the layout of all layer surfaces on the screen based on their anchors, margins, and exclusive zones.
-    fn recalculate_layer_layout(&mut self, screen_size: (u16, u16));
+    fn recalculate_layer_layout(&mut self, screen_size: (u16, u16), serial: u32);
 
     // Scene Graph Queries
 
@@ -360,7 +362,7 @@ pub trait WindowManager {
     /// Update workspace swiping gesture progress
     fn update_workspace_swipe(&mut self, dx: f64);
     /// End workspace swiping gesture
-    fn end_workspace_swipe(&mut self);
+    fn end_workspace_swipe(&mut self, threshold: f64);
     /// Get the current horizontal offset of the workspace in pixels
     fn get_workspace_offset(&self) -> f64;
     /// Check if workspace is currently swiping

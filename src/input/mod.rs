@@ -743,7 +743,11 @@ impl Input {
                         }
                         GestureEvent::Swipe(GestureSwipeEvent::End(_)) => {
                             if self.swipe_fingers > 0 {
-                                state.wm.end_workspace_swipe();
+                                let threshold = {
+                                    let cfg = state.config_manager.config.lock().unwrap();
+                                    cfg.gestures.workspace_swipe_threshold
+                                };
+                                state.wm.end_workspace_swipe(threshold);
                                 self.swipe_fingers = 0;
                                 self.swipe_dx = 0.0;
                                 self.swipe_triggered = false;

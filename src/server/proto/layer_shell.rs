@@ -180,7 +180,10 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Composer {
             zwlr_layer_surface_v1::Request::AckConfigure { serial: _ } => {}
             zwlr_layer_surface_v1::Request::Destroy => {
                 state.cleanup_surface(&surface_id, dhandle);
-                state.wm.recalculate_layer_layout(state.mode.size());
+                state.serial += 1;
+                state
+                    .wm
+                    .recalculate_layer_layout(state.mode.size(), state.serial);
             }
             _ => {}
         }
