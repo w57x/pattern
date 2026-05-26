@@ -951,7 +951,7 @@ impl VulkanContext {
         }
     }
 
-    pub unsafe fn draw_frame(
+    pub fn draw_frame(
         &self,
         vk_fb: vk::Framebuffer,
         swapchain_image: vk::Image,
@@ -963,7 +963,7 @@ impl VulkanContext {
         signal_semaphores: &[vk::Semaphore],
         signal_values: &[u64],
         blur_chain: Option<&BlurChain>,
-        blur_passes: u32, // New parameter to know how many passes to run
+        blur_passes: u32,
     ) {
         unsafe {
             self.device.reset_fences(&[self.fence]).unwrap();
@@ -975,7 +975,6 @@ impl VulkanContext {
             .command_buffer_count(1);
 
         let cmd_buffer = unsafe { self.device.allocate_command_buffers(&alloc_info).unwrap()[0] };
-
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
@@ -985,7 +984,6 @@ impl VulkanContext {
                 .unwrap();
         }
 
-        // Setup dynamic viewport/scissor (will be reused across render passes)
         let viewport = vk::Viewport {
             x: 0.0,
             y: 0.0,
@@ -1003,7 +1001,6 @@ impl VulkanContext {
             },
         };
 
-        // Helper closure to start a main render pass
         let begin_main_pass = |load_op: vk::AttachmentLoadOp| {
             let clear_values = [vk::ClearValue {
                 color: vk::ClearColorValue {
@@ -1040,7 +1037,6 @@ impl VulkanContext {
             }
         };
 
-        // Begin initial clear pass
         begin_main_pass(vk::AttachmentLoadOp::CLEAR);
 
         let mut current_pipeline = vk::Pipeline::null();
@@ -1048,15 +1044,13 @@ impl VulkanContext {
 
         for cmd in quads {
             if !pass_active {
-                // If we paused the pass for a capture, restart it with LOAD (don't clear)
                 begin_main_pass(vk::AttachmentLoadOp::LOAD);
-                current_pipeline = vk::Pipeline::null(); // Reset cached pipeline state
+                current_pipeline = vk::Pipeline::null(); // Break assumptions about bound pipelines
                 pass_active = true;
             }
 
             match cmd {
                 DrawCommand::BlurCapture => {
-                    // 1. End current pass
                     unsafe {
                         self.device.cmd_end_render_pass(cmd_buffer);
                     }
@@ -1069,8 +1063,6 @@ impl VulkanContext {
                         }
 
                         let target0 = &chain.targets[0];
-
-                        // 2. Memory Barriers to transition swapchain image for blitting
                         let subresource_range = vk::ImageSubresourceRange::default()
                             .aspect_mask(vk::ImageAspectFlags::COLOR)
                             .base_mip_level(0)
@@ -1080,7 +1072,7 @@ impl VulkanContext {
 
                         let mut barriers = [
                             vk::ImageMemoryBarrier::default()
-                                .old_layout(vk::ImageLayout::GENERAL) // End of render pass layout
+                                .old_layout(vk::ImageLayout::GENERAL)
                                 .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
                                 .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
                                 .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
@@ -1107,7 +1099,6 @@ impl VulkanContext {
                             );
                         }
 
-                        // 3. Blit (Copy) the screen to the target0
                         let blit = vk::ImageBlit::default()
                             .src_offsets([
                                 vk::Offset3D { x: 0, y: 0, z: 0 },
@@ -1150,7 +1141,6 @@ impl VulkanContext {
                             );
                         }
 
-                        // 4. Transition swapchain back to GENERAL, and target0 to SHADER_READ
                         barriers[0].old_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
                         barriers[0].new_layout = vk::ImageLayout::GENERAL;
                         barriers[0].src_access_mask = vk::AccessFlags::TRANSFER_READ;
@@ -1174,11 +1164,10 @@ impl VulkanContext {
                             );
                         }
 
-                        // KAWASE PASSES
                         let render_pass_begin_info =
                             vk::RenderPassBeginInfo::default().render_pass(chain.render_pass);
 
-                        // Downsample passes
+                        // 1 - Downsample Chain execution
                         unsafe {
                             self.device.cmd_bind_pipeline(
                                 cmd_buffer,
@@ -1242,7 +1231,7 @@ impl VulkanContext {
                                     screen_size: [dst.width as f32, dst.height as f32],
                                     quad_size: [dst.width as f32, dst.height as f32],
                                     src_offset: [0.0, 0.0],
-                                    src_size: [1.0, 1.0], // blur radius offset
+                                    src_size: [1.0, 1.0],
                                     border_radius: 0.0,
                                     alpha: 1.0,
                                     shadow_spread: 0.0,
@@ -1265,28 +1254,12 @@ impl VulkanContext {
 
                                 self.device.cmd_draw(cmd_buffer, 6, 1, 0, 0);
                                 self.device.cmd_end_render_pass(cmd_buffer);
-
-                                // Transition dst to SHADER_READ_ONLY_OPTIMAL for the next pass
-                                let barrier = vk::ImageMemoryBarrier::default()
-                                    .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) // It was left in read_only by renderpass
-                                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                                    .image(dst.image)
-                                    .subresource_range(subresource_range);
-                                self.device.cmd_pipeline_barrier(
-                                    cmd_buffer,
-                                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                                    vk::PipelineStageFlags::FRAGMENT_SHADER,
-                                    vk::DependencyFlags::empty(),
-                                    &[],
-                                    &[],
-                                    std::slice::from_ref(&barrier),
-                                );
+                                // RE-REMOVED: Explicit layout pipeline barrier here.
+                                // The renderpass final_layout matches what the next loop bound lookup demands.
                             }
                         }
 
-                        // Upsample passes
+                        // 2 - Upsample Chain execution
                         unsafe {
                             self.device.cmd_bind_pipeline(
                                 cmd_buffer,
@@ -1350,10 +1323,10 @@ impl VulkanContext {
                                     screen_size: [dst.width as f32, dst.height as f32],
                                     quad_size: [dst.width as f32, dst.height as f32],
                                     src_offset: [0.0, 0.0],
-                                    src_size: [1.0, 1.0], // Fix UV scaling
+                                    src_size: [1.0, 1.0],
                                     border_radius: 0.0,
                                     alpha: 1.0,
-                                    shadow_spread: 2.0, // blur radius offset up (Kawase uses 2.0 or 3.0)
+                                    shadow_spread: 2.0,
                                     shadow_power: 0.0,
                                     _padding: [0.0; 2],
                                     color: [1.0, 1.0, 1.0, 1.0],
@@ -1373,23 +1346,6 @@ impl VulkanContext {
 
                                 self.device.cmd_draw(cmd_buffer, 6, 1, 0, 0);
                                 self.device.cmd_end_render_pass(cmd_buffer);
-
-                                let barrier = vk::ImageMemoryBarrier::default()
-                                    .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                                    .image(dst.image)
-                                    .subresource_range(subresource_range);
-                                self.device.cmd_pipeline_barrier(
-                                    cmd_buffer,
-                                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                                    vk::PipelineStageFlags::FRAGMENT_SHADER,
-                                    vk::DependencyFlags::empty(),
-                                    &[],
-                                    &[],
-                                    std::slice::from_ref(&barrier),
-                                );
                             }
                         }
                     }
@@ -1428,7 +1384,7 @@ impl VulkanContext {
                         shadow_spread: 0.0,
                         shadow_power: 0.0,
                         _padding: [0.0; 2],
-                        color: [1.0, 1.0, 1.0, 1.0], // Default color, unused by quad.frag
+                        color: [1.0, 1.0, 1.0, 1.0],
                     };
 
                     let push_bytes = unsafe {
@@ -1446,7 +1402,6 @@ impl VulkanContext {
                             0,
                             push_bytes,
                         );
-
                         self.device.cmd_draw(cmd_buffer, 6, 1, 0, 0);
                     }
                 }
@@ -1491,7 +1446,6 @@ impl VulkanContext {
                             0,
                             push_bytes,
                         );
-
                         self.device.cmd_draw(cmd_buffer, 6, 1, 0, 0);
                     }
                 }
@@ -1512,7 +1466,7 @@ impl VulkanContext {
                         screen_size: [screen_w as f32, screen_h as f32],
                         quad_size: [quad.w, quad.h],
                         src_offset: [0.0, 0.0],
-                        src_size: [1.0, 1.0], // Reverted hack, now using shadow_spread
+                        src_size: [1.0, 1.0],
                         border_radius: quad.border_radius,
                         alpha: quad.alpha,
                         shadow_spread: quad.spread,
@@ -1531,12 +1485,11 @@ impl VulkanContext {
                     unsafe {
                         self.device.cmd_push_constants(
                             cmd_buffer,
-                            self.color_pipeline_layout, // Shared with color pipeline
+                            self.color_pipeline_layout,
                             vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                             0,
                             push_bytes,
                         );
-
                         self.device.cmd_draw(cmd_buffer, 6, 1, 0, 0);
                     }
                 }
@@ -1576,7 +1529,7 @@ impl VulkanContext {
                         shadow_spread: 0.0,
                         shadow_power: 0.0,
                         _padding: [0.0; 2],
-                        color: [0.1, 0.1, 0.1, 0.5], // Dimming color overlay
+                        color: [0.1, 0.1, 0.1, 0.5],
                     };
 
                     let push_bytes = unsafe {
@@ -1594,14 +1547,11 @@ impl VulkanContext {
                             0,
                             push_bytes,
                         );
-
                         self.device.cmd_draw(cmd_buffer, 6, 1, 0, 0);
                     }
                 }
             }
         }
-
-        // SUBMITINNNNG :)
 
         if pass_active {
             unsafe {
@@ -1634,7 +1584,6 @@ impl VulkanContext {
                 .queue_submit(self.queue, std::slice::from_ref(&submit_info), self.fence)
                 .expect("Failed to submit command buffer");
 
-            // Wait for the GPU to finish painting
             self.device
                 .wait_for_fences(&[self.fence], true, u64::MAX)
                 .unwrap();
