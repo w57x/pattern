@@ -141,10 +141,10 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for Composer {
                     state.broadcast_selection_offer(dhandle);
                 } else {
                     state.selection = None;
-                    if let Some(focus) = &state.input_focus {
-                        if let Some(client) = focus.client() {
-                            state.clear_selection(&client);
-                        }
+                    if let Some(focus) = &state.input_focus
+                        && let Some(client) = focus.client()
+                    {
+                        state.clear_selection(&client);
                     }
                 }
             }
@@ -165,10 +165,10 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for Composer {
                     state.broadcast_primary_selection_offer(dhandle);
                 } else {
                     state.primary_selection = None;
-                    if let Some(focus) = &state.input_focus {
-                        if let Some(client) = focus.client() {
-                            state.clear_primary_selection(&client);
-                        }
+                    if let Some(focus) = &state.input_focus
+                        && let Some(client) = focus.client()
+                    {
+                        state.clear_primary_selection(&client);
                     }
                 }
             }

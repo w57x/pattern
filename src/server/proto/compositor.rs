@@ -216,11 +216,11 @@ impl Dispatch<WlSurface, ()> for Composer {
                     .collect();
 
                 for sub_id in sub_ids {
-                    if let Some((x, y)) = state.pending_subsurface_positions.remove(&sub_id) {
-                        if let Some(sub) = state.subsurfaces.iter_mut().find(|s| s.id == sub_id) {
-                            sub.x = x;
-                            sub.y = y;
-                        }
+                    if let Some((x, y)) = state.pending_subsurface_positions.remove(&sub_id)
+                        && let Some(sub) = state.subsurfaces.iter_mut().find(|s| s.id == sub_id)
+                    {
+                        sub.x = x;
+                        sub.y = y;
                     }
                 }
 
@@ -243,14 +243,12 @@ impl Dispatch<WlSurface, ()> for Composer {
                 // Handle presentation feedbacks
                 if let Some(new_feedbacks) =
                     state.pending_presentation_feedbacks.remove(&surface.id())
-                {
-                    if let Some(old_feedbacks) = state
+                    && let Some(old_feedbacks) = state
                         .surface_presentation_feedbacks
                         .insert(surface.id(), new_feedbacks)
-                    {
-                        for fb in old_feedbacks {
-                            fb.discarded();
-                        }
+                {
+                    for fb in old_feedbacks {
+                        fb.discarded();
                     }
                 }
 
@@ -321,23 +319,23 @@ impl Dispatch<WlSurface, ()> for Composer {
                             };
 
                             // Update SHM content if damaged. NO POLL NEEDED FOR SHM.
-                            if !damage.is_empty() {
-                                if let Some((_, mmap)) = state.pools.get(&buffer_info.pool_id) {
-                                    let start = buffer_info.offset as usize;
-                                    let len = (buffer_info.height * buffer_info.stride) as usize;
-                                    if len == 0 || start + len > mmap.len() {
-                                        return;
-                                    }
-                                    let pixels = &mmap[start..start + len];
-                                    state.vkctx.update_texture(
-                                        tex.inner.img,
-                                        buffer_info.width as u32,
-                                        buffer_info.height as u32,
-                                        buffer_info.stride as u32,
-                                        pixels,
-                                        &damage,
-                                    );
+                            if !damage.is_empty()
+                                && let Some((_, mmap)) = state.pools.get(&buffer_info.pool_id)
+                            {
+                                let start = buffer_info.offset as usize;
+                                let len = (buffer_info.height * buffer_info.stride) as usize;
+                                if len == 0 || start + len > mmap.len() {
+                                    return;
                                 }
+                                let pixels = &mmap[start..start + len];
+                                state.vkctx.update_texture(
+                                    tex.inner.img,
+                                    buffer_info.width as u32,
+                                    buffer_info.height as u32,
+                                    buffer_info.stride as u32,
+                                    pixels,
+                                    &damage,
+                                );
                             }
 
                             state.surface_textures.insert(surface.id(), tex);
@@ -353,10 +351,9 @@ impl Dispatch<WlSurface, ()> for Composer {
                         if !state.explicit_sync_surfaces.contains(&surface.id()) {
                             if let Some(old_buffer) =
                                 state.active_dmabufs.insert(surface.id(), buffer.clone())
+                                && old_buffer.id() != buffer.id()
                             {
-                                if old_buffer.id() != buffer.id() {
-                                    old_buffer.release();
-                                }
+                                old_buffer.release();
                             }
                         } else {
                             state.active_dmabufs.insert(surface.id(), buffer.clone());
@@ -467,10 +464,9 @@ impl Dispatch<WlSurface, ()> for Composer {
                         if !state.explicit_sync_surfaces.contains(&surface.id()) {
                             if let Some(old_buffer) =
                                 state.active_dmabufs.insert(surface.id(), buffer.clone())
+                                && old_buffer.id() != buffer.id()
                             {
-                                if old_buffer.id() != buffer.id() {
-                                    old_buffer.release();
-                                }
+                                old_buffer.release();
                             }
                         } else {
                             state.active_dmabufs.insert(surface.id(), buffer.clone());

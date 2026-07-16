@@ -106,13 +106,10 @@ impl Dispatch<WlBuffer, ()> for Composer {
         _dhandle: &wayland_server::DisplayHandle,
         _data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
-        match request {
-            wayland_server::protocol::wl_buffer::Request::Destroy => {
-                state.buffers.remove(&resource.id());
-                state.dmabuffers.remove(&resource.id());
-                state.buffer_textures.remove(&resource.id());
-            }
-            _ => {}
+        if let wayland_server::protocol::wl_buffer::Request::Destroy = request {
+            state.buffers.remove(&resource.id());
+            state.dmabuffers.remove(&resource.id());
+            state.buffer_textures.remove(&resource.id());
         }
     }
 }

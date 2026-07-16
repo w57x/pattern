@@ -130,7 +130,7 @@ pub fn solve_curve_t(time_x: f64, p1x: f64, p2x: f64) -> f64 {
         if derivative.abs() < 1e-6 {
             break;
         }
-        t2 = t2 - current_x / derivative;
+        t2 -= current_x / derivative;
     }
 
     // Fallback to binary search if Newton-Raphson fails

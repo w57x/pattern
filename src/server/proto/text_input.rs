@@ -139,15 +139,15 @@ impl Dispatch<ZwpTextInputV3, ()> for Composer {
                                 (*anchor).try_into().unwrap_or(0),
                             );
                         }
-                        if let Some(cause) = &ti_state.pending_cause {
-                            if let WEnum::Value(c) = cause {
-                                im.text_change_cause(*c);
-                            }
+                        if let Some(cause) = &ti_state.pending_cause
+                            && let WEnum::Value(c) = cause
+                        {
+                            im.text_change_cause(*c);
                         }
-                        if let Some((hint, purpose)) = &ti_state.pending_content_type {
-                            if let (WEnum::Value(h), WEnum::Value(p)) = (hint, purpose) {
-                                im.content_type(*h, *p);
-                            }
+                        if let Some((hint, purpose)) = &ti_state.pending_content_type
+                            && let (WEnum::Value(h), WEnum::Value(p)) = (hint, purpose)
+                        {
+                            im.content_type(*h, *p);
                         }
                         let (x, y, w, h) = ti_state.cursor_rect;
                         for (popup, _, popup_im) in &state.input_popups {

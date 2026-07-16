@@ -220,18 +220,18 @@ impl Input {
                         continue;
                     }
 
-                    if let Some(focused_surface) = &state.input_focus {
-                        if let Some(client) = focused_surface.client() {
-                            state.serial += 1;
+                    if let Some(focused_surface) = &state.input_focus
+                        && let Some(client) = focused_surface.client()
+                    {
+                        state.serial += 1;
 
-                            for keyboard in state
-                                .keyboards
-                                .iter()
-                                .filter(|kbd| kbd.client().map(|c| c.id()) == Some(client.id()))
-                            {
-                                keyboard.key(state.serial, time, key, key_state);
-                                keyboard.modifiers(state.serial, depressed, latched, locked, group);
-                            }
+                        for keyboard in state
+                            .keyboards
+                            .iter()
+                            .filter(|kbd| kbd.client().map(|c| c.id()) == Some(client.id()))
+                        {
+                            keyboard.key(state.serial, time, key, key_state);
+                            keyboard.modifiers(state.serial, depressed, latched, locked, group);
                         }
                     }
                 }
@@ -243,31 +243,31 @@ impl Input {
 
                         let mut is_locked = false;
 
-                        if let Some(focused) = &state.pointer_focus {
-                            if let Some(client) = focused.client() {
-                                if let Some(lock) = &state.pointer_lock {
-                                    if lock.client().map(|c| c.id()) == Some(client.id()) {
-                                        is_locked = true;
-                                    }
-                                }
+                        if let Some(focused) = &state.pointer_focus
+                            && let Some(client) = focused.client()
+                        {
+                            if let Some(lock) = &state.pointer_lock
+                                && lock.client().map(|c| c.id()) == Some(client.id())
+                            {
+                                is_locked = true;
+                            }
 
-                                for rp in &state.relative_pointers {
-                                    if rp.client().map(|c| c.id()) == Some(client.id()) {
-                                        let unaccel_dx = m.dx_unaccelerated();
-                                        let unaccel_dy = m.dy_unaccelerated();
-                                        let time_us = m.time_usec();
-                                        let time_us_high = (time_us >> 32) as u32;
-                                        let time_us_low = (time_us & 0xFFFFFFFF) as u32;
+                            for rp in &state.relative_pointers {
+                                if rp.client().map(|c| c.id()) == Some(client.id()) {
+                                    let unaccel_dx = m.dx_unaccelerated();
+                                    let unaccel_dy = m.dy_unaccelerated();
+                                    let time_us = m.time_usec();
+                                    let time_us_high = (time_us >> 32) as u32;
+                                    let time_us_low = (time_us & 0xFFFFFFFF) as u32;
 
-                                        rp.relative_motion(
-                                            time_us_high,
-                                            time_us_low,
-                                            dx,
-                                            dy,
-                                            unaccel_dx,
-                                            unaccel_dy,
-                                        );
-                                    }
+                                    rp.relative_motion(
+                                        time_us_high,
+                                        time_us_low,
+                                        dx,
+                                        dy,
+                                        unaccel_dx,
+                                        unaccel_dy,
+                                    );
                                 }
                             }
                         }
@@ -291,14 +291,12 @@ impl Input {
                         let abs_y = m.absolute_y_transformed(self.dimension.y as u32);
 
                         let mut is_locked = false;
-                        if let Some(focused) = &state.pointer_focus {
-                            if let Some(client) = focused.client() {
-                                if let Some(lock) = &state.pointer_lock {
-                                    if lock.client().map(|c| c.id()) == Some(client.id()) {
-                                        is_locked = true;
-                                    }
-                                }
-                            }
+                        if let Some(focused) = &state.pointer_focus
+                            && let Some(client) = focused.client()
+                            && let Some(lock) = &state.pointer_lock
+                            && lock.client().map(|c| c.id()) == Some(client.id())
+                        {
+                            is_locked = true;
                         }
 
                         if !is_locked {
@@ -419,129 +417,122 @@ impl Input {
                                 match &*action {
                                     StoredAction::Builtin(cmd) => match cmd {
                                         CompositorCommand::DragWindow => {
-                                            if let Some(surf) = &hit_surface {
-                                                if !state.is_input_popup(&surf.id()) {
-                                                    let is_layer_shell = {
-                                                        let mut target_id = surf.id();
-                                                        let popups = state.wm.get_popups();
-                                                        while let Some(popup) = popups
-                                                            .iter()
-                                                            .find(|p| p.surface.id() == target_id)
-                                                        {
-                                                            target_id =
-                                                                popup.parent_surface_id.clone();
-                                                        }
-                                                        state.wm.all_windows().iter().any(|w| {
-                                                            w.surface.id() == target_id
-                                                                && w.layer_surface.is_some()
-                                                        })
-                                                    };
-                                                    if !is_layer_shell {
-                                                        let focused_id =
-                                                            state.wm.focus_window(&surf.id());
-                                                        let target_surf = state
-                                                            .surfaces
-                                                            .iter()
-                                                            .find(|s| s.id() == focused_id)
-                                                            .cloned()
-                                                            .unwrap_or_else(|| surf.clone());
-                                                        state.set_input_focus(
-                                                            Some(target_surf.clone()),
-                                                            dh,
-                                                        );
-
-                                                        state.serial += 1;
-                                                        state.wm.begin_drag(
-                                                            &target_surf.id(),
-                                                            self.cursor.x,
-                                                            self.cursor.y,
-                                                            state.mode.size(),
-                                                            state.serial,
-                                                        );
+                                            if let Some(surf) = &hit_surface
+                                                && !state.is_input_popup(&surf.id())
+                                            {
+                                                let is_layer_shell = {
+                                                    let mut target_id = surf.id();
+                                                    let popups = state.wm.get_popups();
+                                                    while let Some(popup) = popups
+                                                        .iter()
+                                                        .find(|p| p.surface.id() == target_id)
+                                                    {
+                                                        target_id = popup.parent_surface_id.clone();
                                                     }
+                                                    state.wm.all_windows().iter().any(|w| {
+                                                        w.surface.id() == target_id
+                                                            && w.layer_surface.is_some()
+                                                    })
+                                                };
+                                                if !is_layer_shell {
+                                                    let focused_id =
+                                                        state.wm.focus_window(&surf.id());
+                                                    let target_surf = state
+                                                        .surfaces
+                                                        .iter()
+                                                        .find(|s| s.id() == focused_id)
+                                                        .cloned()
+                                                        .unwrap_or_else(|| surf.clone());
+                                                    state.set_input_focus(
+                                                        Some(target_surf.clone()),
+                                                        dh,
+                                                    );
+
+                                                    state.serial += 1;
+                                                    state.wm.begin_drag(
+                                                        &target_surf.id(),
+                                                        self.cursor.x,
+                                                        self.cursor.y,
+                                                        state.mode.size(),
+                                                        state.serial,
+                                                    );
                                                 }
                                             }
                                         }
                                         CompositorCommand::ResizeWindow => {
-                                            if let Some(surf) = &hit_surface {
-                                                if !state.is_input_popup(&surf.id()) {
-                                                    let is_layer_shell = {
-                                                        let mut target_id = surf.id();
-                                                        let popups = state.wm.get_popups();
-                                                        while let Some(popup) = popups
-                                                            .iter()
-                                                            .find(|p| p.surface.id() == target_id)
-                                                        {
-                                                            target_id =
-                                                                popup.parent_surface_id.clone();
-                                                        }
-                                                        state.wm.all_windows().iter().any(|w| {
-                                                            w.surface.id() == target_id
-                                                                && w.layer_surface.is_some()
+                                            if let Some(surf) = &hit_surface
+                                                && !state.is_input_popup(&surf.id())
+                                            {
+                                                let is_layer_shell = {
+                                                    let mut target_id = surf.id();
+                                                    let popups = state.wm.get_popups();
+                                                    while let Some(popup) = popups
+                                                        .iter()
+                                                        .find(|p| p.surface.id() == target_id)
+                                                    {
+                                                        target_id = popup.parent_surface_id.clone();
+                                                    }
+                                                    state.wm.all_windows().iter().any(|w| {
+                                                        w.surface.id() == target_id
+                                                            && w.layer_surface.is_some()
+                                                    })
+                                                };
+                                                if !is_layer_shell {
+                                                    let focused_id =
+                                                        state.wm.focus_window(&surf.id());
+                                                    let target_surf = state
+                                                        .surfaces
+                                                        .iter()
+                                                        .find(|s| s.id() == focused_id)
+                                                        .cloned()
+                                                        .unwrap_or_else(|| surf.clone());
+                                                    state.set_input_focus(
+                                                        Some(target_surf.clone()),
+                                                        dh,
+                                                    );
+
+                                                    if let Some(win) =
+                                                        state.wm.all_windows().iter().find(|w| {
+                                                            w.surface.id() == target_surf.id()
                                                         })
-                                                    };
-                                                    if !is_layer_shell {
-                                                        let focused_id =
-                                                            state.wm.focus_window(&surf.id());
-                                                        let target_surf = state
-                                                            .surfaces
-                                                            .iter()
-                                                            .find(|s| s.id() == focused_id)
-                                                            .cloned()
-                                                            .unwrap_or_else(|| surf.clone());
-                                                        state.set_input_focus(
-                                                            Some(target_surf.clone()),
-                                                            dh,
-                                                        );
+                                                    {
+                                                        let win_offset = state
+                                                            .styler
+                                                            .get_workspace_offset_for_surface(
+                                                                &win.surface.id(),
+                                                                state.wm.as_ref(),
+                                                            );
+                                                        let wx = win.x + win_offset;
+                                                        let wy = win.y;
+                                                        let ww = win.w as f64;
+                                                        let wh = win.h as f64;
+                                                        let center_x = wx + ww / 2.0;
+                                                        let center_y = wy + wh / 2.0;
 
-                                                        if let Some(win) = state
-                                                            .wm
-                                                            .all_windows()
-                                                            .iter()
-                                                            .find(|w| {
-                                                                w.surface.id() == target_surf.id()
-                                                            })
-                                                        {
-                                                            let win_offset = state
-                                                                .styler
-                                                                .get_workspace_offset_for_surface(
-                                                                    &win.surface.id(),
-                                                                    state.wm.as_ref(),
-                                                                );
-                                                            let wx = win.x + win_offset;
-                                                            let wy = win.y;
-                                                            let ww = win.w as f64;
-                                                            let wh = win.h as f64;
-                                                            let center_x = wx + ww / 2.0;
-                                                            let center_y = wy + wh / 2.0;
+                                                        let mut edges = 0;
+                                                        if self.cursor.x < center_x {
+                                                            edges |= 4; // Left
+                                                        } else {
+                                                            edges |= 8; // Right
+                                                        }
+                                                        if self.cursor.y < center_y {
+                                                            edges |= 1; // Top
+                                                        } else {
+                                                            edges |= 2; // Bottom
+                                                        }
 
-                                                            let mut edges = 0;
-                                                            if self.cursor.x < center_x {
-                                                                edges |= 4; // Left
-                                                            } else {
-                                                                edges |= 8; // Right
-                                                            }
-                                                            if self.cursor.y < center_y {
-                                                                edges |= 1; // Top
-                                                            } else {
-                                                                edges |= 2; // Bottom
-                                                            }
-
-                                                            let toplevel_id = win
-                                                                .toplevel
-                                                                .as_ref()
-                                                                .map(|t| t.id());
-                                                            if let Some(toplevel_id) = toplevel_id {
-                                                                state.serial += 1;
-                                                                state.wm.begin_interactive_resize(
-                                                                    &toplevel_id,
-                                                                    edges,
-                                                                    self.cursor.x,
-                                                                    self.cursor.y,
-                                                                    state.mode.size(),
-                                                                    state.serial,
-                                                                );
-                                                            }
+                                                        let toplevel_id =
+                                                            win.toplevel.as_ref().map(|t| t.id());
+                                                        if let Some(toplevel_id) = toplevel_id {
+                                                            state.serial += 1;
+                                                            state.wm.begin_interactive_resize(
+                                                                &toplevel_id,
+                                                                edges,
+                                                                self.cursor.x,
+                                                                self.cursor.y,
+                                                                state.mode.size(),
+                                                                state.serial,
+                                                            );
                                                         }
                                                     }
                                                 }
@@ -568,36 +559,31 @@ impl Input {
                                     }
                                 }
                             } else {
-                                if is_left_click {
-                                    if let Some(surf) = &hit_surface {
-                                        if !state.is_input_popup(&surf.id()) {
-                                            let focused_id = state.wm.focus_window(&surf.id());
-                                            let target_surf = state
-                                                .surfaces
-                                                .iter()
-                                                .find(|s| s.id() == focused_id)
-                                                .cloned()
-                                                .unwrap_or_else(|| surf.clone());
-                                            state.set_input_focus(Some(target_surf), dh);
-                                        }
-                                        state.pointer_grab = Some(surf.clone());
+                                if is_left_click && let Some(surf) = &hit_surface {
+                                    if !state.is_input_popup(&surf.id()) {
+                                        let focused_id = state.wm.focus_window(&surf.id());
+                                        let target_surf = state
+                                            .surfaces
+                                            .iter()
+                                            .find(|s| s.id() == focused_id)
+                                            .cloned()
+                                            .unwrap_or_else(|| surf.clone());
+                                        state.set_input_focus(Some(target_surf), dh);
                                     }
+                                    state.pointer_grab = Some(surf.clone());
                                 }
 
-                                if let Some(focused) = &state.pointer_focus {
-                                    if let Some(client) = focused.client() {
-                                        state.serial += 1;
-                                        for pointer in state.pointers.iter().filter(|p| {
-                                            p.client().map(|c| c.id()) == Some(client.id())
-                                        }) {
-                                            pointer.button(
-                                                state.serial,
-                                                b.time(),
-                                                button,
-                                                state_val,
-                                            );
-                                            pointer.frame();
-                                        }
+                                if let Some(focused) = &state.pointer_focus
+                                    && let Some(client) = focused.client()
+                                {
+                                    state.serial += 1;
+                                    for pointer in state
+                                        .pointers
+                                        .iter()
+                                        .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                                    {
+                                        pointer.button(state.serial, b.time(), button, state_val);
+                                        pointer.frame();
                                     }
                                 }
                             }
@@ -614,22 +600,18 @@ impl Input {
                             }
                             state.pointer_grab = None;
 
-                            if !was_interacting {
-                                if let Some(focused) = &state.pointer_focus {
-                                    if let Some(client) = focused.client() {
-                                        state.serial += 1;
-                                        for pointer in state.pointers.iter().filter(|p| {
-                                            p.client().map(|c| c.id()) == Some(client.id())
-                                        }) {
-                                            pointer.button(
-                                                state.serial,
-                                                b.time(),
-                                                button,
-                                                state_val,
-                                            );
-                                            pointer.frame();
-                                        }
-                                    }
+                            if !was_interacting
+                                && let Some(focused) = &state.pointer_focus
+                                && let Some(client) = focused.client()
+                            {
+                                state.serial += 1;
+                                for pointer in state
+                                    .pointers
+                                    .iter()
+                                    .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                                {
+                                    pointer.button(state.serial, b.time(), button, state_val);
+                                    pointer.frame();
                                 }
                             }
                         }
@@ -640,43 +622,43 @@ impl Input {
                         use input::event::pointer::PointerScrollEvent;
                         use wayland_server::protocol::wl_pointer::{Axis as WlAxis, AxisSource};
 
-                        if let Some(focused) = &state.pointer_focus {
-                            if let Some(client) = focused.client() {
-                                for pointer in state
-                                    .pointers
-                                    .iter()
-                                    .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
-                                {
-                                    pointer.axis_source(AxisSource::Wheel);
+                        if let Some(focused) = &state.pointer_focus
+                            && let Some(client) = focused.client()
+                        {
+                            for pointer in state
+                                .pointers
+                                .iter()
+                                .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                            {
+                                pointer.axis_source(AxisSource::Wheel);
 
-                                    if a.has_axis(LibinputAxis::Vertical) {
-                                        let value = a.scroll_value(LibinputAxis::Vertical);
-                                        let v120 = a.scroll_value_v120(LibinputAxis::Vertical);
-                                        if value == 0.0 {
-                                            pointer.axis_stop(a.time(), WlAxis::VerticalScroll);
-                                        } else {
-                                            pointer.axis_discrete(
-                                                WlAxis::VerticalScroll,
-                                                (v120 / 120.0).round() as i32,
-                                            );
-                                            pointer.axis(a.time(), WlAxis::VerticalScroll, value);
-                                        }
+                                if a.has_axis(LibinputAxis::Vertical) {
+                                    let value = a.scroll_value(LibinputAxis::Vertical);
+                                    let v120 = a.scroll_value_v120(LibinputAxis::Vertical);
+                                    if value == 0.0 {
+                                        pointer.axis_stop(a.time(), WlAxis::VerticalScroll);
+                                    } else {
+                                        pointer.axis_discrete(
+                                            WlAxis::VerticalScroll,
+                                            (v120 / 120.0).round() as i32,
+                                        );
+                                        pointer.axis(a.time(), WlAxis::VerticalScroll, value);
                                     }
-                                    if a.has_axis(LibinputAxis::Horizontal) {
-                                        let value = a.scroll_value(LibinputAxis::Horizontal);
-                                        let v120 = a.scroll_value_v120(LibinputAxis::Horizontal);
-                                        if value == 0.0 {
-                                            pointer.axis_stop(a.time(), WlAxis::HorizontalScroll);
-                                        } else {
-                                            pointer.axis_discrete(
-                                                WlAxis::HorizontalScroll,
-                                                (v120 / 120.0).round() as i32,
-                                            );
-                                            pointer.axis(a.time(), WlAxis::HorizontalScroll, value);
-                                        }
-                                    }
-                                    pointer.frame();
                                 }
+                                if a.has_axis(LibinputAxis::Horizontal) {
+                                    let value = a.scroll_value(LibinputAxis::Horizontal);
+                                    let v120 = a.scroll_value_v120(LibinputAxis::Horizontal);
+                                    if value == 0.0 {
+                                        pointer.axis_stop(a.time(), WlAxis::HorizontalScroll);
+                                    } else {
+                                        pointer.axis_discrete(
+                                            WlAxis::HorizontalScroll,
+                                            (v120 / 120.0).round() as i32,
+                                        );
+                                        pointer.axis(a.time(), WlAxis::HorizontalScroll, value);
+                                    }
+                                }
+                                pointer.frame();
                             }
                         }
                     }
@@ -729,33 +711,33 @@ impl Input {
                                 continue;
                             }
                         }
-                        GestureEvent::Swipe(GestureSwipeEvent::Update(e)) => {
-                            if self.swipe_fingers > 0 {
-                                let invert = {
-                                    let cfg = state.config_manager.config.lock().unwrap();
-                                    cfg.gestures.workspace_swipe_invert
-                                };
-                                let dx = if invert { -e.dx() } else { e.dx() };
-                                state.wm.update_workspace_swipe(dx);
-                                state.needs_redraw = true;
-                                continue;
-                            }
+                        GestureEvent::Swipe(GestureSwipeEvent::Update(e))
+                            if self.swipe_fingers > 0 =>
+                        {
+                            let invert = {
+                                let cfg = state.config_manager.config.lock().unwrap();
+                                cfg.gestures.workspace_swipe_invert
+                            };
+                            let dx = if invert { -e.dx() } else { e.dx() };
+                            state.wm.update_workspace_swipe(dx);
+                            state.needs_redraw = true;
+                            continue;
                         }
-                        GestureEvent::Swipe(GestureSwipeEvent::End(_)) => {
-                            if self.swipe_fingers > 0 {
-                                let threshold = {
-                                    let cfg = state.config_manager.config.lock().unwrap();
-                                    cfg.gestures.workspace_swipe_threshold
-                                };
-                                state.wm.end_workspace_swipe(threshold);
-                                self.swipe_fingers = 0;
-                                self.swipe_dx = 0.0;
-                                self.swipe_triggered = false;
-                                state.needs_redraw = true;
-                                state.set_input_focus(state.wm.get_focused_window(), dh);
-                                state.update_pointer_focus(0);
-                                continue;
-                            }
+                        GestureEvent::Swipe(GestureSwipeEvent::End(_))
+                            if self.swipe_fingers > 0 =>
+                        {
+                            let threshold = {
+                                let cfg = state.config_manager.config.lock().unwrap();
+                                cfg.gestures.workspace_swipe_threshold
+                            };
+                            state.wm.end_workspace_swipe(threshold);
+                            self.swipe_fingers = 0;
+                            self.swipe_dx = 0.0;
+                            self.swipe_triggered = false;
+                            state.needs_redraw = true;
+                            state.set_input_focus(state.wm.get_focused_window(), dh);
+                            state.update_pointer_focus(0);
+                            continue;
                         }
                         _ => {}
                     }
@@ -934,7 +916,7 @@ impl Input {
             }
         }
 
-        return should_exit;
+        should_exit
     }
 
     fn handle_scroll<E: pointer::PointerScrollEvent + pointer::PointerEventTrait>(
@@ -947,33 +929,33 @@ impl Input {
 
         state.needs_redraw = true;
 
-        if let Some(focused) = &state.pointer_focus {
-            if let Some(client) = focused.client() {
-                for pointer in state
-                    .pointers
-                    .iter()
-                    .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
-                {
-                    pointer.axis_source(source);
+        if let Some(focused) = &state.pointer_focus
+            && let Some(client) = focused.client()
+        {
+            for pointer in state
+                .pointers
+                .iter()
+                .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+            {
+                pointer.axis_source(source);
 
-                    if event.has_axis(LibinputAxis::Vertical) {
-                        let value = event.scroll_value(LibinputAxis::Vertical);
-                        if value == 0.0 {
-                            pointer.axis_stop(event.time(), WlAxis::VerticalScroll);
-                        } else {
-                            pointer.axis(event.time(), WlAxis::VerticalScroll, value);
-                        }
+                if event.has_axis(LibinputAxis::Vertical) {
+                    let value = event.scroll_value(LibinputAxis::Vertical);
+                    if value == 0.0 {
+                        pointer.axis_stop(event.time(), WlAxis::VerticalScroll);
+                    } else {
+                        pointer.axis(event.time(), WlAxis::VerticalScroll, value);
                     }
-                    if event.has_axis(LibinputAxis::Horizontal) {
-                        let value = event.scroll_value(LibinputAxis::Horizontal);
-                        if value == 0.0 {
-                            pointer.axis_stop(event.time(), WlAxis::HorizontalScroll);
-                        } else {
-                            pointer.axis(event.time(), WlAxis::HorizontalScroll, value);
-                        }
-                    }
-                    pointer.frame();
                 }
+                if event.has_axis(LibinputAxis::Horizontal) {
+                    let value = event.scroll_value(LibinputAxis::Horizontal);
+                    if value == 0.0 {
+                        pointer.axis_stop(event.time(), WlAxis::HorizontalScroll);
+                    } else {
+                        pointer.axis(event.time(), WlAxis::HorizontalScroll, value);
+                    }
+                }
+                pointer.frame();
             }
         }
     }
@@ -989,13 +971,13 @@ impl Input {
             return;
         }
 
-        if let Some(grabbed_surface) = state.pointer_grab.clone() {
-            if let Some((abs_x, abs_y)) = state.get_surface_position(&grabbed_surface.id()) {
-                let local_x = cursor.x - abs_x;
-                let local_y = cursor.y - abs_y;
-                state.set_pointer_focus(Some(grabbed_surface), local_x, local_y, time);
-                return;
-            }
+        if let Some(grabbed_surface) = state.pointer_grab.clone()
+            && let Some((abs_x, abs_y)) = state.get_surface_position(&grabbed_surface.id())
+        {
+            let local_x = cursor.x - abs_x;
+            let local_y = cursor.y - abs_y;
+            state.set_pointer_focus(Some(grabbed_surface), local_x, local_y, time);
+            return;
         }
 
         let extra_surfaces = state.get_input_popup_surfaces();

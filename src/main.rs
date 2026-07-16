@@ -36,7 +36,7 @@ use wayland_server::{
     Display, ListeningSocket,
     protocol::{
         wl_compositor::WlCompositor, wl_data_device_manager::WlDataDeviceManager,
-        wl_output::WlOutput, wl_seat::WlSeat, wl_shm::WlShm, wl_subcompositor::WlSubcompositor,
+        wl_seat::WlSeat, wl_shm::WlShm, wl_subcompositor::WlSubcompositor,
     },
 };
 
@@ -60,7 +60,6 @@ fn main() {
     dh.create_global::<Composer, WlCompositor, ()>(5, ());
     dh.create_global::<Composer, WlShm, ()>(1, ());
     dh.create_global::<Composer, WlSubcompositor, ()>(1, ());
-    dh.create_global::<Composer, WlOutput, ()>(4, ());
     dh.create_global::<Composer, WlSeat, ()>(5, ());
     dh.create_global::<Composer, WlDataDeviceManager, ()>(3, ());
     dh.create_global::<Composer, ZwpPrimarySelectionDeviceManagerV1, ()>(1, ());
@@ -103,9 +102,9 @@ fn main() {
     config_manager.load().expect("Unable to load configuration");
 
     let mut composer = Composer::init(
+        &dh,
         backend.vkctx.clone(),
-        backend.info.mode.clone(),
-        backend.info.clone(),
+        backend.outputs.clone(),
         backend.gpu_dev_t,
         table_fd,
         Box::new(floating_wm::Wm::new()),

@@ -53,13 +53,11 @@ impl Card {
         enumerator.match_subsystem("drm").ok()?;
         enumerator.match_sysname("card*").ok()?;
 
-        for device in enumerator.scan_devices().ok()? {
-            // You can get even more specific here, like checking
-            // if it's the "boot_vga" device (the main GPU used by BIOS)
-            return device.devnode().map(|p| p.to_path_buf());
-        }
-
-        None
+        enumerator
+            .scan_devices()
+            .ok()?
+            .next()
+            .and_then(|device| device.devnode().map(|p| p.to_path_buf()))
     }
 
     pub fn find_property(
@@ -71,10 +69,10 @@ impl Card {
         if let Ok(props) = self.get_properties(handle) {
             let (handles, _) = props.as_props_and_values();
             for &prop_handle in handles {
-                if let Ok(info) = self.get_property(prop_handle) {
-                    if info.name().to_str() == Ok(name) {
-                        return Some(prop_handle);
-                    }
+                if let Ok(info) = self.get_property(prop_handle)
+                    && info.name().to_str() == Ok(name)
+                {
+                    return Some(prop_handle);
                 }
             }
         }
@@ -84,12 +82,16 @@ impl Card {
     pub fn find_primary_plane(
         &self,
         crtc_handle: drm::control::crtc::Handle,
+        assigned_planes: &[drm::control::plane::Handle],
     ) -> Option<drm::control::plane::Handle> {
         use drm::control::Device;
         let resources = self.resource_handles().ok()?;
         let planes = self.plane_handles().ok()?;
 
         for plane_handle in planes {
+            if assigned_planes.contains(&plane_handle) {
+                continue;
+            }
             let plane_info = self.get_plane(plane_handle).ok()?;
 
             let compatible_crtcs = resources.filter_crtcs(plane_info.possible_crtcs());
@@ -100,12 +102,11 @@ impl Card {
             if let Ok(props) = self.get_properties(plane_handle) {
                 let (prop_handles, prop_values) = props.as_props_and_values();
                 for (&prop_handle, &prop_value) in prop_handles.iter().zip(prop_values.iter()) {
-                    if let Ok(prop_info) = self.get_property(prop_handle) {
-                        if prop_info.name().to_str() == Ok("type") {
-                            if prop_value == (drm::control::PlaneType::Primary as u32).into() {
-                                return Some(plane_handle);
-                            }
-                        }
+                    if let Ok(prop_info) = self.get_property(prop_handle)
+                        && prop_info.name().to_str() == Ok("type")
+                        && prop_value == (drm::control::PlaneType::Primary as u32).into()
+                    {
+                        return Some(plane_handle);
                     }
                 }
             }
@@ -116,12 +117,16 @@ impl Card {
     pub fn find_cursor_plane(
         &self,
         crtc_handle: drm::control::crtc::Handle,
+        assigned_planes: &[drm::control::plane::Handle],
     ) -> Option<drm::control::plane::Handle> {
         use drm::control::Device;
         let resources = self.resource_handles().ok()?;
         let planes = self.plane_handles().ok()?;
 
         for plane_handle in planes {
+            if assigned_planes.contains(&plane_handle) {
+                continue;
+            }
             let plane_info = self.get_plane(plane_handle).ok()?;
 
             let compatible_crtcs = resources.filter_crtcs(plane_info.possible_crtcs());
@@ -132,12 +137,11 @@ impl Card {
             if let Ok(props) = self.get_properties(plane_handle) {
                 let (prop_handles, prop_values) = props.as_props_and_values();
                 for (&prop_handle, &prop_value) in prop_handles.iter().zip(prop_values.iter()) {
-                    if let Ok(prop_info) = self.get_property(prop_handle) {
-                        if prop_info.name().to_str() == Ok("type") {
-                            if prop_value == (drm::control::PlaneType::Cursor as u32).into() {
-                                return Some(plane_handle);
-                            }
-                        }
+                    if let Ok(prop_info) = self.get_property(prop_handle)
+                        && prop_info.name().to_str() == Ok("type")
+                        && prop_value == (drm::control::PlaneType::Cursor as u32).into()
+                    {
+                        return Some(plane_handle);
                     }
                 }
             }
@@ -146,12 +150,21 @@ impl Card {
     }
 
     pub fn fetch_card_info(&self) -> CardInfo {
+        let infos = self.fetch_card_infos();
+        infos[0].card_info.clone()
+    }
+
+    pub fn fetch_card_infos(&self) -> Vec<OutputLayoutInfo> {
         use drm::control::{self, Device};
         let resources = self
             .resource_handles()
             .expect("Failed to get DRM resource handles");
 
-        let mut resource: Option<CardInfo> = None;
+        let mut outputs = Vec::new();
+        let mut current_x = 0;
+
+        let mut assigned_crtcs = Vec::new();
+        let mut assigned_planes = Vec::new();
 
         for &connector_handle in resources.connectors() {
             let connector = self
@@ -178,40 +191,25 @@ impl Card {
                     let (prop_handles, prop_values) = props.as_props_and_values();
 
                     for (&prop_handle, &prop_val) in prop_handles.iter().zip(prop_values.iter()) {
-                        if let Ok(prop_info) = self.get_property(prop_handle) {
-                            if prop_info.name().to_str() == Ok("EDID") {
-                                if let control::property::Value::Blob(blob_id) =
-                                    prop_info.value_type().convert_value(prop_val)
-                                {
-                                    if blob_id > 0 {
-                                        if let Ok(blob) = self.get_property_blob(blob_id) {
-                                            match Info::parse_edid(&blob) {
-                                                Ok(info) => {
-                                                    let make = info
-                                                        .make()
-                                                        .unwrap_or("Unknown".to_string());
-                                                    let model = info
-                                                        .model()
-                                                        .unwrap_or("Monitor".to_string());
+                        if let Ok(prop_info) = self.get_property(prop_handle)
+                            && prop_info.name().to_str() == Ok("EDID")
+                            && let control::property::Value::Blob(blob_id) =
+                                prop_info.value_type().convert_value(prop_val)
+                            && blob_id > 0
+                            && let Ok(blob) = self.get_property_blob(blob_id)
+                        {
+                            match Info::parse_edid(&blob) {
+                                Ok(info) => {
+                                    let make = info.make().unwrap_or("Unknown".to_string());
+                                    let model = info.model().unwrap_or("Monitor".to_string());
 
-                                                    output_description = format!(
-                                                        "{} {} ({})",
-                                                        make, model, output_name
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    warn!(
-                                                        "Failed to parse EDID for {}: {}",
-                                                        output_name, e
-                                                    );
-                                                    output_description = format!(
-                                                        "Generic Monitor ({})",
-                                                        output_name
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
+                                    output_description =
+                                        format!("{} {} ({})", make, model, output_name);
+                                }
+                                Err(e) => {
+                                    warn!("Failed to parse EDID for {}: {}", output_name, e);
+                                    output_description =
+                                        format!("Generic Monitor ({})", output_name);
                                 }
                             }
                         }
@@ -220,73 +218,110 @@ impl Card {
 
                 // Pick a mode (the resolution)
                 // Usually, the first mode is the "preferred" native resolution
-                if let Some(mode) = connector.modes().get(0) {
+                if let Some(mode) = connector.modes().first() {
                     info!("Selected mode: {:?}", mode.name());
 
-                    let crtc_handle = find_crtc(self, &resources, &connector);
-                    info!("Linked to CRTC: {:?}", crtc_handle);
+                    if let Some(crtc_handle) =
+                        find_crtc(self, &resources, &connector, &assigned_crtcs)
+                    {
+                        info!("Linked to CRTC: {:?}", crtc_handle);
 
-                    let crtc_info = self.get_crtc(crtc_handle).expect("Failed to get CRTC info");
-                    let gamma_size = crtc_info.gamma_length();
+                        let crtc_info =
+                            self.get_crtc(crtc_handle).expect("Failed to get CRTC info");
+                        let gamma_size = crtc_info.gamma_length();
 
-                    let primary_plane = self
-                        .find_primary_plane(crtc_handle)
-                        .expect("Failed to find primary plane compatible with CRTC");
+                        if let Some(primary_plane) =
+                            self.find_primary_plane(crtc_handle, &assigned_planes)
+                        {
+                            let crtc_active_prop = self
+                                .find_property(crtc_handle, "ACTIVE")
+                                .expect("Failed to find CRTC ACTIVE property");
+                            let crtc_mode_id_prop = self
+                                .find_property(crtc_handle, "MODE_ID")
+                                .expect("Failed to find CRTC MODE_ID property");
+                            let crtc_gamma_lut_prop = self
+                                .find_property(crtc_handle, "GAMMA_LUT")
+                                .expect("Failed to find CRTC GAMMA_LUT property");
+                            let plane_crtc_id_prop = self
+                                .find_property(primary_plane, "CRTC_ID")
+                                .expect("Failed to find Plane CRTC_ID property");
+                            let plane_fb_id_prop = self
+                                .find_property(primary_plane, "FB_ID")
+                                .expect("Failed to find Plane FB_ID property");
+                            let conn_crtc_id_prop = self
+                                .find_property(connector_handle, "CRTC_ID")
+                                .expect("Failed to find Connector CRTC_ID property");
 
-                    let crtc_active_prop = self
-                        .find_property(crtc_handle, "ACTIVE")
-                        .expect("Failed to find CRTC ACTIVE property");
-                    let crtc_mode_id_prop = self
-                        .find_property(crtc_handle, "MODE_ID")
-                        .expect("Failed to find CRTC MODE_ID property");
-                    let crtc_gamma_lut_prop = self
-                        .find_property(crtc_handle, "GAMMA_LUT")
-                        .expect("Failed to find CRTC GAMMA_LUT property");
-                    let plane_crtc_id_prop = self
-                        .find_property(primary_plane, "CRTC_ID")
-                        .expect("Failed to find Plane CRTC_ID property");
-                    let plane_fb_id_prop = self
-                        .find_property(primary_plane, "FB_ID")
-                        .expect("Failed to find Plane FB_ID property");
-                    let conn_crtc_id_prop = self
-                        .find_property(connector_handle, "CRTC_ID")
-                        .expect("Failed to find Connector CRTC_ID property");
+                            let src_x_prop = self.find_property(primary_plane, "SRC_X");
+                            let src_y_prop = self.find_property(primary_plane, "SRC_Y");
+                            let src_w_prop = self.find_property(primary_plane, "SRC_W");
+                            let src_h_prop = self.find_property(primary_plane, "SRC_H");
+                            let crtc_x_prop = self.find_property(primary_plane, "CRTC_X");
+                            let crtc_y_prop = self.find_property(primary_plane, "CRTC_Y");
+                            let crtc_w_prop = self.find_property(primary_plane, "CRTC_W");
+                            let crtc_h_prop = self.find_property(primary_plane, "CRTC_H");
 
-                    let cursor_plane = self.find_cursor_plane(crtc_handle);
-                    let cursor_crtc_id_prop =
-                        cursor_plane.and_then(|p| self.find_property(p, "CRTC_ID"));
-                    let cursor_fb_id_prop =
-                        cursor_plane.and_then(|p| self.find_property(p, "FB_ID"));
+                            let cursor_plane =
+                                self.find_cursor_plane(crtc_handle, &assigned_planes);
+                            let cursor_crtc_id_prop =
+                                cursor_plane.and_then(|p| self.find_property(p, "CRTC_ID"));
+                            let cursor_fb_id_prop =
+                                cursor_plane.and_then(|p| self.find_property(p, "FB_ID"));
 
-                    resource = Some(CardInfo {
-                        mode: mode.clone(),
-                        crtc_handle,
-                        connector_handle,
-                        name: output_name,
-                        description: output_description,
-                        gamma_size,
-                        primary_plane,
-                        crtc_active_prop,
-                        crtc_mode_id_prop,
-                        crtc_gamma_lut_prop,
-                        plane_crtc_id_prop,
-                        plane_fb_id_prop,
-                        conn_crtc_id_prop,
-                        cursor_plane,
-                        cursor_crtc_id_prop,
-                        cursor_fb_id_prop,
-                    });
+                            assigned_crtcs.push(crtc_handle);
+                            assigned_planes.push(primary_plane);
+                            if let Some(cp) = cursor_plane {
+                                assigned_planes.push(cp);
+                            }
 
-                    break;
+                            let (w, h) = mode.size();
+                            let card_info = CardInfo {
+                                mode: *mode,
+                                crtc_handle,
+                                connector_handle,
+                                name: output_name,
+                                description: output_description,
+                                gamma_size,
+                                primary_plane,
+                                crtc_active_prop,
+                                crtc_mode_id_prop,
+                                crtc_gamma_lut_prop,
+                                plane_crtc_id_prop,
+                                plane_fb_id_prop,
+                                conn_crtc_id_prop,
+                                cursor_plane,
+                                cursor_crtc_id_prop,
+                                cursor_fb_id_prop,
+                                src_x_prop,
+                                src_y_prop,
+                                src_w_prop,
+                                src_h_prop,
+                                crtc_x_prop,
+                                crtc_y_prop,
+                                crtc_w_prop,
+                                crtc_h_prop,
+                            };
+
+                            outputs.push(OutputLayoutInfo {
+                                card_info,
+                                x: current_x,
+                                y: 0,
+                                width: w as i32,
+                                height: h as i32,
+                            });
+
+                            current_x += w as i32;
+                        }
+                    }
                 }
             }
         }
 
-        if resource.is_none() {
+        if outputs.is_empty() {
             panic!("Cannot fetch gpu display and connection info");
         }
 
-        return resource.unwrap();
+        outputs
     }
 
     pub fn get_driver(&self) -> std::io::Result<drm::Driver> {
@@ -331,13 +366,31 @@ pub struct CardInfo {
     pub cursor_plane: Option<drm::control::plane::Handle>,
     pub cursor_crtc_id_prop: Option<drm::control::property::Handle>,
     pub cursor_fb_id_prop: Option<drm::control::property::Handle>,
+    pub src_x_prop: Option<drm::control::property::Handle>,
+    pub src_y_prop: Option<drm::control::property::Handle>,
+    pub src_w_prop: Option<drm::control::property::Handle>,
+    pub src_h_prop: Option<drm::control::property::Handle>,
+    pub crtc_x_prop: Option<drm::control::property::Handle>,
+    pub crtc_y_prop: Option<drm::control::property::Handle>,
+    pub crtc_w_prop: Option<drm::control::property::Handle>,
+    pub crtc_h_prop: Option<drm::control::property::Handle>,
+}
+
+#[derive(Clone)]
+pub struct OutputLayoutInfo {
+    pub card_info: CardInfo,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
 }
 
 fn find_crtc(
     card: &Card,
     res: &drm::control::ResourceHandles,
     conn: &drm::control::connector::Info,
-) -> drm::control::crtc::Handle {
+    assigned_crtcs: &[drm::control::crtc::Handle],
+) -> Option<drm::control::crtc::Handle> {
     use drm::control::Device;
 
     // Check if the connector is already mapped to an active encoder/crtc
@@ -345,8 +398,10 @@ fn find_crtc(
         let encoder = card
             .get_encoder(encoder_handle)
             .expect("Failed to get encoder info");
-        if let Some(crtc) = encoder.crtc() {
-            return crtc;
+        if let Some(crtc) = encoder.crtc()
+            && !assigned_crtcs.contains(&crtc)
+        {
+            return Some(crtc);
         }
     }
 
@@ -363,11 +418,12 @@ fn find_crtc(
         // that match this filter bitmask.
         let matching_crtcs = res.filter_crtcs(filter);
 
-        // If the list isn't empty, we've found our match!
-        if let Some(&first_matched_crtc) = matching_crtcs.first() {
-            return first_matched_crtc;
+        for &matched_crtc in &matching_crtcs {
+            if !assigned_crtcs.contains(&matched_crtc) {
+                return Some(matched_crtc);
+            }
         }
     }
 
-    panic!("Could not find a compatible CRTC for the connector");
+    None
 }

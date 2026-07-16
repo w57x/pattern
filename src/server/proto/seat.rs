@@ -52,14 +52,13 @@ impl Dispatch<WlSeat, ()> for Composer {
                     keyboard.repeat_info(rate, delay);
                 }
 
-                if let Some(focused_surface) = &state.input_focus {
-                    if let Some(focused_client) = focused_surface.client() {
-                        if focused_client.id() == client.id() {
-                            state.serial += 1;
-                            keyboard.enter(state.serial, focused_surface, Vec::new());
-                            keyboard.modifiers(state.serial, 0, 0, 0, 0);
-                        }
-                    }
+                if let Some(focused_surface) = &state.input_focus
+                    && let Some(focused_client) = focused_surface.client()
+                    && focused_client.id() == client.id()
+                {
+                    state.serial += 1;
+                    keyboard.enter(state.serial, focused_surface, Vec::new());
+                    keyboard.modifiers(state.serial, 0, 0, 0, 0);
                 }
 
                 state.keyboards.push(keyboard);
@@ -147,42 +146,41 @@ impl Dispatch<WlDataDeviceManager, ()> for Composer {
                 let device = data_init.init(id, ());
                 state.data_devices.push(device.clone());
 
-                if let Some(focused_surface) = &state.input_focus {
-                    if let Some(focused_client) = focused_surface.client() {
-                        if focused_client.id() == _client.id() {
-                            if let Some(source) = &state.selection {
-                                let offer = _client
-                                    .create_resource::<WlDataOffer, (), Self>(
-                                        _dhandle,
-                                        device.version(),
-                                        (),
-                                    )
-                                    .expect("Failed to create WlDataOffer");
-                                device.data_offer(&offer);
+                if let Some(focused_surface) = &state.input_focus
+                    && let Some(focused_client) = focused_surface.client()
+                    && focused_client.id() == _client.id()
+                {
+                    if let Some(source) = &state.selection {
+                        let offer = _client
+                            .create_resource::<WlDataOffer, (), Self>(
+                                _dhandle,
+                                device.version(),
+                                (),
+                            )
+                            .expect("Failed to create WlDataOffer");
+                        device.data_offer(&offer);
 
-                                let mime_types = match source {
-                                    SelectionSource::Standard(_) => {
-                                        state.data_sources.get(&source.id()).map(|(_, m)| m)
-                                    }
-                                    SelectionSource::Primary(_) => state
-                                        .primary_selection_sources
-                                        .get(&source.id())
-                                        .map(|(_, m)| m),
-                                    SelectionSource::DataControl(_) => {
-                                        state.data_control_sources.get(&source.id()).map(|(_, m)| m)
-                                    }
-                                };
+                        let mime_types = match source {
+                            SelectionSource::Standard(_) => {
+                                state.data_sources.get(&source.id()).map(|(_, m)| m)
+                            }
+                            SelectionSource::Primary(_) => state
+                                .primary_selection_sources
+                                .get(&source.id())
+                                .map(|(_, m)| m),
+                            SelectionSource::DataControl(_) => {
+                                state.data_control_sources.get(&source.id()).map(|(_, m)| m)
+                            }
+                        };
 
-                                if let Some(mime_types) = mime_types {
-                                    for mime in mime_types {
-                                        offer.offer(mime.clone());
-                                    }
-                                }
-                                device.selection(Some(&offer));
-                            } else {
-                                device.selection(None);
+                        if let Some(mime_types) = mime_types {
+                            for mime in mime_types {
+                                offer.offer(mime.clone());
                             }
                         }
+                        device.selection(Some(&offer));
+                    } else {
+                        device.selection(None);
                     }
                 }
             }
@@ -222,10 +220,10 @@ impl Dispatch<WlDataDevice, ()> for Composer {
                     state.broadcast_selection_offer(dhandle);
                 } else {
                     state.selection = None;
-                    if let Some(focused_surface) = &state.input_focus {
-                        if let Some(focused_client) = focused_surface.client() {
-                            state.clear_selection(&focused_client);
-                        }
+                    if let Some(focused_surface) = &state.input_focus
+                        && let Some(focused_client) = focused_surface.client()
+                    {
+                        state.clear_selection(&focused_client);
                     }
                 }
             }

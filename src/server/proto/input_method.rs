@@ -155,11 +155,8 @@ impl Dispatch<ZwpInputPopupSurfaceV2, ()> for Composer {
         _dhandle: &wayland_server::DisplayHandle,
         _data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
-        match request {
-            zwp_input_popup_surface_v2::Request::Destroy => {
-                state.input_popups.retain(|(p, _, _)| p != resource);
-            }
-            _ => {}
+        if let zwp_input_popup_surface_v2::Request::Destroy = request {
+            state.input_popups.retain(|(p, _, _)| p != resource);
         }
     }
 }
@@ -174,11 +171,8 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Composer {
         _dhandle: &wayland_server::DisplayHandle,
         _data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
-        match request {
-            zwp_input_method_keyboard_grab_v2::Request::Release => {
-                state.input_method_grabs.retain(|(g, _)| g != resource);
-            }
-            _ => {}
+        if let zwp_input_method_keyboard_grab_v2::Request::Release = request {
+            state.input_method_grabs.retain(|(g, _)| g != resource);
         }
     }
 }

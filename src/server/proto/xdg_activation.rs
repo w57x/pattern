@@ -30,10 +30,10 @@ impl Dispatch<xdg_activation_v1::XdgActivationV1, ()> for Composer {
             xdg_activation_v1::Request::GetActivationToken { id } => {
                 data_init.init(id, ());
             }
-            xdg_activation_v1::Request::Activate { token, surface } => {
-                if state.activation_tokens.remove(&token) {
-                    state.wm.focus_window(&surface.id());
-                }
+            xdg_activation_v1::Request::Activate { token, surface }
+                if state.activation_tokens.remove(&token) =>
+            {
+                state.wm.focus_window(&surface.id());
             }
             xdg_activation_v1::Request::Destroy => {}
             _ => {}

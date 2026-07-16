@@ -53,34 +53,37 @@ impl Dispatch<WpPointerWarpV1, ()> for Composer {
                     .unwrap_or(false);
 
                 // Protocol: honor it if the client has pointer focus (or grab) and the serial matches.
-                if (has_focus || has_grab) && last_serial == Some(serial) {
-                    if let Some(texture) = state.surface_textures.get(&surface.id()) {
-                        let logical_w = (texture.w / texture.scale) as f64;
-                        let logical_h = (texture.h / texture.scale) as f64;
+                if (has_focus || has_grab)
+                    && last_serial == Some(serial)
+                    && let Some(texture) = state.surface_textures.get(&surface.id())
+                {
+                    let logical_w = (texture.w / texture.scale) as f64;
+                    let logical_h = (texture.h / texture.scale) as f64;
 
-                        // Protocol: reject it if the requested position is outside of the surface
-                        if x >= 0. && x < logical_w && y >= 0. && y < logical_h {
-                            if let Some((abs_x, abs_y)) = state.get_surface_position(&surface.id())
+                    // Protocol: reject it if the requested position is outside of the surface
+                    if x >= 0.
+                        && x < logical_w
+                        && y >= 0.
+                        && y < logical_h
+                        && let Some((abs_x, abs_y)) = state.get_surface_position(&surface.id())
+                    {
+                        state.cursor_pos = (abs_x + x, abs_y + y);
+
+                        // We must send a synthetic motion event to the client so its internal state
+                        // matches the new warped position.
+                        if let Some(grabbed) = state.pointer_grab.clone() {
+                            if let Some((grab_x, grab_y)) =
+                                state.get_surface_position(&grabbed.id())
                             {
-                                state.cursor_pos = (abs_x + x, abs_y + y);
-
-                                // We must send a synthetic motion event to the client so its internal state
-                                // matches the new warped position.
-                                if let Some(grabbed) = state.pointer_grab.clone() {
-                                    if let Some((grab_x, grab_y)) =
-                                        state.get_surface_position(&grabbed.id())
-                                    {
-                                        state.set_pointer_focus(
-                                            Some(grabbed),
-                                            state.cursor_pos.0 - grab_x,
-                                            state.cursor_pos.1 - grab_y,
-                                            gettime(),
-                                        );
-                                    }
-                                } else {
-                                    state.set_pointer_focus(Some(surface.clone()), x, y, gettime());
-                                }
+                                state.set_pointer_focus(
+                                    Some(grabbed),
+                                    state.cursor_pos.0 - grab_x,
+                                    state.cursor_pos.1 - grab_y,
+                                    gettime(),
+                                );
                             }
+                        } else {
+                            state.set_pointer_focus(Some(surface.clone()), x, y, gettime());
                         }
                     }
                 }

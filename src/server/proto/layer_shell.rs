@@ -30,7 +30,7 @@ impl Dispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, ()> for Composer {
             zwlr_layer_shell_v1::Request::GetLayerSurface {
                 id,
                 surface,
-                output: _,
+                output,
                 layer,
                 namespace,
             } => {
@@ -44,11 +44,14 @@ impl Dispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, ()> for Composer {
                     _ => 2,
                 };
 
+                let output_id = output.as_ref().and_then(|o| o.data::<usize>().copied());
+
                 state.wm.map_layer_surface(
                     surface.clone(),
                     layer_surface.clone(),
                     layer_val,
                     namespace,
+                    output_id,
                 );
                 state.xdg_to_surface.insert(layer_surface.id(), surface);
             }

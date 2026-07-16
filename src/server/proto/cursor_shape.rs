@@ -67,18 +67,17 @@ impl Dispatch<WpCursorShapeDeviceV1, ()> for Composer {
                 let client_id = client.id();
                 let last_serial = state.last_enter_serial.get(&client_id).copied();
 
-                if last_serial == Some(serial) {
-                    if let Some(focus) = &state.pointer_focus {
-                        if focus.client().map(|c| c.id()) == Some(client_id) {
-                            match shape {
-                                wayland_server::WEnum::Value(s) => {
-                                    state.cursor_shape = Some(s);
-                                    // NOTE: Invalidate wl_pointer.set_cursor if any
-                                    state.cursor_surface = None;
-                                }
-                                wayland_server::WEnum::Unknown(_) => {}
-                            }
+                if last_serial == Some(serial)
+                    && let Some(focus) = &state.pointer_focus
+                    && focus.client().map(|c| c.id()) == Some(client_id)
+                {
+                    match shape {
+                        wayland_server::WEnum::Value(s) => {
+                            state.cursor_shape = Some(s);
+                            // NOTE: Invalidate wl_pointer.set_cursor if any
+                            state.cursor_surface = None;
                         }
+                        wayland_server::WEnum::Unknown(_) => {}
                     }
                 }
             }

@@ -22,7 +22,7 @@ pub fn execute_compositor_command(
             return BindingAction::Exit;
         }
         CompositorCommand::Exec { full_sh_cmd } => {
-            if let Ok(_) = Command::new("sh").args(&["-c", full_sh_cmd]).spawn() {
+            if let Ok(_) = Command::new("sh").args(["-c", full_sh_cmd]).spawn() {
                 return BindingAction::Handled;
             }
         }
@@ -33,10 +33,9 @@ pub fn execute_compositor_command(
                     .all_windows()
                     .into_iter()
                     .find(|w| w.surface.id().protocol_id() == *win_id)
+                    && let Some(toplevel) = &window.toplevel
                 {
-                    if let Some(toplevel) = &window.toplevel {
-                        toplevel.close();
-                    }
+                    toplevel.close();
                 }
             } else {
                 state.request_closing_active_client();
@@ -81,7 +80,7 @@ pub fn execute_compositor_command(
                 state
                     .wm
                     .move_window_to_workspace(&surface_id, 0, *workspace);
-                state.wm.focus_workspace(*workspace as usize);
+                state.wm.focus_workspace(*workspace);
                 state.needs_redraw = true;
                 state.set_input_focus(state.wm.get_focused_window(), dh);
                 state.update_pointer_focus(0);

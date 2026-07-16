@@ -152,6 +152,12 @@ pub struct DefaultStyler {
     pub screen_size: (u16, u16),
 }
 
+impl Default for DefaultStyler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DefaultStyler {
     pub fn new() -> Self {
         Self {
@@ -174,10 +180,10 @@ impl DefaultStyler {
         viewports: &HashMap<ObjectId, (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>)>,
         surface_to_viewport: &HashMap<ObjectId, ObjectId>,
     ) -> (f64, f64) {
-        if let Some(vp_id) = surface_to_viewport.get(surface_id) {
-            if let Some((_, Some(dst))) = viewports.get(vp_id) {
-                return (dst.0 as f64, dst.1 as f64);
-            }
+        if let Some(vp_id) = surface_to_viewport.get(surface_id)
+            && let Some((_, Some(dst))) = viewports.get(vp_id)
+        {
+            return (dst.0 as f64, dst.1 as f64);
         }
         if let Some(tex) = textures.get(surface_id) {
             return (
@@ -198,6 +204,13 @@ impl DefaultStyler {
         loop {
             if let Some(anim_win) = self.windows.get(&target_id) {
                 if let Some(ws_id) = anim_win.workspace_id {
+                    let focused_output = wm.get_focused_output_id();
+                    let win_output = wm
+                        .get_window_output_id(&target_id)
+                        .unwrap_or(focused_output);
+                    if win_output != focused_output {
+                        return 0.0;
+                    }
                     let active_ws = wm.get_active_workspace();
                     let ws_offset = self.workspace_offset.current;
                     let factor = 1.3; // Parallax factor to prevent adjacent workspaces peeking in
@@ -211,11 +224,7 @@ impl DefaultStyler {
                 }
                 return 0.0;
             }
-            if let Some(popup) = wm
-                .get_popups()
-                .iter()
-                .find(|p| &p.surface.id() == &target_id)
-            {
+            if let Some(popup) = wm.get_popups().iter().find(|p| p.surface.id() == target_id) {
                 target_id = popup.parent_surface_id.clone();
             } else {
                 break;
@@ -252,13 +261,13 @@ impl DefaultStyler {
             let mut src_w = 1.0;
             let mut src_h = 1.0;
 
-            if let Some(vp_id) = surface_to_viewport.get(&surface.id()) {
-                if let Some((Some(src), _)) = viewports.get(vp_id) {
-                    src_x = (src.0 / tex.w as f64) as f32;
-                    src_y = (src.1 / tex.h as f64) as f32;
-                    src_w = (src.2 / tex.w as f64) as f32;
-                    src_h = (src.3 / tex.h as f64) as f32;
-                }
+            if let Some(vp_id) = surface_to_viewport.get(&surface.id())
+                && let Some((Some(src), _)) = viewports.get(vp_id)
+            {
+                src_x = (src.0 / tex.w as f64) as f32;
+                src_y = (src.1 / tex.h as f64) as f32;
+                src_w = (src.2 / tex.w as f64) as f32;
+                src_h = (src.3 / tex.h as f64) as f32;
             }
 
             if is_base && self.style.blur.enabled && is_ssd {
@@ -353,8 +362,8 @@ impl DefaultStyler {
         input_regions: &HashMap<ObjectId, Vec<crate::wm::Rect>>,
     ) -> Option<HitResult> {
         for sub in subsurfaces.iter().rev() {
-            if sub.parent.id() == surface.id() {
-                if let Some(hit) = self.hit_test_recursive(
+            if sub.parent.id() == surface.id()
+                && let Some(hit) = self.hit_test_recursive(
                     &sub.surface,
                     abs_x + sub.x as f64,
                     abs_y + sub.y as f64,
@@ -365,9 +374,9 @@ impl DefaultStyler {
                     viewports,
                     surface_to_viewport,
                     input_regions,
-                ) {
-                    return Some(hit);
-                }
+                )
+            {
+                return Some(hit);
             }
         }
 
@@ -508,9 +517,9 @@ impl Styler for DefaultStyler {
 
             if wm_active_ws != self.active_workspace {
                 if wm_active_ws > self.active_workspace {
-                    self.workspace_offset.current = screen_w + self.workspace_offset.current;
+                    self.workspace_offset.current += screen_w;
                 } else {
-                    self.workspace_offset.current = -screen_w + self.workspace_offset.current;
+                    self.workspace_offset.current += -screen_w;
                 }
                 self.prev_active_workspace = Some(self.active_workspace);
                 self.active_workspace = wm_active_ws;
@@ -587,10 +596,10 @@ impl Styler for DefaultStyler {
                 anim_win.is_ssd = is_ssd;
                 anim_win.render_layer = render_layer;
 
-                if render_layer == 2 {
-                    if let Some(ws_id) = wm.get_workspace_id_for_window(&id) {
-                        anim_win.workspace_id = Some(ws_id);
-                    }
+                if render_layer == 2
+                    && let Some(ws_id) = wm.get_workspace_id_for_window(&id)
+                {
+                    anim_win.workspace_id = Some(ws_id);
                 }
 
                 if let Some(tex) = textures.get(&id) {

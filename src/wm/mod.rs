@@ -79,6 +79,12 @@ pub struct DisplayLayerState {
     pub windows: Vec<WindowState>,
 }
 
+impl Default for DisplayLayerState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DisplayLayerState {
     pub fn new() -> Self {
         Self {
@@ -105,6 +111,11 @@ impl Workspace {
 #[derive(Clone)]
 pub struct OutputState {
     pub id: usize,
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
     pub workspaces: SlotVec<Workspace>,
     pub active_workspace: usize,
     pub background: DisplayLayerState,
@@ -115,20 +126,30 @@ pub struct OutputState {
 }
 
 impl OutputState {
-    pub fn new(id: usize) -> Self {
+    pub fn new(id: usize, name: String, x: i32, y: i32, width: i32, height: i32) -> Self {
         let mut wx = SlotVec::new(10);
         for i in 0..10 {
             *wx.get_mut(i).unwrap() = Slot::Occupied(Workspace::new(i));
         }
         Self {
             id,
+            name,
+            x,
+            y,
+            width,
+            height,
             workspaces: wx,
             active_workspace: 0,
             background: DisplayLayerState::new(),
             bottom: DisplayLayerState::new(),
             top: DisplayLayerState::new(),
             overlay: DisplayLayerState::new(),
-            usable_area: Rect::default(),
+            usable_area: Rect {
+                x,
+                y,
+                w: width,
+                h: height,
+            },
         }
     }
 }
@@ -269,6 +290,7 @@ pub trait WindowManager {
         layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
         layer: u32,
         namesapce: String,
+        output_id: Option<usize>,
     );
 
     /// Sets the size of a layer shell surface.
@@ -373,10 +395,15 @@ pub trait WindowManager {
     fn get_workspace_windows_by_id(&self, workspace_id: usize) -> Vec<WindowState>;
     /// Get the workspace ID of a window
     fn get_workspace_id_for_window(&self, surface_id: &ObjectId) -> Option<usize>;
+    /// Get the focused output ID
+    fn get_focused_output_id(&self) -> usize;
+    /// Get the output ID a window is on
+    fn get_window_output_id(&self, surface_id: &ObjectId) -> Option<usize>;
     /// Check if resizing is in progress
     fn is_resizing(&self) -> bool;
     /// Check if dragging is in progress
     fn is_dragging(&self) -> bool;
+    fn set_outputs(&mut self, outputs: Vec<crate::gpu::OutputLayoutInfo>);
 
     /// Check if workspace compaction shifted the active workspace in this frame
     fn take_compaction_occurred(&self) -> bool {
@@ -412,7 +439,7 @@ impl<T> Slot<T> {
 
 #[derive(Clone)]
 pub struct SlotVec<T> {
-    inner: Vec<Slot<T>>,
+    pub inner: Vec<Slot<T>>,
 }
 
 impl<T> SlotVec<T>
@@ -426,15 +453,15 @@ where
     }
 
     pub fn get(&self, index: usize) -> Option<&Slot<T>> {
-        if index <= self.inner.len() - 1 {
+        if index < self.inner.len() {
             return Some(&self.inner[index]);
         }
 
-        return None;
+        None
     }
 
     pub fn get_mut(&mut self, index: usize) -> Option<&mut Slot<T>> {
-        if index <= self.inner.len() - 1 {
+        if index < self.inner.len() {
             return Some(&mut self.inner[index]);
         }
 
@@ -449,34 +476,34 @@ where
             return Some(&mut self.inner[index]);
         }
 
-        return None;
+        None
     }
 
     pub fn insert_after(&mut self, index: usize, val: T) -> bool {
         if self.get_mut(index + 1).unwrap().is_empty() {
             self.inner[index + 1] = Slot::Occupied(val);
-            return true;
+            true
         } else {
-            return false;
+            false
         }
     }
 
     pub fn insert_before(&mut self, index: usize, val: T) -> bool {
         if self.get_mut(index - 1).unwrap().is_empty() {
             self.inner[index - 1] = Slot::Occupied(val);
-            return true;
+            true
         } else {
-            return false;
+            false
         }
     }
 
     pub fn remove(&mut self, index: usize) -> bool {
-        if !self.get(index).is_some() {
+        if self.get(index).is_none() {
             self.inner[index] = Slot::Empty;
             return true;
         }
 
-        return false;
+        false
     }
 
     pub fn flatten(&self) -> Vec<&T> {

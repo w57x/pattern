@@ -11,25 +11,33 @@ drm = "0.15.0"
 gbm = "0.18.0"
 gbm-sys = "0.4.0"
 input = "0.10.0"
-libc = "0.2.184"
+libc = "0.2.186"
 libdisplay-info = "0.3.0"
 libloading = "0.9.0"
 libseat = "0.2.4"
-memmap2 = "0.9.10"
-nix = { version = "0.31.2", features = ["event", "fs", "time"] }
-rand = "0.10.1"
+memmap2 = "0.9.11"
+nix = { version = "0.31.3", features = ["event", "fs", "time"] }
+rand = "0.10.2"
 resvg = "0.47.0"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 udev = "0.9.3"
-wayland-protocols = { git = "https://github.com/Smithay/wayland-rs.git", features = ["server", "unstable", "staging"] }
-wayland-protocols-wlr = { git = "https://github.com/Smithay/wayland-rs.git", features = ["server"] }
-wayland-protocols-misc = { git = "https://github.com/Smithay/wayland-rs.git", features = ["server"] }
+wayland-protocols = { git = "https://github.com/Smithay/wayland-rs.git", features = [
+  "server",
+  "unstable",
+  "staging",
+] }
+wayland-protocols-wlr = { git = "https://github.com/Smithay/wayland-rs.git", features = [
+  "server",
+] }
+wayland-protocols-misc = { git = "https://github.com/Smithay/wayland-rs.git", features = [
+  "server",
+] }
 wayland-server = { git = "https://github.com/Smithay/wayland-rs.git" }
 wayland-backend = { git = "https://github.com/Smithay/wayland-rs.git" }
 xcursor = "0.3.10"
 xkbcommon = "0.9.0"
-mlua = { version = "0.11.6", features = ["lua55", "vendored", "send"] }
+mlua = { version = "0.12", features = ["lua55", "vendored", "send"] }
 thiserror = "2.0.18"
 
 [build-dependencies]

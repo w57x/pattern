@@ -6,43 +6,46 @@ use wayland_protocols::xdg::xdg_output::zv1::server::{
 use wayland_server::protocol::wl_output::WlOutput;
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<WlOutput, ()> for Composer {
+impl GlobalDispatch<WlOutput, usize> for Composer {
     fn bind(
         state: &mut Self,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<WlOutput>,
-        _global_data: &(),
+        global_data: &usize,
         data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
-        let output = data_init.init(resource, ());
+        let output_idx = *global_data;
+        let output = data_init.init(resource, output_idx);
 
-        output.geometry(
-            0,
-            0,
-            state.mode.size().0 as i32,
-            state.mode.size().1 as i32,
-            wayland_server::protocol::wl_output::Subpixel::Unknown,
-            "Pattern".to_string(),
-            "Virtual Display".to_string(),
-            wayland_server::protocol::wl_output::Transform::Normal,
-        );
-        output.mode(
-            wayland_server::protocol::wl_output::Mode::Current,
-            state.mode.size().0 as i32,
-            state.mode.size().1 as i32,
-            (state.mode.vrefresh() * 1000) as i32,
-        );
+        if let Some(out) = state.outputs_info.get(output_idx) {
+            output.geometry(
+                out.x,
+                out.y,
+                out.width,
+                out.height,
+                wayland_server::protocol::wl_output::Subpixel::Unknown,
+                "Pattern".to_string(),
+                out.card_info.name.clone(),
+                wayland_server::protocol::wl_output::Transform::Normal,
+            );
+            output.mode(
+                wayland_server::protocol::wl_output::Mode::Current,
+                out.width,
+                out.height,
+                (out.card_info.mode.vrefresh() * 1000) as i32,
+            );
 
-        if output.version() >= 2 {
-            output.scale(1);
-        }
-        if output.version() >= 4 {
-            output.name("WL-1".to_string());
-            output.description("Pattern Display".to_string());
-        }
-        if output.version() >= 2 {
-            output.done();
+            if output.version() >= 2 {
+                output.scale(1);
+            }
+            if output.version() >= 4 {
+                output.name(out.card_info.name.clone());
+                output.description(out.card_info.description.clone());
+            }
+            if output.version() >= 2 {
+                output.done();
+            }
         }
 
         for surface in &state.surfaces {
@@ -55,13 +58,13 @@ impl GlobalDispatch<WlOutput, ()> for Composer {
     }
 }
 
-impl Dispatch<WlOutput, ()> for Composer {
+impl Dispatch<WlOutput, usize> for Composer {
     fn request(
         _state: &mut Self,
         _client: &wayland_server::Client,
         _resource: &WlOutput,
         _request: wayland_server::protocol::wl_output::Request,
-        _data: &(),
+        _data: &usize,
         _dhandle: &wayland_server::DisplayHandle,
         _data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
@@ -94,14 +97,16 @@ impl Dispatch<ZxdgOutputManagerV1, ()> for Composer {
         match request {
             zxdg_output_manager_v1::Request::GetXdgOutput { id, output } => {
                 let xdg_output = data_init.init(id, output.clone());
-                let (w, h) = state.mode.size();
-                xdg_output.logical_position(0, 0);
-                xdg_output.logical_size(w as i32, h as i32);
-                if xdg_output.version() >= 2 {
-                    xdg_output.name(state.card_info.name.clone());
-                    xdg_output.description(state.card_info.description.clone());
+                let output_idx = *output.data::<usize>().unwrap_or(&0);
+                if let Some(out) = state.outputs_info.get(output_idx) {
+                    xdg_output.logical_position(out.x, out.y);
+                    xdg_output.logical_size(out.width, out.height);
+                    if xdg_output.version() >= 2 {
+                        xdg_output.name(out.card_info.name.clone());
+                        xdg_output.description(out.card_info.description.clone());
+                    }
+                    xdg_output.done();
                 }
-                xdg_output.done();
             }
             zxdg_output_manager_v1::Request::Destroy => {}
             _ => {}
@@ -133,13 +138,15 @@ impl GlobalDispatch<ZxdgOutputV1, WlOutput> for Composer {
         data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
         let xdg_output = data_init.init(resource, output.clone());
-        let (w, h) = state.mode.size();
-        xdg_output.logical_position(0, 0);
-        xdg_output.logical_size(w as i32, h as i32);
-        if xdg_output.version() >= 2 {
-            xdg_output.name("PatternDisplay".to_string());
-            xdg_output.description("Pattern Virtual Output".to_string());
+        let output_idx = *output.data::<usize>().unwrap_or(&0);
+        if let Some(out) = state.outputs_info.get(output_idx) {
+            xdg_output.logical_position(out.x, out.y);
+            xdg_output.logical_size(out.width, out.height);
+            if xdg_output.version() >= 2 {
+                xdg_output.name(out.card_info.name.clone());
+                xdg_output.description(out.card_info.description.clone());
+            }
+            xdg_output.done();
         }
-        xdg_output.done();
     }
 }

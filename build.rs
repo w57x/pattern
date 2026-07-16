@@ -15,24 +15,24 @@ fn main() {
         let entry = entry.unwrap();
         let path = entry.path();
 
-        if let Some(ext) = path.extension() {
-            if ext == "vert" || ext == "frag" {
-                let file_name = path.file_name().unwrap().to_str().unwrap();
-                let output_path = out_dir.join(format!("{}.spv", file_name));
+        if let Some(ext) = path.extension()
+            && (ext == "vert" || ext == "frag")
+        {
+            let file_name = path.file_name().unwrap().to_str().unwrap();
+            let output_path = out_dir.join(format!("{}.spv", file_name));
 
-                println!("cargo:warning=Compiling shader: {}", file_name);
+            println!("cargo:warning=Compiling shader: {}", file_name);
 
-                let status = Command::new("glslangValidator")
-                    .arg("-V")
-                    .arg(&path)
-                    .arg("-o")
-                    .arg(&output_path)
-                    .status()
-                    .expect("Failed to execute glslangValidator");
+            let status = Command::new("glslangValidator")
+                .arg("-V")
+                .arg(&path)
+                .arg("-o")
+                .arg(&output_path)
+                .status()
+                .expect("Failed to execute glslangValidator");
 
-                if !status.success() {
-                    panic!("Shader compilation failed for {}", file_name);
-                }
+            if !status.success() {
+                panic!("Shader compilation failed for {}", file_name);
             }
         }
     }

@@ -1,6 +1,5 @@
 use ash::{Device, Entry, Instance, vk};
 use drm::buffer::Buffer as _;
-use std::ffi::CStr;
 use std::os::fd::{IntoRawFd, OwnedFd};
 use tracing::{error, warn};
 
@@ -85,12 +84,18 @@ impl Drop for VulkanContext {
     }
 }
 
+impl Default for VulkanContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VulkanContext {
     pub fn new() -> Self {
         let entry = unsafe { Entry::load().expect("Failed to load Vulkan driver") };
 
         let app_info = vk::ApplicationInfo::default()
-            .application_name(CStr::from_bytes_with_nul(b"Pattern Engine\0").unwrap())
+            .application_name(c"Pattern Engine")
             .api_version(vk::make_api_version(0, 1, 2, 0)); // Vulkan 1.2
 
         let create_info = vk::InstanceCreateInfo::default().application_info(&app_info);
@@ -411,8 +416,7 @@ impl VulkanContext {
         let kawase_up_shader_module =
             unsafe { Self::create_shader_module(device, kawase_up_shader_code) };
 
-        let main_function_name =
-            unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"main\0") };
+        let main_function_name = c"main";
 
         let mut shader_stages = [
             vk::PipelineShaderStageCreateInfo::default()
@@ -1904,8 +1908,8 @@ impl VulkanContext {
                 let mut regions = Vec::with_capacity(damage.len());
                 for rect in damage {
                     // Clamp rect to image dimensions
-                    let x = rect.x.max(0) as i32;
-                    let y = rect.y.max(0) as i32;
+                    let x = rect.x.max(0);
+                    let y = rect.y.max(0);
                     let w = rect.w.min(width as i32 - x).max(0) as u32;
                     let h = rect.h.min(height as i32 - y).max(0) as u32;
 

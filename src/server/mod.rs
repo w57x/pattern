@@ -172,6 +172,7 @@ pub struct Composer {
     pub input_focus: Option<WlSurface>,
     pub mode: drm::control::Mode,
     pub card_info: CardInfo,
+    pub outputs_info: Vec<crate::gpu::OutputLayoutInfo>,
 
     pub pools: HashMap<ObjectId, (OwnedFd, memmap2::MmapMut)>,
     pub buffers: HashMap<ObjectId, ShmBuffer>,
@@ -214,6 +215,7 @@ pub struct Composer {
     pub hold_gestures: HashMap<ObjectId, Vec<zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1>>,
 
     pub outputs: Vec<wayland_server::protocol::wl_output::WlOutput>,
+    pub wl_output_globals: Vec<wayland_server::backend::GlobalId>,
 
     pub pending_syncobj_state:
         HashMap<ObjectId, crate::server::proto::linux_drm_syncobj::SurfaceSyncObjState>,
@@ -308,12 +310,12 @@ pub struct SubsurfaceData {
 
 impl Composer {
     pub fn init(
+        dh: &wayland_server::DisplayHandle,
         vkctx: Rc<VulkanContext>,
-        mode: drm::control::Mode,
-        card_info: CardInfo,
+        outputs_info: Vec<crate::gpu::OutputLayoutInfo>,
         gpu_dev_t: u64,
         dmabuf_table_fd: std::os::unix::io::OwnedFd,
-        wm: Box<dyn crate::wm::WindowManager>,
+        mut wm: Box<dyn crate::wm::WindowManager>,
         styler: Box<dyn crate::styler::Styler>,
         config_manager: crate::config::ConfigManager,
     ) -> Self {
@@ -363,6 +365,20 @@ impl Composer {
 
         let xkb_state = xkb::State::new(&keymap);
 
+        let mode = outputs_info[0].card_info.mode;
+        let card_info = outputs_info[0].card_info.clone();
+
+        wm.set_outputs(outputs_info.clone());
+
+        let mut wl_output_globals = Vec::new();
+        for (i, _) in outputs_info.iter().enumerate() {
+            let global_id = dh
+                .create_global::<Composer, wayland_server::protocol::wl_output::WlOutput, usize>(
+                    4, i,
+                );
+            wl_output_globals.push(global_id);
+        }
+
         Self {
             rng: ThreadRng::default(),
             surfaces: Vec::new(),
@@ -371,6 +387,7 @@ impl Composer {
             input_focus: None,
             mode,
             card_info,
+            outputs_info,
 
             pools: HashMap::new(),
             buffers: HashMap::new(),
@@ -408,6 +425,7 @@ impl Composer {
             cursor_pos_hint: None,
 
             outputs: Vec::new(),
+            wl_output_globals,
 
             pending_syncobj_state: HashMap::new(),
             syncobj_state: HashMap::new(),
@@ -472,6 +490,32 @@ impl Composer {
 }
 
 impl Composer {
+    pub fn update_outputs(
+        &mut self,
+        dh: &wayland_server::DisplayHandle,
+        new_outputs: Vec<crate::gpu::OutputLayoutInfo>,
+    ) {
+        tracing::info!("Updating composer outputs: {} displays", new_outputs.len());
+
+        for global_id in std::mem::take(&mut self.wl_output_globals) {
+            dh.disable_global::<Composer>(global_id.clone());
+            dh.remove_global::<Composer>(global_id);
+        }
+
+        self.outputs_info = new_outputs;
+        self.wm.set_outputs(self.outputs_info.clone());
+
+        for (i, _) in self.outputs_info.iter().enumerate() {
+            let global_id = dh
+                .create_global::<Composer, wayland_server::protocol::wl_output::WlOutput, usize>(
+                    4, i,
+                );
+            self.wl_output_globals.push(global_id);
+        }
+
+        self.needs_redraw = true;
+    }
+
     pub fn update_keymap(
         &mut self,
         layout: &str,
@@ -552,7 +596,7 @@ impl Composer {
                 }
                 CompositorCommand::Exec { full_sh_cmd } => {
                     let _ = std::process::Command::new("sh")
-                        .args(&["-c", &full_sh_cmd])
+                        .args(["-c", &full_sh_cmd])
                         .spawn();
                 }
                 CompositorCommand::CloseWindow { id } => {
@@ -562,10 +606,9 @@ impl Composer {
                             .all_windows()
                             .into_iter()
                             .find(|w| w.surface.id().protocol_id() == win_id)
+                            && let Some(toplevel) = &window.toplevel
                         {
-                            if let Some(toplevel) = &window.toplevel {
-                                toplevel.close();
-                            }
+                            toplevel.close();
                         }
                     } else {
                         self.request_closing_active_client();
@@ -604,7 +647,7 @@ impl Composer {
 
                     if let Some(surface_id) = target_id {
                         self.wm.move_window_to_workspace(&surface_id, 0, workspace);
-                        self.wm.focus_workspace(workspace as usize);
+                        self.wm.focus_workspace(workspace);
                         self.needs_redraw = true;
                         self.set_input_focus(self.wm.get_focused_window(), dh);
                         self.update_pointer_focus(0);
@@ -704,19 +747,17 @@ impl Composer {
             None
         };
 
-        if let Some((_, _ti_seat, ti_state)) = active_ti {
-            if let Some(focused_surf) = &ti_state.surface {
-                if let Some((px, py)) = self.get_surface_position(&focused_surf.id()) {
-                    // we find any popups associated with an input method
-                    for (_, popup_surf, _im) in &self.input_popups {
-                        if popup_surf.is_alive() {
-                            let x = px + ti_state.cursor_rect.0 as f64;
-                            let y =
-                                py + ti_state.cursor_rect.1 as f64 + ti_state.cursor_rect.3 as f64;
+        if let Some((_, _ti_seat, ti_state)) = active_ti
+            && let Some(focused_surf) = &ti_state.surface
+            && let Some((px, py)) = self.get_surface_position(&focused_surf.id())
+        {
+            // we find any popups associated with an input method
+            for (_, popup_surf, _im) in &self.input_popups {
+                if popup_surf.is_alive() {
+                    let x = px + ti_state.cursor_rect.0 as f64;
+                    let y = py + ti_state.cursor_rect.1 as f64 + ti_state.cursor_rect.3 as f64;
 
-                            surfaces.push((popup_surf.clone(), x, y));
-                        }
-                    }
+                    surfaces.push((popup_surf.clone(), x, y));
                 }
             }
         }
@@ -734,10 +775,9 @@ impl Composer {
             .subsurfaces
             .iter()
             .find(|s| s.surface.id() == *surface_id)
+            && let Some((px, py)) = self.get_surface_position(&sub.parent.id())
         {
-            if let Some((px, py)) = self.get_surface_position(&sub.parent.id()) {
-                return Some((px + sub.x as f64, py + sub.y as f64));
-            }
+            return Some((px + sub.x as f64, py + sub.y as f64));
         }
 
         None
@@ -797,17 +837,16 @@ impl Composer {
         mut surface: Option<WlSurface>,
         dh: &wayland_server::DisplayHandle,
     ) {
-        if let Some(surf) = &surface {
-            if let Some(win) = self
+        if let Some(surf) = &surface
+            && let Some(win) = self
                 .wm
                 .all_windows()
                 .iter()
                 .find(|w| w.surface.id() == surf.id())
-            {
-                if win.layer_surface.is_some() && win.keyboard_interactivity == 0 {
-                    surface = None;
-                }
-            }
+            && win.layer_surface.is_some()
+            && win.keyboard_interactivity == 0
+        {
+            surface = None;
         }
 
         if self.input_focus.as_ref().map(|s| s.id()) == surface.as_ref().map(|s| s.id()) {
@@ -822,27 +861,26 @@ impl Composer {
                 .all_windows()
                 .iter()
                 .find(|w| w.surface.id() == old_focus.id())
+                && let (Some(toplevel), Some(xdg_surface)) = (&win.toplevel, &win.xdg_surface)
             {
-                if let (Some(toplevel), Some(xdg_surface)) = (&win.toplevel, &win.xdg_surface) {
-                    let mut states = Vec::new();
-                    // NOTE: Intentionally omitting State::Activated
-                    if win.maximized {
-                        states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
-                    }
-                    if win.fullscreen {
-                        states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
-                    }
-
-                    // Only enforcing size if maximized or fullscreen
-                    let (cfg_w, cfg_h) = if win.maximized || win.fullscreen {
-                        (win.w, win.h)
-                    } else {
-                        (0, 0)
-                    };
-
-                    toplevel.configure(cfg_w, cfg_h, states);
-                    xdg_surface.configure(self.serial);
+                let mut states = Vec::new();
+                // NOTE: Intentionally omitting State::Activated
+                if win.maximized {
+                    states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
                 }
+                if win.fullscreen {
+                    states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
+                }
+
+                // Only enforcing size if maximized or fullscreen
+                let (cfg_w, cfg_h) = if win.maximized || win.fullscreen {
+                    (win.w, win.h)
+                } else {
+                    (0, 0)
+                };
+
+                toplevel.configure(cfg_w, cfg_h, states);
+                xdg_surface.configure(self.serial);
             }
 
             if let Some(old_client) = old_focus.client() {
@@ -877,26 +915,25 @@ impl Composer {
                 .all_windows()
                 .iter()
                 .find(|w| w.surface.id() == new_focus.id())
+                && let (Some(toplevel), Some(xdg_surface)) = (&win.toplevel, &win.xdg_surface)
             {
-                if let (Some(toplevel), Some(xdg_surface)) = (&win.toplevel, &win.xdg_surface) {
-                    let mut states = Vec::new();
-                    states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
-                    if win.maximized {
-                        states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
-                    }
-                    if win.fullscreen {
-                        states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
-                    }
-
-                    let (cfg_w, cfg_h) = if win.maximized || win.fullscreen {
-                        (win.w, win.h)
-                    } else {
-                        (0, 0)
-                    };
-
-                    toplevel.configure(cfg_w, cfg_h, states);
-                    xdg_surface.configure(self.serial);
+                let mut states = Vec::new();
+                states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
+                if win.maximized {
+                    states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
                 }
+                if win.fullscreen {
+                    states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
+                }
+
+                let (cfg_w, cfg_h) = if win.maximized || win.fullscreen {
+                    (win.w, win.h)
+                } else {
+                    (0, 0)
+                };
+
+                toplevel.configure(cfg_w, cfg_h, states);
+                xdg_surface.configure(self.serial);
             }
 
             if let Some(client) = new_focus.client() {
@@ -977,11 +1014,11 @@ impl Composer {
 
         if self.pointer_grab.as_ref().map(|s| s.id()) == Some(id.clone()) {
             let mut shifted = false;
-            if let Some(sub) = self.subsurfaces.iter().find(|s| s.surface.id() == *id) {
-                if sub.parent.is_alive() {
-                    self.pointer_grab = Some(sub.parent.clone());
-                    shifted = true;
-                }
+            if let Some(sub) = self.subsurfaces.iter().find(|s| s.surface.id() == *id)
+                && sub.parent.is_alive()
+            {
+                self.pointer_grab = Some(sub.parent.clone());
+                shifted = true;
             }
             if !shifted {
                 self.pointer_grab = None;
@@ -1001,10 +1038,10 @@ impl Composer {
 
     pub fn broadcast_selection_offer(&self, dh: &wayland_server::DisplayHandle) {
         // we send to the focused client (standard wayland)
-        if let Some(focus) = &self.input_focus {
-            if let Some(client) = focus.client() {
-                self.send_selection_offer(&client, dh);
-            }
+        if let Some(focus) = &self.input_focus
+            && let Some(client) = focus.client()
+        {
+            self.send_selection_offer(&client, dh);
         }
 
         // we send to all data control devices (privileged clipboard listeners)
@@ -1018,10 +1055,10 @@ impl Composer {
     }
 
     pub fn broadcast_primary_selection_offer(&self, dh: &wayland_server::DisplayHandle) {
-        if let Some(focus) = &self.input_focus {
-            if let Some(client) = focus.client() {
-                self.send_primary_selection_offer(&client, dh);
-            }
+        if let Some(focus) = &self.input_focus
+            && let Some(client) = focus.client()
+        {
+            self.send_primary_selection_offer(&client, dh);
         }
 
         for device in &self.data_control_devices {
@@ -1222,14 +1259,14 @@ impl Composer {
             return;
         }
 
-        if let Some(grabbed_surface) = self.pointer_grab.clone() {
-            if let Some((abs_x, abs_y)) = self.get_surface_position(&grabbed_surface.id()) {
-                let (cx, cy) = self.cursor_pos;
-                let local_x = cx - abs_x;
-                let local_y = cy - abs_y;
-                self.set_pointer_focus(Some(grabbed_surface), local_x, local_y, time);
-                return;
-            }
+        if let Some(grabbed_surface) = self.pointer_grab.clone()
+            && let Some((abs_x, abs_y)) = self.get_surface_position(&grabbed_surface.id())
+        {
+            let (cx, cy) = self.cursor_pos;
+            let local_x = cx - abs_x;
+            let local_y = cy - abs_y;
+            self.set_pointer_focus(Some(grabbed_surface), local_x, local_y, time);
+            return;
         }
 
         let (cx, cy) = self.cursor_pos;
@@ -1256,16 +1293,16 @@ impl Composer {
         time: u32,
     ) {
         if self.pointer_focus == surface {
-            if let Some(surf) = &self.pointer_focus {
-                if let Some(client) = surf.client() {
-                    for pointer in self
-                        .pointers
-                        .iter()
-                        .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
-                    {
-                        pointer.motion(time, local_x, local_y);
-                        pointer.frame();
-                    }
+            if let Some(surf) = &self.pointer_focus
+                && let Some(client) = surf.client()
+            {
+                for pointer in self
+                    .pointers
+                    .iter()
+                    .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
+                {
+                    pointer.motion(time, local_x, local_y);
+                    pointer.frame();
                 }
             }
             return;
@@ -1299,18 +1336,18 @@ impl Composer {
                 .filter(|p| p.client().map(|c| c.id()) == Some(client_id.clone()))
             {
                 // we send Leave if this client owned the old focus
-                if let Some(old_surf) = &old_focus {
-                    if old_client_id == Some(client_id.clone()) {
-                        pointer.leave(serial, old_surf);
-                    }
+                if let Some(old_surf) = &old_focus
+                    && old_client_id == Some(client_id.clone())
+                {
+                    pointer.leave(serial, old_surf);
                 }
 
                 // we send Enter if this client owns the new focus
-                if let Some(new_surf) = &self.pointer_focus {
-                    if new_client_id == Some(client_id.clone()) {
-                        self.last_enter_serial.insert(client_id.clone(), serial);
-                        pointer.enter(serial, new_surf, local_x, local_y);
-                    }
+                if let Some(new_surf) = &self.pointer_focus
+                    && new_client_id == Some(client_id.clone())
+                {
+                    self.last_enter_serial.insert(client_id.clone(), serial);
+                    pointer.enter(serial, new_surf, local_x, local_y);
                 }
 
                 pointer.frame();
@@ -1342,15 +1379,15 @@ impl Composer {
                 .into_iter()
                 .find(|w| w.surface.id() == focused_id);
 
-            if let Some(window) = active_window {
-                if let Some(toplevel) = window.toplevel {
-                    toplevel.close();
-                    return true;
-                }
+            if let Some(window) = active_window
+                && let Some(toplevel) = window.toplevel
+            {
+                toplevel.close();
+                return true;
             }
         }
 
-        return false;
+        false
     }
 }
 

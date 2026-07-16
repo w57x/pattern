@@ -105,25 +105,23 @@ impl Dispatch<ZwpLinuxBufferParamsV1, ()> for Composer {
                 modifier_hi,
                 modifier_lo,
                 ..
-            } => {
-                if plane_idx == 0 {
-                    // The client gave us the raw GPU File Descriptor
-                    let modifier = ((modifier_hi as u64) << 32) | (modifier_lo as u64);
+            } if plane_idx == 0 => {
+                // The client gave us the raw GPU File Descriptor
+                let modifier = ((modifier_hi as u64) << 32) | (modifier_lo as u64);
 
-                    // Store it temporarily in our pending map
-                    state.pending_dmabufs.insert(
-                        resource.id(),
-                        DmabufData {
-                            fd,
-                            width: 0,
-                            height: 0, // Set in CreateImmed
-                            offset,
-                            stride,
-                            format: 0,
-                            modifier,
-                        },
-                    );
-                }
+                // Store it temporarily in our pending map
+                state.pending_dmabufs.insert(
+                    resource.id(),
+                    DmabufData {
+                        fd,
+                        width: 0,
+                        height: 0, // Set in CreateImmed
+                        offset,
+                        stride,
+                        format: 0,
+                        modifier,
+                    },
+                );
             }
             zwp_linux_buffer_params_v1::Request::Create {
                 width,

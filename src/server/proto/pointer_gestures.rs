@@ -69,10 +69,7 @@ impl Dispatch<zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1, ()> for Co
         _dhandle: &wayland_server::DisplayHandle,
         _data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
-        match request {
-            zwp_pointer_gesture_swipe_v1::Request::Destroy => {}
-            _ => {}
-        }
+        if let zwp_pointer_gesture_swipe_v1::Request::Destroy = request {}
     }
 }
 
@@ -86,10 +83,7 @@ impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()> for Co
         _dhandle: &wayland_server::DisplayHandle,
         _data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
-        match request {
-            zwp_pointer_gesture_pinch_v1::Request::Destroy => {}
-            _ => {}
-        }
+        if let zwp_pointer_gesture_pinch_v1::Request::Destroy = request {}
     }
 }
 
@@ -103,9 +97,6 @@ impl Dispatch<zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1, ()> for Comp
         _dhandle: &wayland_server::DisplayHandle,
         _data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
-        match request {
-            zwp_pointer_gesture_hold_v1::Request::Destroy => {}
-            _ => {}
-        }
+        if let zwp_pointer_gesture_hold_v1::Request::Destroy = request {}
     }
 }

@@ -28,12 +28,11 @@ impl Dispatch<ZwpVirtualKeyboardManagerV1, ()> for Composer {
         _dhandle: &wayland_server::DisplayHandle,
         data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
-        match request {
-            zwp_virtual_keyboard_manager_v1::Request::CreateVirtualKeyboard { seat: _, id } => {
-                let _vk = data_init.init(id, ());
-                // We could track virtual keyboards in state, but for now we just handle their requests
-            }
-            _ => {}
+        if let zwp_virtual_keyboard_manager_v1::Request::CreateVirtualKeyboard { seat: _, id } =
+            request
+        {
+            let _vk = data_init.init(id, ());
+            // We could track virtual keyboards in state, but for now we just handle their requests
         }
     }
 }

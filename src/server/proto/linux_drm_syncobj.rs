@@ -131,13 +131,10 @@ impl Dispatch<WpLinuxDrmSyncobjTimelineV1, Timeline> for Composer {
         _data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
         use wayland_protocols::wp::linux_drm_syncobj::v1::server::wp_linux_drm_syncobj_timeline_v1::Request;
-        match request {
-            Request::Destroy => {
-                if let Some(e) = state.syncobj_timelines.remove(&resource.id()) {
-                    state.dead_semaphores.push(e);
-                }
-            }
-            _ => {}
+        if let Request::Destroy = request
+            && let Some(e) = state.syncobj_timelines.remove(&resource.id())
+        {
+            state.dead_semaphores.push(e);
         }
     }
 

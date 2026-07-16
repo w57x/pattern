@@ -17,7 +17,7 @@ use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use wayland_server::{Display, ListeningSocket, Resource};
 
 use crate::{
-    gpu::{Card, CardInfo, buffer::Buffer},
+    gpu::{Card, buffer::Buffer},
     input::Input,
     server::{ClientState, Composer},
     vulkan::{DrawCommand, RenderQuad, VulkanContext, frame::VulkanFrame},
@@ -30,9 +30,15 @@ pub struct Backend {
     pub swapchain: Vec<VulkanFrame>,
     pub width: u32,
     pub height: u32,
-    pub info: CardInfo,
+    pub outputs: Vec<crate::gpu::OutputLayoutInfo>,
     pub gpu_dev_t: u64,
     pub table_fd: Option<OwnedFd>,
+}
+
+impl Default for Backend {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Backend {
@@ -51,7 +57,7 @@ impl Backend {
         info!("{card}");
         info!("{:?}", card.get_driver().unwrap());
 
-        let info = card.fetch_card_info();
+        let outputs = card.fetch_card_infos();
         let stat = nix::sys::stat::fstat(card.as_fd()).unwrap();
         let gpu_dev_t = stat.st_rdev as libc::dev_t;
 
@@ -101,9 +107,19 @@ impl Backend {
         .expect("Failed to seal format table");
 
         let gbm = Device::new(card).expect("Failed to create GBM device");
-        let (width, height) = info.mode.size();
+        let mut total_width = 0;
+        let mut max_height = 0;
+        for out in &outputs {
+            total_width += out.width;
+            max_height = max_height.max(out.height);
+        }
 
-        info!("{:?}", info.mode);
+        let width = total_width as u32;
+        let height = max_height as u32;
+
+        for out in &outputs {
+            info!("{:?} @ ({}, {})", out.card_info.mode, out.x, out.y);
+        }
 
         info!("Creating Vulkan Context");
         let vkctx = Rc::new(VulkanContext::new());
@@ -113,8 +129,8 @@ impl Backend {
         for _ in 0..2 {
             let bo = Buffer::new(
                 gbm.create_buffer_object(
-                    width as u32,
-                    height as u32,
+                    width,
+                    height,
                     Format::Xrgb8888,
                     BufferObjectFlags::SCANOUT | BufferObjectFlags::RENDERING,
                 )
@@ -122,13 +138,11 @@ impl Backend {
             );
 
             let fb_handle = gbm.add_framebuffer(&bo, 24, 32).unwrap();
-            let (image, memory) =
-                unsafe { vkctx.import_gbm_buffer(&bo, width as u32, height as u32) };
+            let (image, memory) = unsafe { vkctx.import_gbm_buffer(&bo, width, height) };
 
-            let (vk_view, vk_fb) =
-                unsafe { vkctx.create_vk_framebuffer(image, width as u32, height as u32) };
+            let (vk_view, vk_fb) = unsafe { vkctx.create_vk_framebuffer(image, width, height) };
 
-            let blur_chain = unsafe { vkctx.create_blur_chain(3, width as u32, height as u32) };
+            let blur_chain = unsafe { vkctx.create_blur_chain(3, width, height) };
 
             swapchain.push(VulkanFrame {
                 bo,
@@ -146,12 +160,91 @@ impl Backend {
             gbm,
             vkctx,
             swapchain,
-            width: width as u32,
-            height: height as u32,
-            info,
+            width,
+            height,
+            outputs,
             gpu_dev_t,
             table_fd: Some(table_fd),
         }
+    }
+
+    pub fn update_outputs(&mut self) -> bool {
+        let new_outputs = self.gbm.fetch_card_infos();
+        if new_outputs.len() == self.outputs.len() {
+            let mut changed = false;
+            for (old, new) in self.outputs.iter().zip(new_outputs.iter()) {
+                if old.x != new.x
+                    || old.y != new.y
+                    || old.width != new.width
+                    || old.height != new.height
+                    || old.card_info.crtc_handle != new.card_info.crtc_handle
+                {
+                    changed = true;
+                    break;
+                }
+            }
+            if !changed {
+                return false;
+            }
+        }
+
+        info!("Display layout change detected! Rebuilding swapchain.");
+
+        // Tear down swapchain
+        let old_swapchain = std::mem::take(&mut self.swapchain);
+        for frame in old_swapchain {
+            unsafe { frame.destroy(&self.vkctx.device, &self.gbm) };
+        }
+
+        self.outputs = new_outputs;
+
+        let mut total_width = 0;
+        let mut max_height = 0;
+        for out in &self.outputs {
+            total_width += out.width;
+            max_height = max_height.max(out.height);
+        }
+
+        self.width = total_width as u32;
+        self.height = max_height as u32;
+
+        let mut swapchain = Vec::with_capacity(2);
+        for _ in 0..2 {
+            let bo = Buffer::new(
+                self.gbm
+                    .create_buffer_object(
+                        self.width,
+                        self.height,
+                        Format::Xrgb8888,
+                        BufferObjectFlags::SCANOUT | BufferObjectFlags::RENDERING,
+                    )
+                    .unwrap(),
+            );
+
+            let fb_handle = self.gbm.add_framebuffer(&bo, 24, 32).unwrap();
+            let (image, memory) =
+                unsafe { self.vkctx.import_gbm_buffer(&bo, self.width, self.height) };
+
+            let (vk_view, vk_fb) = unsafe {
+                self.vkctx
+                    .create_vk_framebuffer(image, self.width, self.height)
+            };
+
+            let blur_chain = unsafe { self.vkctx.create_blur_chain(3, self.width, self.height) };
+
+            swapchain.push(VulkanFrame {
+                bo,
+                image,
+                memory,
+                fb_handle,
+                vk_view,
+                vk_fb,
+                blur_target: Some(blur_chain),
+            });
+        }
+
+        self.swapchain = swapchain;
+        true
     }
 }
 
@@ -167,6 +260,7 @@ impl Drop for Backend {
 
 pub struct EventLoop {
     epoll: epoll::Epoll,
+    udev_monitor: udev::MonitorSocket,
 }
 
 impl EventLoop {
@@ -207,7 +301,24 @@ impl EventLoop {
             )
             .unwrap();
 
-        Self { epoll }
+        let udev_monitor = udev::MonitorBuilder::new()
+            .unwrap()
+            .match_subsystem("drm")
+            .unwrap()
+            .listen()
+            .unwrap();
+
+        epoll
+            .add(
+                &udev_monitor,
+                epoll::EpollEvent::new(epoll::EpollFlags::EPOLLIN, 5),
+            )
+            .unwrap();
+
+        Self {
+            epoll,
+            udev_monitor,
+        }
     }
 
     pub fn run(
@@ -220,7 +331,7 @@ impl EventLoop {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut frame_index = 0;
         let mut initial_modeset = true;
-        let mut waiting_for_flip = false;
+        let mut pending_flip_crtcs = HashSet::new();
         let mut running = true;
         let mut active_gamma_blob: Option<u64> = None;
 
@@ -229,7 +340,7 @@ impl EventLoop {
         debug!("Started :)");
 
         while running {
-            let timeout = if waiting_for_flip {
+            let timeout = if !pending_flip_crtcs.is_empty() {
                 PollTimeout::NONE
             } else if composer.needs_redraw {
                 PollTimeout::ZERO
@@ -237,7 +348,7 @@ impl EventLoop {
                 PollTimeout::NONE
             };
 
-            let mut events = [epoll::EpollEvent::empty(); 5];
+            let mut events = [epoll::EpollEvent::empty(); 6];
             let num_events = match self.epoll.wait(&mut events, timeout) {
                 Ok(n) => n,
                 Err(e) if e == nix::errno::Errno::EINTR => 0,
@@ -252,45 +363,44 @@ impl EventLoop {
                     0 => {
                         let drm_events = backend.gbm.receive_events().unwrap();
                         for event in drm_events {
-                            match event {
-                                drm::control::Event::PageFlip(v) => {
-                                    waiting_for_flip = false;
+                            if let drm::control::Event::PageFlip(v) = event {
+                                pending_flip_crtcs.remove(&v.crtc);
 
-                                    let now = crate::utils::time::gettime();
-                                    let tv_sec = (v.duration.as_micros() / 1_000_000) as u64;
-                                    let tv_nsec =
-                                        (v.duration.as_micros() % 1_000_000) as u32 * 1000;
-                                    let seq = v.frame as u64;
+                                let now = crate::utils::time::gettime();
+                                let tv_sec = (v.duration.as_micros() / 1_000_000) as u64;
+                                let tv_nsec = (v.duration.as_micros() % 1_000_000) as u32 * 1000;
+                                let seq = v.frame as u64;
 
-                                    for cb in composer.active_frame_callbacks.drain(..) {
-                                        cb.done(now);
-                                    }
-
-                                    for fb in composer.feedbacks_to_present.drain(..) {
-                                        if let Some(client) = fb.client() {
-                                            if let Some(output) =
-                                                composer.outputs.iter().find(|o| {
-                                                    o.client().map(|c| c.id()) == Some(client.id())
-                                                })
-                                            {
-                                                fb.sync_output(output);
-                                            }
-                                        }
-                                        fb.presented(
-                                            (tv_sec >> 32) as u32,
-                                            (tv_sec & 0xFFFFFFFF) as u32,
-                                            tv_nsec,
-                                            ((1. / backend.info.mode.vrefresh() as f64)
-                                                * 1_000_000.0
-                                                * 1_000.0)
-                                                as u32,
-                                            (seq >> 32) as u32,
-                                            (seq & 0xFFFFFFFF) as u32,
-                                            wp_presentation_feedback::Kind::Vsync,
-                                        );
-                                    }
+                                for cb in composer.active_frame_callbacks.drain(..) {
+                                    cb.done(now);
                                 }
-                                _ => {}
+
+                                for fb in composer.feedbacks_to_present.drain(..) {
+                                    if let Some(client) = fb.client()
+                                        && let Some(output) = composer.outputs.iter().find(|o| {
+                                            o.client().map(|c| c.id()) == Some(client.id())
+                                        })
+                                    {
+                                        fb.sync_output(output);
+                                    }
+                                    let vrefresh = backend
+                                        .outputs
+                                        .iter()
+                                        .find(|o| o.card_info.crtc_handle == v.crtc)
+                                        .map(|o| o.card_info.mode.vrefresh())
+                                        .unwrap_or_else(|| {
+                                            backend.outputs[0].card_info.mode.vrefresh()
+                                        });
+                                    fb.presented(
+                                        (tv_sec >> 32) as u32,
+                                        (tv_sec & 0xFFFFFFFF) as u32,
+                                        tv_nsec,
+                                        ((1. / vrefresh as f64) * 1_000_000.0 * 1_000.0) as u32,
+                                        (seq >> 32) as u32,
+                                        (seq & 0xFFFFFFFF) as u32,
+                                        wp_presentation_feedback::Kind::Vsync,
+                                    );
+                                }
                             }
                         }
                     }
@@ -315,13 +425,33 @@ impl EventLoop {
                     4 => {
                         display.dispatch_clients(composer).unwrap();
                     }
+                    5 => {
+                        let iter = self.udev_monitor.iter();
+                        for event in iter {
+                            debug!(
+                                "udev event: action={:?}, devpath={:?}",
+                                event.event_type(),
+                                event.syspath()
+                            );
+                        }
+                        if backend.update_outputs() {
+                            composer.update_outputs(&dh, backend.outputs.clone());
+                            let active_crtcs: HashSet<_> = backend
+                                .outputs
+                                .iter()
+                                .map(|o| o.card_info.crtc_handle)
+                                .collect();
+                            pending_flip_crtcs.retain(|crtc| active_crtcs.contains(crtc));
+                            initial_modeset = true;
+                        }
+                    }
                     _ => unreachable!(),
                 }
             }
 
             composer.process_config_commands(&dh);
 
-            if !waiting_for_flip && composer.needs_redraw {
+            if pending_flip_crtcs.is_empty() && composer.needs_redraw {
                 let now = crate::utils::time::gettime();
                 let style = {
                     let cfg = composer.config_manager.config.lock().unwrap();
@@ -352,11 +482,11 @@ impl EventLoop {
                     }
                 }
 
-                if let Some((cursor_surf, _, _)) = &composer.cursor_surface {
-                    if !cursor_surf.is_alive() {
-                        dead_surface_ids.push(cursor_surf.id());
-                        composer.cursor_surface = None;
-                    }
+                if let Some((cursor_surf, _, _)) = &composer.cursor_surface
+                    && !cursor_surf.is_alive()
+                {
+                    dead_surface_ids.push(cursor_surf.id());
+                    composer.cursor_surface = None;
                 }
 
                 for id in dead_surface_ids {
@@ -381,10 +511,10 @@ impl EventLoop {
                     .primary_selection_sources
                     .retain(|_, (s, _)| s.is_alive());
 
-                if let Some(grab) = composer.pointer_grab.clone() {
-                    if !grab.is_alive() {
-                        composer.cleanup_surface(&grab.id(), &dh);
-                    }
+                if let Some(grab) = composer.pointer_grab.clone()
+                    && !grab.is_alive()
+                {
+                    composer.cleanup_surface(&grab.id(), &dh);
                 }
 
                 composer
@@ -436,10 +566,10 @@ impl EventLoop {
                         composer.load_cursor_shape(shape);
                         let now_ms = crate::utils::time::gettime();
                         if let Some(frame) = composer.cursor_manager.get_frame(shape, now_ms) {
-                            if let Some(anim) = composer.cursor_manager.animations.get(&shape) {
-                                if anim.total_delay > 0 {
-                                    composer.needs_redraw = true;
-                                }
+                            if let Some(anim) = composer.cursor_manager.animations.get(&shape)
+                                && anim.total_delay > 0
+                            {
+                                composer.needs_redraw = true;
                             }
                             let tex = &frame.texture;
                             let (hot_x, hot_y) = frame.hotspot;
@@ -483,14 +613,13 @@ impl EventLoop {
 
                 let mut drawn_surface_ids = HashSet::new();
                 for cmd in &final_draw_list {
-                    if let DrawCommand::Texture(quad) = cmd {
-                        if let Some((id, _)) = composer
+                    if let DrawCommand::Texture(quad) = cmd
+                        && let Some((id, _)) = composer
                             .surface_textures
                             .iter()
                             .find(|(_, t)| t.set == quad.set)
-                        {
-                            drawn_surface_ids.insert(id.clone());
-                        }
+                    {
+                        drawn_surface_ids.insert(id.clone());
                     }
                 }
 
@@ -576,61 +705,175 @@ impl EventLoop {
                 }
 
                 if initial_modeset {
-                    let mode_blob = backend
-                        .gbm
-                        .create_property_blob(&backend.info.mode)
-                        .expect("Failed to create mode blob");
                     let mut req = AtomicModeReq::new();
 
-                    req.add_property(
-                        backend.info.crtc_handle,
-                        backend.info.crtc_active_prop,
-                        drm::control::property::Value::UnsignedRange(1),
-                    );
-                    req.add_property(
-                        backend.info.crtc_handle,
-                        backend.info.crtc_mode_id_prop,
-                        mode_blob,
-                    );
-                    req.add_property(
-                        backend.info.connector_handle,
-                        backend.info.conn_crtc_id_prop,
-                        drm::control::property::Value::CRTC(Some(backend.info.crtc_handle)),
-                    );
-                    req.add_property(
-                        backend.info.primary_plane,
-                        backend.info.plane_crtc_id_prop,
-                        drm::control::property::Value::CRTC(Some(backend.info.crtc_handle)),
-                    );
-                    req.add_property(
-                        backend.info.primary_plane,
-                        backend.info.plane_fb_id_prop,
-                        drm::control::property::Value::Framebuffer(Some(frame.fb_handle)),
-                    );
+                    if let Ok(resources) = backend.gbm.resource_handles() {
+                        let active_crtcs: HashSet<_> = backend
+                            .outputs
+                            .iter()
+                            .map(|o| o.card_info.crtc_handle)
+                            .collect();
+                        let active_connectors: HashSet<_> = backend
+                            .outputs
+                            .iter()
+                            .map(|o| o.card_info.connector_handle)
+                            .collect();
 
-                    if let Some(cursor_plane) = backend.info.cursor_plane {
-                        if let Some(cursor_crtc_id_prop) = backend.info.cursor_crtc_id_prop {
-                            req.add_property(
-                                cursor_plane,
-                                cursor_crtc_id_prop,
-                                drm::control::property::Value::CRTC(None),
-                            );
+                        for &crtc_handle in resources.crtcs() {
+                            if !active_crtcs.contains(&crtc_handle) {
+                                if let Some(active_prop) =
+                                    backend.gbm.find_property(crtc_handle, "ACTIVE")
+                                {
+                                    req.add_property(
+                                        crtc_handle,
+                                        active_prop,
+                                        drm::control::property::Value::UnsignedRange(0),
+                                    );
+                                }
+                                if let Some(mode_prop) =
+                                    backend.gbm.find_property(crtc_handle, "MODE_ID")
+                                {
+                                    req.add_property(
+                                        crtc_handle,
+                                        mode_prop,
+                                        drm::control::property::Value::Blob(0),
+                                    );
+                                }
+                            }
                         }
-                        if let Some(cursor_fb_id_prop) = backend.info.cursor_fb_id_prop {
-                            req.add_property(
-                                cursor_plane,
-                                cursor_fb_id_prop,
-                                drm::control::property::Value::Framebuffer(None),
-                            );
+
+                        for &conn_handle in resources.connectors() {
+                            if !active_connectors.contains(&conn_handle) {
+                                if let Some(crtc_id_prop) =
+                                    backend.gbm.find_property(conn_handle, "CRTC_ID")
+                                {
+                                    req.add_property(
+                                        conn_handle,
+                                        crtc_id_prop,
+                                        drm::control::property::Value::CRTC(None),
+                                    );
+                                }
+                            }
                         }
                     }
 
-                    if let Some(gamma_val) = gamma_to_apply {
+                    for out in &backend.outputs {
+                        let mode_blob = backend
+                            .gbm
+                            .create_property_blob(&out.card_info.mode)
+                            .expect("Failed to create mode blob");
+
                         req.add_property(
-                            backend.info.crtc_handle,
-                            backend.info.crtc_gamma_lut_prop,
-                            drm::control::property::Value::Blob(gamma_val),
+                            out.card_info.crtc_handle,
+                            out.card_info.crtc_active_prop,
+                            drm::control::property::Value::UnsignedRange(1),
                         );
+                        req.add_property(
+                            out.card_info.crtc_handle,
+                            out.card_info.crtc_mode_id_prop,
+                            mode_blob,
+                        );
+                        req.add_property(
+                            out.card_info.connector_handle,
+                            out.card_info.conn_crtc_id_prop,
+                            drm::control::property::Value::CRTC(Some(out.card_info.crtc_handle)),
+                        );
+                        req.add_property(
+                            out.card_info.primary_plane,
+                            out.card_info.plane_crtc_id_prop,
+                            drm::control::property::Value::CRTC(Some(out.card_info.crtc_handle)),
+                        );
+                        req.add_property(
+                            out.card_info.primary_plane,
+                            out.card_info.plane_fb_id_prop,
+                            drm::control::property::Value::Framebuffer(Some(frame.fb_handle)),
+                        );
+
+                        if let Some(src_x_prop) = out.card_info.src_x_prop {
+                            req.add_property(
+                                out.card_info.primary_plane,
+                                src_x_prop,
+                                drm::control::property::Value::UnsignedRange((out.x as u64) << 16),
+                            );
+                        }
+                        if let Some(src_y_prop) = out.card_info.src_y_prop {
+                            req.add_property(
+                                out.card_info.primary_plane,
+                                src_y_prop,
+                                drm::control::property::Value::UnsignedRange((out.y as u64) << 16),
+                            );
+                        }
+                        if let Some(src_w_prop) = out.card_info.src_w_prop {
+                            req.add_property(
+                                out.card_info.primary_plane,
+                                src_w_prop,
+                                drm::control::property::Value::UnsignedRange(
+                                    (out.width as u64) << 16,
+                                ),
+                            );
+                        }
+                        if let Some(src_h_prop) = out.card_info.src_h_prop {
+                            req.add_property(
+                                out.card_info.primary_plane,
+                                src_h_prop,
+                                drm::control::property::Value::UnsignedRange(
+                                    (out.height as u64) << 16,
+                                ),
+                            );
+                        }
+                        if let Some(crtc_x_prop) = out.card_info.crtc_x_prop {
+                            req.add_property(
+                                out.card_info.primary_plane,
+                                crtc_x_prop,
+                                drm::control::property::Value::SignedRange(0),
+                            );
+                        }
+                        if let Some(crtc_y_prop) = out.card_info.crtc_y_prop {
+                            req.add_property(
+                                out.card_info.primary_plane,
+                                crtc_y_prop,
+                                drm::control::property::Value::SignedRange(0),
+                            );
+                        }
+                        if let Some(crtc_w_prop) = out.card_info.crtc_w_prop {
+                            req.add_property(
+                                out.card_info.primary_plane,
+                                crtc_w_prop,
+                                drm::control::property::Value::UnsignedRange(out.width as u64),
+                            );
+                        }
+                        if let Some(crtc_h_prop) = out.card_info.crtc_h_prop {
+                            req.add_property(
+                                out.card_info.primary_plane,
+                                crtc_h_prop,
+                                drm::control::property::Value::UnsignedRange(out.height as u64),
+                            );
+                        }
+
+                        if let Some(cursor_plane) = out.card_info.cursor_plane {
+                            if let Some(cursor_crtc_id_prop) = out.card_info.cursor_crtc_id_prop {
+                                req.add_property(
+                                    cursor_plane,
+                                    cursor_crtc_id_prop,
+                                    drm::control::property::Value::CRTC(None),
+                                );
+                            }
+                            if let Some(cursor_fb_id_prop) = out.card_info.cursor_fb_id_prop {
+                                req.add_property(
+                                    cursor_plane,
+                                    cursor_fb_id_prop,
+                                    drm::control::property::Value::Framebuffer(None),
+                                );
+                            }
+                        }
+
+                        if let Some(gamma_val) = gamma_to_apply {
+                            req.add_property(
+                                out.card_info.crtc_handle,
+                                out.card_info.crtc_gamma_lut_prop,
+                                drm::control::property::Value::Blob(gamma_val),
+                            );
+                        }
                     }
 
                     backend
@@ -643,18 +886,20 @@ impl EventLoop {
                     composer.needs_redraw = true;
                 } else {
                     let mut req = AtomicModeReq::new();
-                    req.add_property(
-                        backend.info.primary_plane,
-                        backend.info.plane_fb_id_prop,
-                        drm::control::property::Value::Framebuffer(Some(frame.fb_handle)),
-                    );
-
-                    if let Some(gamma_val) = gamma_to_apply {
+                    for out in &backend.outputs {
                         req.add_property(
-                            backend.info.crtc_handle,
-                            backend.info.crtc_gamma_lut_prop,
-                            drm::control::property::Value::Blob(gamma_val),
+                            out.card_info.primary_plane,
+                            out.card_info.plane_fb_id_prop,
+                            drm::control::property::Value::Framebuffer(Some(frame.fb_handle)),
                         );
+
+                        if let Some(gamma_val) = gamma_to_apply {
+                            req.add_property(
+                                out.card_info.crtc_handle,
+                                out.card_info.crtc_gamma_lut_prop,
+                                drm::control::property::Value::Blob(gamma_val),
+                            );
+                        }
                     }
 
                     match backend.gbm.atomic_commit(
@@ -662,12 +907,15 @@ impl EventLoop {
                         req,
                     ) {
                         Ok(_) => {
-                            waiting_for_flip = true;
+                            for out in &backend.outputs {
+                                pending_flip_crtcs.insert(out.card_info.crtc_handle);
+                            }
                             frame_index += 1;
                         }
                         Err(e) => {
                             error!("Failed to page flip atomically: {}", e);
                             composer.needs_redraw = true;
+                            std::thread::sleep(std::time::Duration::from_millis(1));
                         }
                     }
                 }

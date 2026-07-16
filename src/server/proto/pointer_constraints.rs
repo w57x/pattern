@@ -68,11 +68,10 @@ impl Dispatch<ZwpLockedPointerV1, ()> for Composer {
         _data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
         match request {
-            wayland_protocols::wp::pointer_constraints::zv1::server::zwp_locked_pointer_v1::Request::Destroy => {
-                if state.pointer_lock.as_ref().map(|l| l.id()) == Some(resource.id()) {
+            wayland_protocols::wp::pointer_constraints::zv1::server::zwp_locked_pointer_v1::Request::Destroy
+                if state.pointer_lock.as_ref().map(|l| l.id()) == Some(resource.id()) => {
                     state.pointer_lock = None;
                 }
-            }
             wayland_protocols::wp::pointer_constraints::zv1::server::zwp_locked_pointer_v1::Request::SetCursorPositionHint { surface_x, surface_y } => {
                 state.cursor_pos_hint = Some((surface_x, surface_y));
             }
@@ -93,11 +92,10 @@ impl Dispatch<ZwpConfinedPointerV1, ()> for Composer {
         _data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
         match request {
-            wayland_protocols::wp::pointer_constraints::zv1::server::zwp_confined_pointer_v1::Request::Destroy => {
-                if state.pointer_confine.as_ref().map(|c| c.id()) == Some(resource.id()) {
+            wayland_protocols::wp::pointer_constraints::zv1::server::zwp_confined_pointer_v1::Request::Destroy
+                if state.pointer_confine.as_ref().map(|c| c.id()) == Some(resource.id()) => {
                     state.pointer_confine = None;
                 }
-            }
             wayland_protocols::wp::pointer_constraints::zv1::server::zwp_confined_pointer_v1::Request::SetRegion { .. } => {}
             _ => {}
         }

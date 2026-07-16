@@ -227,10 +227,10 @@ impl ConfigManager {
         let workspace_table = self.ctxt.create_table()?;
         let focus_fn = self.ctxt.create_function(|_, opts: mlua::Table| {
             let mut id = opts.get::<usize>("id").ok();
-            if id.is_none() {
-                if let Ok(ws) = opts.get::<usize>("workspace") {
-                    id = Some(if ws > 0 { ws - 1 } else { 0 });
-                }
+            if id.is_none()
+                && let Ok(ws) = opts.get::<usize>("workspace")
+            {
+                id = Some(if ws > 0 { ws - 1 } else { 0 });
             }
             let next = opts.get::<bool>("next").unwrap_or(false);
             let previous = opts.get::<bool>("previous").unwrap_or(false);
@@ -269,9 +269,10 @@ impl ConfigManager {
                     let mut store = bindings.lock().unwrap();
                     store.insert(key_pattern, Arc::new(stored_action));
                 } else {
-                    return Err(mlua::Error::RuntimeError(
-                        format!("Invalid keybind: {}", keys).into(),
-                    ));
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "Invalid keybind: {}",
+                        keys
+                    )));
                 }
                 Ok(())
             },
@@ -286,9 +287,7 @@ impl ConfigManager {
                     if let mlua::Value::Function(func) = value {
                         let registry_key = lua.create_registry_value(func)?;
                         let mut hks = hooks.lock().unwrap();
-                        hks.entry(hook_name)
-                            .or_insert_with(Vec::new)
-                            .push(registry_key);
+                        hks.entry(hook_name).or_default().push(registry_key);
                         Ok(())
                     } else {
                         Err(mlua::Error::RuntimeError(
@@ -410,7 +409,7 @@ impl ConfigManager {
 
         let exec_cmd_fn = self.ctxt.create_function(|_, cmd: String| {
             std::process::Command::new("sh")
-                .args(&["-c", &cmd])
+                .args(["-c", &cmd])
                 .spawn()
                 .map_err(|e| {
                     mlua::Error::RuntimeError(format!("Failed to spawn command: {}", e))
@@ -431,7 +430,7 @@ impl ConfigManager {
                         }
                         CompositorCommand::Exec { full_sh_cmd } => {
                             let _ = std::process::Command::new("sh")
-                                .args(&["-c", &full_sh_cmd])
+                                .args(["-c", &full_sh_cmd])
                                 .spawn();
                         }
                         other => {

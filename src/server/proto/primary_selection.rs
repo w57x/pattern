@@ -42,42 +42,41 @@ impl Dispatch<ZwpPrimarySelectionDeviceManagerV1, ()> for Composer {
                 let device = data_init.init(id, ());
                 state.primary_selection_devices.push(device.clone());
 
-                if let Some(focused_surface) = &state.input_focus {
-                    if let Some(focused_client) = focused_surface.client() {
-                        if focused_client.id() == client.id() {
-                            if let Some(source) = &state.primary_selection {
-                                let offer = client
-                                    .create_resource::<ZwpPrimarySelectionOfferV1, (), Self>(
-                                        dhandle,
-                                        device.version(),
-                                        (),
-                                    )
-                                    .expect("Failed to create ZwpPrimarySelectionOfferV1");
-                                device.data_offer(&offer);
+                if let Some(focused_surface) = &state.input_focus
+                    && let Some(focused_client) = focused_surface.client()
+                    && focused_client.id() == client.id()
+                {
+                    if let Some(source) = &state.primary_selection {
+                        let offer = client
+                            .create_resource::<ZwpPrimarySelectionOfferV1, (), Self>(
+                                dhandle,
+                                device.version(),
+                                (),
+                            )
+                            .expect("Failed to create ZwpPrimarySelectionOfferV1");
+                        device.data_offer(&offer);
 
-                                let mime_types = match source {
-                                    SelectionSource::Standard(_) => {
-                                        state.data_sources.get(&source.id()).map(|(_, m)| m)
-                                    }
-                                    SelectionSource::Primary(_) => state
-                                        .primary_selection_sources
-                                        .get(&source.id())
-                                        .map(|(_, m)| m),
-                                    SelectionSource::DataControl(_) => {
-                                        state.data_control_sources.get(&source.id()).map(|(_, m)| m)
-                                    }
-                                };
+                        let mime_types = match source {
+                            SelectionSource::Standard(_) => {
+                                state.data_sources.get(&source.id()).map(|(_, m)| m)
+                            }
+                            SelectionSource::Primary(_) => state
+                                .primary_selection_sources
+                                .get(&source.id())
+                                .map(|(_, m)| m),
+                            SelectionSource::DataControl(_) => {
+                                state.data_control_sources.get(&source.id()).map(|(_, m)| m)
+                            }
+                        };
 
-                                if let Some(mime_types) = mime_types {
-                                    for mime in mime_types {
-                                        offer.offer(mime.clone());
-                                    }
-                                }
-                                device.selection(Some(&offer));
-                            } else {
-                                device.selection(None);
+                        if let Some(mime_types) = mime_types {
+                            for mime in mime_types {
+                                offer.offer(mime.clone());
                             }
                         }
+                        device.selection(Some(&offer));
+                    } else {
+                        device.selection(None);
                     }
                 }
             }
@@ -114,10 +113,10 @@ impl Dispatch<ZwpPrimarySelectionDeviceV1, ()> for Composer {
                     state.broadcast_primary_selection_offer(dhandle);
                 } else {
                     state.primary_selection = None;
-                    if let Some(focused_surface) = &state.input_focus {
-                        if let Some(focused_client) = focused_surface.client() {
-                            state.clear_primary_selection(&focused_client);
-                        }
+                    if let Some(focused_surface) = &state.input_focus
+                        && let Some(focused_client) = focused_surface.client()
+                    {
+                        state.clear_primary_selection(&focused_client);
                     }
                 }
             }

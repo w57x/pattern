@@ -12,48 +12,105 @@ pub struct Wm {
     pub workspace_swipe_offset: f64,
     pub is_swiping: bool,
     pub compaction_occurred: Cell<bool>,
+    pub focused_output_id: usize,
+}
+
+impl Default for Wm {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Wm {
     pub fn new() -> Self {
         Self {
-            outputs: vec![OutputState::new(0)],
+            outputs: vec![OutputState::new(0, "eDP-1".to_string(), 0, 0, 1920, 1080)],
             popups: Vec::new(),
             drag_state: None,
             resize_state: None,
             workspace_swipe_offset: 0.0,
             is_swiping: false,
             compaction_occurred: Cell::new(false),
+            focused_output_id: 0,
         }
     }
 
-    fn ensure_workspace(&mut self, ws_id: usize) {
-        if self.outputs.is_empty() {
-            return;
+    fn focused_output_idx(&self) -> usize {
+        self.outputs
+            .iter()
+            .position(|o| o.id == self.focused_output_id)
+            .unwrap_or(0)
+    }
+
+    fn resolve_toplevel_surface_id(&self, surface_id: &ObjectId) -> ObjectId {
+        let mut target_id = surface_id.clone();
+        while let Some(popup) = self.popups.iter().find(|p| p.surface.id() == target_id) {
+            target_id = popup.parent_surface_id.clone();
         }
-        let out = &mut self.outputs[0];
-        for i in 0..=ws_id {
-            let slot = out.workspaces.get_mut(i).unwrap();
-            if slot.is_empty() {
-                *slot = Slot::Occupied(Workspace::new(i));
+        target_id
+    }
+
+    fn get_window_output_idx(&self, surface_id: &ObjectId) -> Option<usize> {
+        let target_id = self.resolve_toplevel_surface_id(surface_id);
+        for (idx, output) in self.outputs.iter().enumerate() {
+            if output
+                .background
+                .windows
+                .iter()
+                .any(|w| w.surface.id() == target_id)
+                || output
+                    .bottom
+                    .windows
+                    .iter()
+                    .any(|w| w.surface.id() == target_id)
+                || output
+                    .top
+                    .windows
+                    .iter()
+                    .any(|w| w.surface.id() == target_id)
+                || output
+                    .overlay
+                    .windows
+                    .iter()
+                    .any(|w| w.surface.id() == target_id)
+            {
+                return Some(idx);
+            }
+            for ws in output.workspaces.flatten() {
+                if ws.windows.iter().any(|w| w.surface.id() == target_id) {
+                    return Some(idx);
+                }
+            }
+        }
+        None
+    }
+
+    fn ensure_workspace_on_output(&mut self, output_id: usize, ws_id: usize) {
+        if let Some(out) = self.outputs.iter_mut().find(|o| o.id == output_id) {
+            for i in 0..=ws_id {
+                let slot = out.workspaces.get_mut(i).unwrap();
+                if slot.is_empty() {
+                    *slot = Slot::Occupied(Workspace::new(i));
+                }
             }
         }
     }
 
+    fn ensure_workspace(&mut self, ws_id: usize) {
+        self.ensure_workspace_on_output(self.focused_output_id, ws_id);
+    }
+
     fn compact_workspaces(&mut self) {
-        if self.outputs.is_empty() {
-            return;
-        }
-        let out = &mut self.outputs[0];
+        for out in &mut self.outputs {
+            let ws_count = out.workspaces.inner.len();
+            let mut new_workspaces = vec![Slot::Empty; ws_count];
+            let mut write_idx = 0;
+            let mut active_ws_shifted = out.active_workspace;
 
-        let ws_count = out.workspaces.inner.len();
-        let mut new_workspaces = vec![Slot::Empty; ws_count];
-        let mut write_idx = 0;
-        let mut active_ws_shifted = out.active_workspace;
-
-        for read_idx in 0..ws_count {
-            if let Some(Slot::Occupied(ws)) = out.workspaces.get(read_idx) {
-                if !ws.windows.is_empty() || read_idx == out.active_workspace {
+            for read_idx in 0..ws_count {
+                if let Some(Slot::Occupied(ws)) = out.workspaces.get(read_idx)
+                    && (!ws.windows.is_empty() || read_idx == out.active_workspace)
+                {
                     let mut compacted_ws = ws.clone();
                     compacted_ws.id = write_idx;
                     new_workspaces[write_idx] = Slot::Occupied(compacted_ws);
@@ -63,29 +120,26 @@ impl Wm {
                     write_idx += 1;
                 }
             }
-        }
 
-        // Fill remaining slots with empty workspaces
-        for idx in write_idx..ws_count {
-            new_workspaces[idx] = Slot::Occupied(Workspace::new(idx));
-        }
+            // Fill remaining slots with empty workspaces
+            for idx in write_idx..ws_count {
+                new_workspaces[idx] = Slot::Occupied(Workspace::new(idx));
+            }
 
-        out.workspaces.inner = new_workspaces;
-        if out.active_workspace != active_ws_shifted {
-            out.active_workspace = active_ws_shifted;
-            self.compaction_occurred.set(true);
+            out.workspaces.inner = new_workspaces;
+            if out.active_workspace != active_ws_shifted {
+                out.active_workspace = active_ws_shifted;
+                self.compaction_occurred.set(true);
+            }
         }
     }
 
-    fn max_allowed_workspace(&self) -> usize {
+    fn max_allowed_workspace_on_output(&self, output_id: usize) -> usize {
         let mut max_occupied = None;
-        if !self.outputs.is_empty() {
-            let out = &self.outputs[0];
+        if let Some(out) = self.outputs.iter().find(|o| o.id == output_id) {
             for ws in out.workspaces.flatten() {
-                if !ws.windows.is_empty() {
-                    if max_occupied.map_or(true, |max| ws.id > max) {
-                        max_occupied = Some(ws.id);
-                    }
+                if !ws.windows.is_empty() && max_occupied.is_none_or(|max| ws.id > max) {
+                    max_occupied = Some(ws.id);
                 }
             }
         }
@@ -93,6 +147,10 @@ impl Wm {
             Some(idx) => idx + 1,
             None => 0,
         }
+    }
+
+    fn max_allowed_workspace(&self) -> usize {
+        self.max_allowed_workspace_on_output(self.focused_output_id)
     }
 
     fn find_window_mut(&mut self, id: &ObjectId) -> Option<&mut WindowState> {
@@ -221,15 +279,14 @@ impl Wm {
     fn get_root_parent_id(&self, surface_id: &ObjectId) -> ObjectId {
         let mut current_id = surface_id.clone();
         while let Some(win) = self.find_window(&current_id) {
-            if let Some(pid) = &win.parent_id {
-                if let Some(parent_win) = self
+            if let Some(pid) = &win.parent_id
+                && let Some(parent_win) = self
                     .all_windows()
                     .iter()
                     .find(|w| w.toplevel.as_ref().map(|t| t.id()) == Some(pid.clone()))
-                {
-                    current_id = parent_win.surface.id();
-                    continue;
-                }
+            {
+                current_id = parent_win.surface.id();
+                continue;
             }
             break;
         }
@@ -241,15 +298,15 @@ impl Wm {
         let mut index = 0;
         while index < ordered.len() {
             let current_id = &ordered[index];
-            if let Some(win) = self.find_window(current_id) {
-                if let Some(toplevel) = &win.toplevel {
-                    let tid = toplevel.id();
-                    for w in self.all_windows() {
-                        if w.parent_id.as_ref() == Some(&tid) {
-                            let child_surf_id = w.surface.id();
-                            if !ordered.contains(&child_surf_id) {
-                                ordered.push(child_surf_id);
-                            }
+            if let Some(win) = self.find_window(current_id)
+                && let Some(toplevel) = &win.toplevel
+            {
+                let tid = toplevel.id();
+                for w in self.all_windows() {
+                    if w.parent_id.as_ref() == Some(&tid) {
+                        let child_surf_id = w.surface.id();
+                        if !ordered.contains(&child_surf_id) {
+                            ordered.push(child_surf_id);
                         }
                     }
                 }
@@ -267,17 +324,16 @@ impl Wm {
 
         while let Some(current_id) = queue.pop_front() {
             if let Some(win) = self.find_window(&current_id) {
-                if let Some(pid) = &win.parent_id {
-                    if let Some(parent_win) = self
+                if let Some(pid) = &win.parent_id
+                    && let Some(parent_win) = self
                         .all_windows()
                         .iter()
                         .find(|w| w.toplevel.as_ref().map(|t| t.id()) == Some(pid.clone()))
-                    {
-                        let parent_surf_id = parent_win.surface.id();
-                        if !group.contains(&parent_surf_id) {
-                            group.push(parent_surf_id.clone());
-                            queue.push_back(parent_surf_id);
-                        }
+                {
+                    let parent_surf_id = parent_win.surface.id();
+                    if !group.contains(&parent_surf_id) {
+                        group.push(parent_surf_id.clone());
+                        queue.push_back(parent_surf_id);
                     }
                 }
                 if let Some(toplevel) = &win.toplevel {
@@ -342,33 +398,30 @@ impl Wm {
         let mut updates = Vec::new();
         let windows = self.all_windows();
         for w in &windows {
-            if let Some(ref parent_tid) = w.parent_id {
-                if let Some(parent) = windows
+            if let Some(ref parent_tid) = w.parent_id
+                && let Some(parent) = windows
                     .iter()
                     .find(|pw| pw.toplevel.as_ref().map(|t| t.id()) == Some(parent_tid.clone()))
-                {
-                    let child_w = if w.geometry.w > 0 { w.geometry.w } else { w.w };
-                    let child_h = if w.geometry.h > 0 { w.geometry.h } else { w.h };
-                    let parent_w = if parent.geometry.w > 0 {
-                        parent.geometry.w
-                    } else {
-                        parent.w
-                    };
-                    let parent_h = if parent.geometry.h > 0 {
-                        parent.geometry.h
-                    } else {
-                        parent.h
-                    };
+            {
+                let child_w = if w.geometry.w > 0 { w.geometry.w } else { w.w };
+                let child_h = if w.geometry.h > 0 { w.geometry.h } else { w.h };
+                let parent_w = if parent.geometry.w > 0 {
+                    parent.geometry.w
+                } else {
+                    parent.w
+                };
+                let parent_h = if parent.geometry.h > 0 {
+                    parent.geometry.h
+                } else {
+                    parent.h
+                };
 
-                    let target_center_x =
-                        parent.x + parent.geometry.x as f64 + (parent_w as f64) / 2.0;
-                    let target_center_y =
-                        parent.y + parent.geometry.y as f64 + (parent_h as f64) / 2.0;
+                let target_center_x = parent.x + parent.geometry.x as f64 + (parent_w as f64) / 2.0;
+                let target_center_y = parent.y + parent.geometry.y as f64 + (parent_h as f64) / 2.0;
 
-                    let new_x = target_center_x - (w.geometry.x as f64) - (child_w as f64) / 2.0;
-                    let new_y = target_center_y - (w.geometry.y as f64) - (child_h as f64) / 2.0;
-                    updates.push((w.surface.id(), new_x, new_y));
-                }
+                let new_x = target_center_x - (w.geometry.x as f64) - (child_w as f64) / 2.0;
+                let new_y = target_center_y - (w.geometry.y as f64) - (child_h as f64) / 2.0;
+                updates.push((w.surface.id(), new_x, new_y));
             }
         }
         for (sid, x, y) in updates {
@@ -381,6 +434,87 @@ impl Wm {
 }
 
 impl WindowManager for Wm {
+    fn set_outputs(&mut self, new_outputs: Vec<crate::gpu::OutputLayoutInfo>) {
+        let mut old_outputs = std::mem::take(&mut self.outputs);
+        let mut new_states = Vec::new();
+
+        for (idx, out) in new_outputs.iter().enumerate() {
+            if let Some(mut old_out) = old_outputs
+                .iter()
+                .position(|o| o.name == out.card_info.name)
+                .map(|pos| old_outputs.remove(pos))
+            {
+                old_out.id = idx;
+                old_out.x = out.x;
+                old_out.y = out.y;
+                old_out.width = out.width;
+                old_out.height = out.height;
+                old_out.usable_area = crate::wm::Rect {
+                    x: out.x,
+                    y: out.y,
+                    w: out.width,
+                    h: out.height,
+                };
+                new_states.push(old_out);
+            } else {
+                new_states.push(OutputState::new(
+                    idx,
+                    out.card_info.name.clone(),
+                    out.x,
+                    out.y,
+                    out.width,
+                    out.height,
+                ));
+            }
+        }
+
+        if !new_states.is_empty() {
+            for old_out in old_outputs {
+                let target_active_ws = new_states[0].active_workspace;
+
+                for slot in old_out.workspaces.inner {
+                    if let Slot::Occupied(ws) = slot {
+                        for mut w in ws.windows {
+                            w.x = new_states[0].x as f64 + (w.x - old_out.x as f64);
+                            w.y = new_states[0].y as f64 + (w.y - old_out.y as f64);
+                            if let Some(Slot::Occupied(target_ws)) =
+                                new_states[0].workspaces.get_mut(target_active_ws)
+                            {
+                                target_ws.windows.push(w);
+                            }
+                        }
+                    }
+                }
+
+                for mut w in old_out.background.windows {
+                    w.x = new_states[0].x as f64 + (w.x - old_out.x as f64);
+                    w.y = new_states[0].y as f64 + (w.y - old_out.y as f64);
+                    new_states[0].background.windows.push(w);
+                }
+
+                for mut w in old_out.bottom.windows {
+                    w.x = new_states[0].x as f64 + (w.x - old_out.x as f64);
+                    w.y = new_states[0].y as f64 + (w.y - old_out.y as f64);
+                    new_states[0].bottom.windows.push(w);
+                }
+
+                for mut w in old_out.top.windows {
+                    w.x = new_states[0].x as f64 + (w.x - old_out.x as f64);
+                    w.y = new_states[0].y as f64 + (w.y - old_out.y as f64);
+                    new_states[0].top.windows.push(w);
+                }
+
+                for mut w in old_out.overlay.windows {
+                    w.x = new_states[0].x as f64 + (w.x - old_out.x as f64);
+                    w.y = new_states[0].y as f64 + (w.y - old_out.y as f64);
+                    new_states[0].overlay.windows.push(w);
+                }
+            }
+        }
+
+        self.outputs = new_states;
+    }
+
     fn all_windows(&self) -> Vec<WindowState> {
         let mut list = Vec::new();
         for output in &self.outputs {
@@ -409,7 +543,8 @@ impl WindowManager for Wm {
         if self.outputs.is_empty() {
             return;
         }
-        let out = &mut self.outputs[0];
+        let focused_idx = self.focused_output_idx();
+        let out = &mut self.outputs[focused_idx];
         let ws_slot = out.workspaces.get_mut(out.active_workspace).unwrap();
         let ws = ws_slot.unwrap_mut();
         let offset = (ws.windows.len() * 30) as f64;
@@ -466,15 +601,15 @@ impl WindowManager for Wm {
                 .retain(|w| &w.surface.id() != surface_id);
         }
         self.popups.retain(|p| &p.surface.id() != surface_id);
-        if let Some((drag_id, _, _)) = &self.drag_state {
-            if drag_id == surface_id {
-                self.drag_state = None;
-            }
+        if let Some((drag_id, _, _)) = &self.drag_state
+            && drag_id == surface_id
+        {
+            self.drag_state = None;
         }
-        if let Some((resize_id, ..)) = &self.resize_state {
-            if resize_id == surface_id {
-                self.resize_state = None;
-            }
+        if let Some((resize_id, ..)) = &self.resize_state
+            && resize_id == surface_id
+        {
+            self.resize_state = None;
         }
         self.compact_workspaces();
     }
@@ -495,16 +630,16 @@ impl WindowManager for Wm {
         } else {
             false
         };
-        if has_transient_child {
-            if let Some(child_id) = self.all_windows().iter().find_map(|w| {
+        if has_transient_child
+            && let Some(child_id) = self.all_windows().iter().find_map(|w| {
                 if w.parent_id.as_ref() == target_toplevel_id.as_ref() {
                     Some(w.surface.id())
                 } else {
                     None
                 }
-            }) {
-                return self.focus_window(&child_id);
-            }
+            })
+        {
+            return self.focus_window(&child_id);
         }
 
         self.restack_window_group(&target_id);
@@ -560,10 +695,10 @@ impl WindowManager for Wm {
             .iter()
             .find(|w| w.toplevel.as_ref().map(|t| t.id()) == Some(toplevel_id.clone()))
             .map(|w| w.surface.id());
-        if let Some(cid) = child_id {
-            if let Some(child) = self.find_window_mut(&cid) {
-                child.parent_id = parent_id;
-            }
+        if let Some(cid) = child_id
+            && let Some(child) = self.find_window_mut(&cid)
+        {
+            child.parent_id = parent_id;
         }
         self.maintain_transient_constraints();
     }
@@ -603,68 +738,75 @@ impl WindowManager for Wm {
             .iter()
             .find(|w| w.toplevel.as_ref().map(|t| t.id()) == Some(toplevel_id.clone()))
             .map(|w| w.surface.id());
-        let usable = self.outputs.first().map(|o| o.usable_area).unwrap_or(Rect {
-            x: 0,
-            y: 0,
-            w: screen_size.0 as i32,
-            h: screen_size.1 as i32,
-        });
+        let out_idx = child_id
+            .as_ref()
+            .and_then(|id| self.get_window_output_idx(id))
+            .unwrap_or_else(|| self.focused_output_idx());
+        let usable = self
+            .outputs
+            .get(out_idx)
+            .map(|o| o.usable_area)
+            .unwrap_or(Rect {
+                x: 0,
+                y: 0,
+                w: screen_size.0 as i32,
+                h: screen_size.1 as i32,
+            });
 
-        if let Some(id) = child_id {
-            if let Some(window) = self.find_window_mut(&id) {
-                if window.maximized == maximized {
-                    return;
-                }
+        if let Some(id) = child_id
+            && let Some(window) = self.find_window_mut(&id)
+        {
+            if window.maximized == maximized {
+                return;
+            }
 
-                let (target_w, target_h) = if maximized {
-                    (usable.w, usable.h)
+            let (target_w, target_h) = if maximized {
+                (usable.w, usable.h)
+            } else {
+                if let Some((_, _, w, h)) = window.saved_geometry {
+                    (w, h)
                 } else {
-                    if let Some((_, _, w, h)) = window.saved_geometry {
-                        (w, h)
-                    } else {
-                        (window.w, window.h)
-                    }
-                };
-
-                let config = if let Some(existing) = window
-                    .sent_configures
-                    .iter_mut()
-                    .find(|c| c.serial == serial)
-                {
-                    existing.maximized = maximized;
-                    existing.w = target_w;
-                    existing.h = target_h;
-                    existing.clone()
-                } else {
-                    let c = ConfigureState {
-                        serial,
-                        maximized,
-                        fullscreen: window.fullscreen,
-                        resizing: false,
-                        edges: 0,
-                        w: target_w,
-                        h: target_h,
-                        x: None,
-                        y: None,
-                    };
-                    window.sent_configures.push(c.clone());
-                    c
-                };
-
-                if let (Some(toplevel), Some(xdg_surface)) = (&window.toplevel, &window.xdg_surface)
-                {
-                    use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
-                    let mut states = Vec::new();
-                    states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
-                    if config.maximized {
-                        states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
-                    }
-                    if config.fullscreen {
-                        states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
-                    }
-                    toplevel.configure(config.w, config.h, states);
-                    xdg_surface.configure(serial);
+                    (window.w, window.h)
                 }
+            };
+
+            let config = if let Some(existing) = window
+                .sent_configures
+                .iter_mut()
+                .find(|c| c.serial == serial)
+            {
+                existing.maximized = maximized;
+                existing.w = target_w;
+                existing.h = target_h;
+                existing.clone()
+            } else {
+                let c = ConfigureState {
+                    serial,
+                    maximized,
+                    fullscreen: window.fullscreen,
+                    resizing: false,
+                    edges: 0,
+                    w: target_w,
+                    h: target_h,
+                    x: None,
+                    y: None,
+                };
+                window.sent_configures.push(c.clone());
+                c
+            };
+
+            if let (Some(toplevel), Some(xdg_surface)) = (&window.toplevel, &window.xdg_surface) {
+                use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+                let mut states = Vec::new();
+                states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
+                if config.maximized {
+                    states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
+                }
+                if config.fullscreen {
+                    states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
+                }
+                toplevel.configure(config.w, config.h, states);
+                xdg_surface.configure(serial);
             }
         }
     }
@@ -682,13 +824,21 @@ impl WindowManager for Wm {
             .find(|w| w.toplevel.as_ref().map(|t| t.id()) == Some(toplevel_id.clone()))
             .map(|w| w.surface.id());
         if let Some(id) = child_id {
+            let out_idx = self
+                .get_window_output_idx(&id)
+                .unwrap_or_else(|| self.focused_output_idx());
+            let out_size = self.outputs.get(out_idx).map(|o| (o.width, o.height));
             if let Some(window) = self.find_window_mut(&id) {
                 if window.fullscreen == fullscreen {
                     return;
                 }
 
                 let (target_w, target_h) = if fullscreen {
-                    (screen_size.0 as i32, screen_size.1 as i32)
+                    if let Some((w, h)) = out_size {
+                        (w, h)
+                    } else {
+                        (screen_size.0 as i32, screen_size.1 as i32)
+                    }
                 } else {
                     if let Some((_, _, w, h)) = window.saved_geometry {
                         (w, h)
@@ -751,19 +901,18 @@ impl WindowManager for Wm {
                 window.minimized = true;
             }
             // If the minimized window had focus, refocus the next top window in the same workspace
-            let active_ws = self.outputs[0].active_workspace;
+            let focused_idx = self.focused_output_idx();
+            let active_ws = self.outputs[focused_idx].active_workspace;
             let mut target_to_focus = None;
-            if let Some(slot) = self.outputs[0].workspaces.get(active_ws) {
-                if let Slot::Occupied(ws) = slot {
-                    if let Some(next_focus) = ws
-                        .windows
-                        .iter()
-                        .rev()
-                        .find(|w| !w.minimized && w.surface.id() != id)
-                    {
-                        target_to_focus = Some(next_focus.surface.id());
-                    }
-                }
+            if let Some(slot) = self.outputs[focused_idx].workspaces.get(active_ws)
+                && let Slot::Occupied(ws) = slot
+                && let Some(next_focus) = ws
+                    .windows
+                    .iter()
+                    .rev()
+                    .find(|w| !w.minimized && w.surface.id() != id)
+            {
+                target_to_focus = Some(next_focus.surface.id());
             }
             if let Some(refocus_id) = target_to_focus {
                 self.focus_window(&refocus_id);
@@ -788,10 +937,10 @@ impl WindowManager for Wm {
         serial: u32,
     ) {
         let target_surface_id = self.all_windows().iter().find_map(|w| {
-            if let Some(top) = &w.toplevel {
-                if &top.id() == toplevel_id {
-                    return Some(w.surface.id());
-                }
+            if let Some(top) = &w.toplevel
+                && &top.id() == toplevel_id
+            {
+                return Some(w.surface.id());
             }
             None
         });
@@ -864,20 +1013,20 @@ impl WindowManager for Wm {
     }
 
     fn update_drag(&mut self, cursor_x: f64, cursor_y: f64) {
-        if let Some((drag_id, off_x, off_y)) = self.drag_state.clone() {
-            if let Some(window) = self.find_window(&drag_id) {
-                let target_x = cursor_x - off_x;
-                let target_y = cursor_y - off_y;
-                let dx = target_x - window.x;
-                let dy = target_y - window.y;
+        if let Some((drag_id, off_x, off_y)) = self.drag_state.clone()
+            && let Some(window) = self.find_window(&drag_id)
+        {
+            let target_x = cursor_x - off_x;
+            let target_y = cursor_y - off_y;
+            let dx = target_x - window.x;
+            let dy = target_y - window.y;
 
-                if dx != 0.0 || dy != 0.0 {
-                    let group = self.get_transient_group(&drag_id);
-                    for id in group {
-                        if let Some(w) = self.find_window_mut(&id) {
-                            w.x += dx;
-                            w.y += dy;
-                        }
+            if dx != 0.0 || dy != 0.0 {
+                let group = self.get_transient_group(&drag_id);
+                for id in group {
+                    if let Some(w) = self.find_window_mut(&id) {
+                        w.x += dx;
+                        w.y += dy;
                     }
                 }
             }
@@ -902,103 +1051,100 @@ impl WindowManager for Wm {
             start_gx,
             start_gy,
         )) = self.resize_state.clone()
+            && let Some(window) = self.find_window_mut(&id)
         {
-            if let Some(window) = self.find_window_mut(&id) {
-                let dx = cursor_x - start_cx;
-                let dy = cursor_y - start_cy;
+            let dx = cursor_x - start_cx;
+            let dy = cursor_y - start_cy;
 
-                let mut new_gx = start_sx + start_gx as f64;
-                let mut new_gy = start_sy + start_gy as f64;
-                let mut new_gw = start_gw as f64;
-                let mut new_gh = start_gh as f64;
+            let mut new_gx = start_sx + start_gx as f64;
+            let mut new_gy = start_sy + start_gy as f64;
+            let mut new_gw = start_gw as f64;
+            let mut new_gh = start_gh as f64;
 
-                if (edges & 4) != 0 {
-                    new_gx += dx;
-                    new_gw -= dx;
-                } else if (edges & 8) != 0 {
-                    new_gw += dx;
+            if (edges & 4) != 0 {
+                new_gx += dx;
+                new_gw -= dx;
+            } else if (edges & 8) != 0 {
+                new_gw += dx;
+            }
+
+            if (edges & 1) != 0 {
+                new_gy += dy;
+                new_gh -= dy;
+            } else if (edges & 2) != 0 {
+                new_gh += dy;
+            }
+
+            if new_gw < 100.0 {
+                new_gw = 100.0;
+            }
+            if new_gh < 100.0 {
+                new_gh = 100.0;
+            }
+
+            let target_x = new_gx - window.geometry.x as f64;
+            let target_y = new_gy - window.geometry.y as f64;
+
+            let config = ConfigureState {
+                serial,
+                maximized: window.maximized,
+                fullscreen: window.fullscreen,
+                resizing: true,
+                edges,
+                w: new_gw as i32,
+                h: new_gh as i32,
+                x: Some(target_x),
+                y: Some(target_y),
+            };
+            window.sent_configures.push(config);
+
+            if let (Some(toplevel), Some(xdg_surface)) = (&window.toplevel, &window.xdg_surface) {
+                use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+                let mut states = Vec::new();
+                states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
+                states.extend_from_slice(&(State::Resizing as u32).to_ne_bytes());
+                if window.maximized {
+                    states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
+                }
+                if window.fullscreen {
+                    states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
                 }
 
-                if (edges & 1) != 0 {
-                    new_gy += dy;
-                    new_gh -= dy;
-                } else if (edges & 2) != 0 {
-                    new_gh += dy;
-                }
-
-                if new_gw < 100.0 {
-                    new_gw = 100.0;
-                }
-                if new_gh < 100.0 {
-                    new_gh = 100.0;
-                }
-
-                let target_x = new_gx - window.geometry.x as f64;
-                let target_y = new_gy - window.geometry.y as f64;
-
-                let config = ConfigureState {
-                    serial,
-                    maximized: window.maximized,
-                    fullscreen: window.fullscreen,
-                    resizing: true,
-                    edges,
-                    w: new_gw as i32,
-                    h: new_gh as i32,
-                    x: Some(target_x),
-                    y: Some(target_y),
-                };
-                window.sent_configures.push(config);
-
-                if let (Some(toplevel), Some(xdg_surface)) = (&window.toplevel, &window.xdg_surface)
-                {
-                    use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
-                    let mut states = Vec::new();
-                    states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
-                    states.extend_from_slice(&(State::Resizing as u32).to_ne_bytes());
-                    if window.maximized {
-                        states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
-                    }
-                    if window.fullscreen {
-                        states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
-                    }
-
-                    toplevel.configure(new_gw as i32, new_gh as i32, states);
-                    xdg_surface.configure(serial);
-                }
+                toplevel.configure(new_gw as i32, new_gh as i32, states);
+                xdg_surface.configure(serial);
             }
         }
     }
 
     fn end_resize(&mut self, serial: u32) {
-        if let Some((id, ..)) = self.resize_state.take() {
-            if let Some(window) = self.find_window_mut(&id) {
-                let config = ConfigureState {
-                    serial,
-                    maximized: window.maximized,
-                    fullscreen: window.fullscreen,
-                    resizing: false,
-                    edges: 0,
-                    w: window.w,
-                    h: window.h,
-                    x: None,
-                    y: None,
-                };
-                window.sent_configures.push(config);
+        if let Some((id, ..)) = self.resize_state.take()
+            && let Some(window) = self.find_window_mut(&id)
+        {
+            let config = ConfigureState {
+                serial,
+                maximized: window.maximized,
+                fullscreen: window.fullscreen,
+                resizing: false,
+                edges: 0,
+                w: window.w,
+                h: window.h,
+                x: None,
+                y: None,
+            };
+            window.sent_configures.push(config);
 
-                if let (Some(toplevel), Some(xdg_surface)) = (&window.toplevel, &window.xdg_surface)
-                {
-                    use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
-                    let mut states = Vec::new();
-                    states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
-                    if window.maximized {
-                        states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
-                    }
-                    if window.fullscreen {
-                        states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
-                    }
-                    toplevel.configure(0, 0, states);
-                    xdg_surface.configure(serial);
+            if let (Some(toplevel), Some(xdg_surface)) = (&window.toplevel, &window.xdg_surface) {
+                use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+                let mut states = Vec::new();
+                states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
+                if window.maximized {
+                    states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
                 }
+                if window.fullscreen {
+                    states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
+                }
+                toplevel.configure(0, 0, states);
+                xdg_surface.configure(serial);
             }
         }
     }
@@ -1024,80 +1170,78 @@ impl WindowManager for Wm {
             .map(|o| (o.usable_area.x, o.usable_area.y))
             .unwrap_or((0, 0));
         let mut target_config = None;
-        if let Some(window) = self.find_window_mut(surface_id) {
-            if let Some(serial) = window.acknowledged_serial.take() {
-                if let Some(idx) = window
-                    .sent_configures
-                    .iter()
-                    .position(|c| c.serial == serial)
-                {
-                    target_config = Some(window.sent_configures[idx].clone());
-                    window.sent_configures.drain(0..=idx);
-                }
-            }
+        if let Some(window) = self.find_window_mut(surface_id)
+            && let Some(serial) = window.acknowledged_serial.take()
+            && let Some(idx) = window
+                .sent_configures
+                .iter()
+                .position(|c| c.serial == serial)
+        {
+            target_config = Some(window.sent_configures[idx].clone());
+            window.sent_configures.drain(0..=idx);
         }
 
-        if let Some(config) = target_config {
-            if let Some(window) = self.find_window_mut(surface_id) {
-                // Apply fullscreen
-                if config.fullscreen && !window.fullscreen {
+        if let Some(config) = target_config
+            && let Some(window) = self.find_window_mut(surface_id)
+        {
+            // Apply fullscreen
+            if config.fullscreen && !window.fullscreen {
+                window.saved_geometry = Some((window.x, window.y, window.w, window.h));
+                window.x = -window.geometry.x as f64;
+                window.y = -window.geometry.y as f64;
+                window.w = config.w;
+                window.h = config.h;
+                window.fullscreen = true;
+                window.maximized = false;
+            } else if !config.fullscreen && window.fullscreen {
+                if let Some((x, y, w, h)) = window.saved_geometry.take() {
+                    window.x = x;
+                    window.y = y;
+                    window.w = w;
+                    window.h = h;
+                }
+                window.fullscreen = false;
+            }
+
+            // Apply maximized
+            if !window.fullscreen {
+                if config.maximized && !window.maximized {
                     window.saved_geometry = Some((window.x, window.y, window.w, window.h));
-                    window.x = -window.geometry.x as f64;
-                    window.y = -window.geometry.y as f64;
+                    window.x = usable_x as f64 - window.geometry.x as f64;
+                    window.y = usable_y as f64 - window.geometry.y as f64;
                     window.w = config.w;
                     window.h = config.h;
-                    window.fullscreen = true;
-                    window.maximized = false;
-                } else if !config.fullscreen && window.fullscreen {
+                    window.maximized = true;
+                } else if !config.maximized && window.maximized {
                     if let Some((x, y, w, h)) = window.saved_geometry.take() {
                         window.x = x;
                         window.y = y;
                         window.w = w;
                         window.h = h;
                     }
-                    window.fullscreen = false;
+                    window.maximized = false;
+                } else if window.maximized {
+                    window.x = usable_x as f64 - window.geometry.x as f64;
+                    window.y = usable_y as f64 - window.geometry.y as f64;
+                    window.w = config.w;
+                    window.h = config.h;
                 }
+            }
 
-                // Apply maximized
-                if !window.fullscreen {
-                    if config.maximized && !window.maximized {
-                        window.saved_geometry = Some((window.x, window.y, window.w, window.h));
-                        window.x = usable_x as f64 - window.geometry.x as f64;
-                        window.y = usable_y as f64 - window.geometry.y as f64;
-                        window.w = config.w;
-                        window.h = config.h;
-                        window.maximized = true;
-                    } else if !config.maximized && window.maximized {
-                        if let Some((x, y, w, h)) = window.saved_geometry.take() {
-                            window.x = x;
-                            window.y = y;
-                            window.w = w;
-                            window.h = h;
-                        }
-                        window.maximized = false;
-                    } else if window.maximized {
-                        window.x = usable_x as f64 - window.geometry.x as f64;
-                        window.y = usable_y as f64 - window.geometry.y as f64;
-                        window.w = config.w;
-                        window.h = config.h;
-                    }
+            // Apply resizing updates with exact edge adjustments
+            if config.resizing && !window.maximized && !window.fullscreen {
+                if config.edges & 4 != 0 {
+                    // Resizing left
+                    let old_right_edge = window.x + window.geometry.x as f64 + window.w as f64;
+                    window.x = old_right_edge - window.geometry.x as f64 - actual_w as f64;
                 }
-
-                // Apply resizing updates with exact edge adjustments
-                if config.resizing && !window.maximized && !window.fullscreen {
-                    if config.edges & 4 != 0 {
-                        // Resizing left
-                        let old_right_edge = window.x + window.geometry.x as f64 + window.w as f64;
-                        window.x = old_right_edge - window.geometry.x as f64 - actual_w as f64;
-                    }
-                    if config.edges & 1 != 0 {
-                        // Resizing top
-                        let old_bottom_edge = window.y + window.geometry.y as f64 + window.h as f64;
-                        window.y = old_bottom_edge - window.geometry.y as f64 - actual_h as f64;
-                    }
-                    window.w = actual_w;
-                    window.h = actual_h;
+                if config.edges & 1 != 0 {
+                    // Resizing top
+                    let old_bottom_edge = window.y + window.geometry.y as f64 + window.h as f64;
+                    window.y = old_bottom_edge - window.geometry.y as f64 - actual_h as f64;
                 }
+                window.w = actual_w;
+                window.h = actual_h;
             }
         }
         self.maintain_transient_constraints();
@@ -1109,6 +1253,7 @@ impl WindowManager for Wm {
         layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
         layer: u32,
         namespace: String,
+        output_id: Option<usize>,
     ) {
         debug!(
             "Mapping layer surface: id={:?}, layer={} namespace={namespace}",
@@ -1118,7 +1263,15 @@ impl WindowManager for Wm {
         if self.outputs.is_empty() {
             return;
         }
-        let out = &mut self.outputs[0];
+        let out_idx = if let Some(oid) = output_id {
+            self.outputs
+                .iter()
+                .position(|o| o.id == oid)
+                .unwrap_or_else(|| self.focused_output_idx())
+        } else {
+            self.focused_output_idx()
+        };
+        let out = &mut self.outputs[out_idx];
 
         let win = WindowState {
             surface,
@@ -1203,110 +1356,110 @@ impl WindowManager for Wm {
         }
     }
 
-    fn recalculate_layer_layout(&mut self, screen_size: (u16, u16), serial: u32) {
+    fn recalculate_layer_layout(&mut self, _screen_size: (u16, u16), serial: u32) {
         if self.outputs.is_empty() {
             return;
         }
 
-        let out = &mut self.outputs[0];
+        for out in &mut self.outputs {
+            let screen_w = out.width;
+            let screen_h = out.height;
 
-        let screen_w = screen_size.0 as i32;
-        let screen_h = screen_size.1 as i32;
+            let mut u_top = out.y;
+            let mut u_bottom = out.y + screen_h;
+            let mut u_left = out.x;
+            let mut u_right = out.x + screen_w;
 
-        let mut u_top = 0;
-        let mut u_bottom = screen_h;
-        let mut u_left = 0;
-        let mut u_right = screen_w;
+            let layers = vec![
+                &mut out.background.windows,
+                &mut out.bottom.windows,
+                &mut out.top.windows,
+                &mut out.overlay.windows,
+            ];
 
-        let layers = vec![
-            &mut out.background.windows,
-            &mut out.bottom.windows,
-            &mut out.top.windows,
-            &mut out.overlay.windows,
-        ];
+            for layer_list in layers {
+                for win in layer_list.iter_mut() {
+                    if win.layer_surface.is_none() {
+                        continue;
+                    }
 
-        for layer_list in layers {
-            for win in layer_list.iter_mut() {
-                if win.layer_surface.is_none() {
-                    continue;
-                }
+                    let (box_top, box_bottom, box_left, box_right) = if win.exclusive_zone == -1 {
+                        (out.y, out.y + screen_h, out.x, out.x + screen_w)
+                    } else {
+                        (u_top, u_bottom, u_left, u_right)
+                    };
 
-                let (box_top, box_bottom, box_left, box_right) = if win.exclusive_zone == -1 {
-                    (0, screen_h, 0, screen_w)
-                } else {
-                    (u_top, u_bottom, u_left, u_right)
-                };
+                    let x;
+                    let y;
 
-                let x;
-                let y;
+                    // Vertical positioning and height
+                    if (win.anchor & 1) != 0 && (win.anchor & 2) != 0 {
+                        // Top and Bottom anchored
+                        win.h = (box_bottom - box_top - win.margin.0 - win.margin.2).max(0);
+                        win.geometry.h = win.h;
+                        y = (box_top + win.margin.0) as f64;
+                    } else if (win.anchor & 1) != 0 {
+                        // Top anchored only
+                        y = (box_top + win.margin.0) as f64;
+                    } else if (win.anchor & 2) != 0 {
+                        // Bottom anchored only
+                        y = (box_bottom - win.h - win.margin.2) as f64;
+                    } else {
+                        // Centered vertically
+                        y = (box_top + (box_bottom - box_top - win.h) / 2) as f64;
+                    }
 
-                // Vertical positioning and height
-                if (win.anchor & 1) != 0 && (win.anchor & 2) != 0 {
-                    // Top and Bottom anchored
-                    win.h = (box_bottom - box_top - win.margin.0 - win.margin.2).max(0);
-                    win.geometry.h = win.h;
-                    y = (box_top + win.margin.0) as f64;
-                } else if (win.anchor & 1) != 0 {
-                    // Top anchored only
-                    y = (box_top + win.margin.0) as f64;
-                } else if (win.anchor & 2) != 0 {
-                    // Bottom anchored only
-                    y = (box_bottom - win.h - win.margin.2) as f64;
-                } else {
-                    // Centered vertically
-                    y = (box_top + (box_bottom - box_top - win.h) / 2) as f64;
-                }
+                    // Horizontal positioning and width
+                    if (win.anchor & 4) != 0 && (win.anchor & 8) != 0 {
+                        // Left and Right anchored
+                        win.w = (box_right - box_left - win.margin.3 - win.margin.1).max(0);
+                        win.geometry.w = win.w;
+                        x = (box_left + win.margin.3) as f64;
+                    } else if (win.anchor & 4) != 0 {
+                        // Left anchored only
+                        x = (box_left + win.margin.3) as f64;
+                    } else if (win.anchor & 8) != 0 {
+                        // Right anchored only
+                        x = (box_right - win.w - win.margin.1) as f64;
+                    } else {
+                        // Centered horizontally
+                        x = (box_left + (box_right - box_left - win.w) / 2) as f64;
+                    }
 
-                // Horizontal positioning and width
-                if (win.anchor & 4) != 0 && (win.anchor & 8) != 0 {
-                    // Left and Right anchored
-                    win.w = (box_right - box_left - win.margin.3 - win.margin.1).max(0);
-                    win.geometry.w = win.w;
-                    x = (box_left + win.margin.3) as f64;
-                } else if (win.anchor & 4) != 0 {
-                    // Left anchored only
-                    x = (box_left + win.margin.3) as f64;
-                } else if (win.anchor & 8) != 0 {
-                    // Right anchored only
-                    x = (box_right - win.w - win.margin.1) as f64;
-                } else {
-                    // Centered horizontally
-                    x = (box_left + (box_right - box_left - win.w) / 2) as f64;
-                }
+                    win.x = x;
+                    win.y = y;
 
-                win.x = x;
-                win.y = y;
+                    // Configure surface
+                    if let Some(ls) = &win.layer_surface {
+                        ls.configure(0, win.w as u32, win.h as u32);
+                    }
 
-                // Configure surface
-                if let Some(ls) = &win.layer_surface {
-                    ls.configure(0, win.w as u32, win.h as u32);
-                }
-
-                // Update usable area bounds if this window has a valid exclusive zone
-                let set_bits = win.anchor.count_ones();
-                if (set_bits == 1 || set_bits == 3) && win.exclusive_zone > 0 {
-                    if (win.anchor & 1) != 0 && (win.anchor & 2) == 0 {
-                        u_top = box_top + win.exclusive_zone;
-                    } else if (win.anchor & 2) != 0 && (win.anchor & 1) == 0 {
-                        u_bottom = box_bottom - win.exclusive_zone;
-                    } else if (win.anchor & 4) != 0 && (win.anchor & 8) == 0 {
-                        u_left = box_left + win.exclusive_zone;
-                    } else if (win.anchor & 8) != 0 && (win.anchor & 4) == 0 {
-                        u_right = box_right - win.exclusive_zone;
+                    // Update usable area bounds if this window has a valid exclusive zone
+                    let set_bits = win.anchor.count_ones();
+                    if (set_bits == 1 || set_bits == 3) && win.exclusive_zone > 0 {
+                        if (win.anchor & 1) != 0 && (win.anchor & 2) == 0 {
+                            u_top = box_top + win.exclusive_zone;
+                        } else if (win.anchor & 2) != 0 && (win.anchor & 1) == 0 {
+                            u_bottom = box_bottom - win.exclusive_zone;
+                        } else if (win.anchor & 4) != 0 && (win.anchor & 8) == 0 {
+                            u_left = box_left + win.exclusive_zone;
+                        } else if (win.anchor & 8) != 0 && (win.anchor & 4) == 0 {
+                            u_right = box_right - win.exclusive_zone;
+                        }
                     }
                 }
             }
+
+            // Store the calculated usable area
+            out.usable_area = Rect {
+                x: u_left,
+                y: u_top,
+                w: (u_right - u_left).max(0),
+                h: (u_bottom - u_top).max(0),
+            };
         }
 
-        // Store the calculated usable area
-        out.usable_area = Rect {
-            x: u_left,
-            y: u_top,
-            w: (u_right - u_left).max(0),
-            h: (u_bottom - u_top).max(0),
-        };
-
-        // Update maximized windows to fit the new usable area
+        // Update maximized windows to fit their respective outputs' new usable area
         for out in &mut self.outputs {
             let usable = out.usable_area;
             for ws in out.workspaces.flatten_mut() {
@@ -1334,42 +1487,45 @@ impl WindowManager for Wm {
     }
 
     fn get_background(&self) -> Vec<WindowState> {
-        self.outputs
-            .first()
-            .map(|o| o.background.windows.clone())
-            .unwrap_or_default()
+        let mut all = Vec::new();
+        for out in &self.outputs {
+            all.extend(out.background.windows.clone());
+        }
+        all
     }
 
     fn get_bottom(&self) -> Vec<WindowState> {
-        self.outputs
-            .first()
-            .map(|o| o.bottom.windows.clone())
-            .unwrap_or_default()
+        let mut all = Vec::new();
+        for out in &self.outputs {
+            all.extend(out.bottom.windows.clone());
+        }
+        all
     }
 
     fn get_workspace_windows(&self) -> Vec<WindowState> {
-        self.outputs
-            .first()
-            .and_then(|o| {
-                o.workspaces
-                    .get(o.active_workspace)
-                    .map(|ws| ws.unwrap_ref().windows.clone())
-            })
-            .unwrap_or_default()
+        let mut all = Vec::new();
+        for out in &self.outputs {
+            if let Some(Slot::Occupied(ws)) = out.workspaces.get(out.active_workspace) {
+                all.extend(ws.windows.clone());
+            }
+        }
+        all
     }
 
     fn get_top(&self) -> Vec<WindowState> {
-        self.outputs
-            .first()
-            .map(|o| o.top.windows.clone())
-            .unwrap_or_default()
+        let mut all = Vec::new();
+        for out in &self.outputs {
+            all.extend(out.top.windows.clone());
+        }
+        all
     }
 
     fn get_overlay(&self) -> Vec<WindowState> {
-        self.outputs
-            .first()
-            .map(|o| o.overlay.windows.clone())
-            .unwrap_or_default()
+        let mut all = Vec::new();
+        for out in &self.outputs {
+            all.extend(out.overlay.windows.clone());
+        }
+        all
     }
 
     fn get_popups(&self) -> Vec<PopupState> {
@@ -1381,29 +1537,29 @@ impl WindowManager for Wm {
             return None;
         }
 
-        let out = &self.outputs[0];
+        let out = &self.outputs[self.focused_output_idx()];
 
         let focusable =
             |w: &&WindowState| w.layer_surface.is_none() || w.keyboard_interactivity > 0;
 
-        if let Some(w) = out.overlay.windows.iter().filter(focusable).last() {
+        if let Some(w) = out.overlay.windows.iter().rfind(focusable) {
             return Some(w.surface.clone());
         }
 
-        if let Some(w) = out.top.windows.iter().filter(focusable).last() {
+        if let Some(w) = out.top.windows.iter().rfind(focusable) {
             return Some(w.surface.clone());
         }
-        if let Some(Slot::Occupied(ws)) = out.workspaces.get(out.active_workspace) {
-            if let Some(w) = ws.windows.iter().filter(focusable).last() {
-                return Some(w.surface.clone());
-            }
-        }
-
-        if let Some(w) = out.bottom.windows.iter().filter(focusable).last() {
+        if let Some(Slot::Occupied(ws)) = out.workspaces.get(out.active_workspace)
+            && let Some(w) = ws.windows.iter().rfind(focusable)
+        {
             return Some(w.surface.clone());
         }
 
-        if let Some(w) = out.background.windows.iter().filter(focusable).last() {
+        if let Some(w) = out.bottom.windows.iter().rfind(focusable) {
+            return Some(w.surface.clone());
+        }
+
+        if let Some(w) = out.background.windows.iter().rfind(focusable) {
             return Some(w.surface.clone());
         }
 
@@ -1549,12 +1705,12 @@ impl WindowManager for Wm {
         // 2. If the window was found, insert it into the target workspace
         if let Some(window) = target_window {
             self.ensure_workspace(workspace_id);
-            if let Some(output) = self.outputs.iter_mut().find(|o| o.id == output_id) {
-                if let Some(Slot::Occupied(ws)) = output.workspaces.get_mut(workspace_id) {
-                    ws.windows.push(window);
-                    self.compact_workspaces();
-                    return true;
-                }
+            if let Some(output) = self.outputs.iter_mut().find(|o| o.id == output_id)
+                && let Some(Slot::Occupied(ws)) = output.workspaces.get_mut(workspace_id)
+            {
+                ws.windows.push(window);
+                self.compact_workspaces();
+                return true;
             }
             // Fallback: If target workspace/output doesn't exist, put it back in the current active workspace
             // so we don't lose the window.
@@ -1573,12 +1729,12 @@ impl WindowManager for Wm {
         if self.outputs.is_empty() {
             return false;
         }
-
-        let current_ws = self.outputs[0].active_workspace;
-        if current_ws > 0 {
-            let target_ws = current_ws - 1;
+        let focused_idx = self.focused_output_idx();
+        let active_ws = self.outputs[focused_idx].active_workspace;
+        if active_ws > 0 {
+            let target_ws = active_ws - 1;
             self.ensure_workspace(target_ws);
-            self.outputs[0].active_workspace = target_ws;
+            self.outputs[focused_idx].active_workspace = target_ws;
             debug!("[wm] focused before (T{})", target_ws);
             true
         } else {
@@ -1590,15 +1746,15 @@ impl WindowManager for Wm {
         if self.outputs.is_empty() {
             return false;
         }
-
-        let current_ws = self.outputs[0].active_workspace;
-        if current_ws < usize::MAX {
-            let target_ws = current_ws + 1;
+        let focused_idx = self.focused_output_idx();
+        let active_ws = self.outputs[focused_idx].active_workspace;
+        if active_ws < usize::MAX {
+            let target_ws = active_ws + 1;
             if target_ws > self.max_allowed_workspace() {
                 return false;
             }
             self.ensure_workspace(target_ws);
-            self.outputs[0].active_workspace = target_ws;
+            self.outputs[focused_idx].active_workspace = target_ws;
             debug!("[wm] focused after (T{})", target_ws);
             true
         } else {
@@ -1614,7 +1770,8 @@ impl WindowManager for Wm {
             return false;
         }
         self.ensure_workspace(id);
-        self.outputs[0].active_workspace = id;
+        let focused_idx = self.focused_output_idx();
+        self.outputs[focused_idx].active_workspace = id;
         debug!("[wm] focused workspace {}", id);
         true
     }
@@ -1677,7 +1834,7 @@ impl WindowManager for Wm {
         if self.outputs.is_empty() {
             0
         } else {
-            self.outputs[0].active_workspace
+            self.outputs[self.focused_output_idx()].active_workspace
         }
     }
 
@@ -1685,11 +1842,19 @@ impl WindowManager for Wm {
         if self.outputs.is_empty() {
             return Vec::new();
         }
-        let out = &self.outputs[0];
-        if let Some(Slot::Occupied(ws)) = out.workspaces.get(workspace_id) {
-            return ws.windows.clone();
+        let focused_idx = self.focused_output_idx();
+        let mut all = Vec::new();
+        for (idx, out) in self.outputs.iter().enumerate() {
+            let target_ws = if idx == focused_idx {
+                workspace_id
+            } else {
+                out.active_workspace
+            };
+            if let Some(Slot::Occupied(ws)) = out.workspaces.get(target_ws) {
+                all.extend(ws.windows.clone());
+            }
         }
-        Vec::new()
+        all
     }
 
     fn get_workspace_id_for_window(&self, surface_id: &ObjectId) -> Option<usize> {
@@ -1704,6 +1869,14 @@ impl WindowManager for Wm {
             }
         }
         None
+    }
+
+    fn get_focused_output_id(&self) -> usize {
+        self.focused_output_id
+    }
+
+    fn get_window_output_id(&self, surface_id: &ObjectId) -> Option<usize> {
+        self.get_window_output_idx(surface_id)
     }
 
     fn is_resizing(&self) -> bool {
