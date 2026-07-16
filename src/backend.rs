@@ -33,6 +33,8 @@ pub struct Backend {
     pub outputs: Vec<crate::gpu::OutputLayoutInfo>,
     pub gpu_dev_t: u64,
     pub table_fd: Option<OwnedFd>,
+    pub drm_master_active: Rc<std::cell::Cell<bool>>,
+    pub pending_destruction: Vec<VulkanFrame>,
 }
 
 impl Default for Backend {
@@ -43,10 +45,17 @@ impl Default for Backend {
 
 impl Backend {
     pub fn new() -> Self {
-        let seat = Seat::open(|seat, event| match event {
-            libseat::SeatEvent::Enable => info!("[seat] Acquired DRM Master"),
+        let drm_master_active = Rc::new(std::cell::Cell::new(true));
+        let drm_master_active_clone = drm_master_active.clone();
+
+        let seat = Seat::open(move |seat, event| match event {
+            libseat::SeatEvent::Enable => {
+                info!("[seat] Acquired DRM Master");
+                drm_master_active_clone.set(true);
+            }
             libseat::SeatEvent::Disable => {
                 info!("[seat] Lost DRM Master (User switched TTY)");
+                drm_master_active_clone.set(false);
                 seat.disable().unwrap();
             }
         })
@@ -144,6 +153,9 @@ impl Backend {
 
             let blur_chain = unsafe { vkctx.create_blur_chain(3, width, height) };
 
+            let (cmd_buffer, frame_fence, out_semaphore) =
+                unsafe { vkctx.create_frame_sync_objects() };
+
             swapchain.push(VulkanFrame {
                 bo,
                 image,
@@ -152,6 +164,9 @@ impl Backend {
                 vk_view,
                 vk_fb,
                 blur_target: Some(blur_chain),
+                cmd_buffer,
+                frame_fence,
+                out_semaphore,
             });
         }
 
@@ -165,6 +180,8 @@ impl Backend {
             outputs,
             gpu_dev_t,
             table_fd: Some(table_fd),
+            drm_master_active,
+            pending_destruction: Vec::new(),
         }
     }
 
@@ -190,11 +207,9 @@ impl Backend {
 
         info!("Display layout change detected! Rebuilding swapchain.");
 
-        // Tear down swapchain
+        // Tear down swapchain later
         let old_swapchain = std::mem::take(&mut self.swapchain);
-        for frame in old_swapchain {
-            unsafe { frame.destroy(&self.vkctx.device, &self.gbm) };
-        }
+        self.pending_destruction.extend(old_swapchain);
 
         self.outputs = new_outputs;
 
@@ -232,6 +247,9 @@ impl Backend {
 
             let blur_chain = unsafe { self.vkctx.create_blur_chain(3, self.width, self.height) };
 
+            let (cmd_buffer, frame_fence, out_semaphore) =
+                unsafe { self.vkctx.create_frame_sync_objects() };
+
             swapchain.push(VulkanFrame {
                 bo,
                 image,
@@ -240,6 +258,9 @@ impl Backend {
                 vk_view,
                 vk_fb,
                 blur_target: Some(blur_chain),
+                cmd_buffer,
+                frame_fence,
+                out_semaphore,
             });
         }
 
@@ -342,7 +363,7 @@ impl EventLoop {
         while running {
             let timeout = if !pending_flip_crtcs.is_empty() {
                 PollTimeout::NONE
-            } else if composer.needs_redraw {
+            } else if composer.needs_redraw && backend.drm_master_active.get() {
                 PollTimeout::ZERO
             } else {
                 PollTimeout::NONE
@@ -366,40 +387,49 @@ impl EventLoop {
                             if let drm::control::Event::PageFlip(v) = event {
                                 pending_flip_crtcs.remove(&v.crtc);
 
-                                let now = crate::utils::time::gettime();
-                                let tv_sec = (v.duration.as_micros() / 1_000_000) as u64;
-                                let tv_nsec = (v.duration.as_micros() % 1_000_000) as u32 * 1000;
-                                let seq = v.frame as u64;
+                                if pending_flip_crtcs.is_empty() {
+                                    let now = crate::utils::time::gettime();
+                                    let tv_sec = (v.duration.as_micros() / 1_000_000) as u64;
+                                    let tv_nsec =
+                                        (v.duration.as_micros() % 1_000_000) as u32 * 1000;
+                                    let seq = v.frame as u64;
 
-                                for cb in composer.active_frame_callbacks.drain(..) {
-                                    cb.done(now);
-                                }
-
-                                for fb in composer.feedbacks_to_present.drain(..) {
-                                    if let Some(client) = fb.client()
-                                        && let Some(output) = composer.outputs.iter().find(|o| {
-                                            o.client().map(|c| c.id()) == Some(client.id())
-                                        })
-                                    {
-                                        fb.sync_output(output);
+                                    for cb in composer.active_frame_callbacks.drain(..) {
+                                        cb.done(now);
                                     }
-                                    let vrefresh = backend
-                                        .outputs
-                                        .iter()
-                                        .find(|o| o.card_info.crtc_handle == v.crtc)
-                                        .map(|o| o.card_info.mode.vrefresh())
-                                        .unwrap_or_else(|| {
-                                            backend.outputs[0].card_info.mode.vrefresh()
-                                        });
-                                    fb.presented(
-                                        (tv_sec >> 32) as u32,
-                                        (tv_sec & 0xFFFFFFFF) as u32,
-                                        tv_nsec,
-                                        ((1. / vrefresh as f64) * 1_000_000.0 * 1_000.0) as u32,
-                                        (seq >> 32) as u32,
-                                        (seq & 0xFFFFFFFF) as u32,
-                                        wp_presentation_feedback::Kind::Vsync,
-                                    );
+
+                                    for fb in composer.feedbacks_to_present.drain(..) {
+                                        if let Some(client) = fb.client()
+                                            && let Some(output) =
+                                                composer.outputs.iter().find(|o| {
+                                                    o.client().map(|c| c.id()) == Some(client.id())
+                                                })
+                                        {
+                                            fb.sync_output(output);
+                                        }
+                                        let vrefresh = backend
+                                            .outputs
+                                            .iter()
+                                            .find(|o| o.card_info.crtc_handle == v.crtc)
+                                            .map(|o| o.card_info.mode.vrefresh())
+                                            .unwrap_or(60000);
+                                        fb.presented(
+                                            (tv_sec >> 32) as u32,
+                                            (tv_sec & 0xFFFFFFFF) as u32,
+                                            tv_nsec,
+                                            ((1. / vrefresh as f64) * 1_000_000.0 * 1_000.0) as u32,
+                                            (seq >> 32) as u32,
+                                            (seq & 0xFFFFFFFF) as u32,
+                                            wp_presentation_feedback::Kind::Vsync,
+                                        );
+                                    }
+
+                                    let old = std::mem::take(&mut backend.pending_destruction);
+                                    for frame in old {
+                                        unsafe {
+                                            frame.destroy(&backend.vkctx.device, &backend.gbm)
+                                        };
+                                    }
                                 }
                             }
                         }
@@ -451,7 +481,10 @@ impl EventLoop {
 
             composer.process_config_commands(&dh);
 
-            if pending_flip_crtcs.is_empty() && composer.needs_redraw {
+            if pending_flip_crtcs.is_empty()
+                && composer.needs_redraw
+                && backend.drm_master_active.get()
+            {
                 let now = crate::utils::time::gettime();
                 let style = {
                     let cfg = composer.config_manager.config.lock().unwrap();
@@ -661,10 +694,9 @@ impl EventLoop {
                     }
                 }
 
-                unsafe {
-                    backend.vkctx.draw_frame(
-                        frame.vk_fb,
-                        frame.image,
+                let sync_fd = unsafe {
+                    let fd = backend.vkctx.draw_frame(
+                        frame,
                         backend.width,
                         backend.height,
                         &final_draw_list,
@@ -676,7 +708,8 @@ impl EventLoop {
                         composer.styler.blur_passes(),
                     );
                     composer.drop_semaphores();
-                }
+                    fd
+                };
 
                 let mut gamma_to_apply = None;
                 if let Some(lut) = composer.pending_gamma.take() {
@@ -796,6 +829,16 @@ impl EventLoop {
                                 drm::control::property::Value::UnsignedRange((out.x as u64) << 16),
                             );
                         }
+                        if let Some(in_fence_fd_prop) = out.card_info.plane_in_fence_fd_prop {
+                            use std::os::unix::io::AsRawFd;
+                            req.add_property(
+                                out.card_info.primary_plane,
+                                in_fence_fd_prop,
+                                drm::control::property::Value::SignedRange(
+                                    sync_fd.as_raw_fd() as i64
+                                ),
+                            );
+                        }
                         if let Some(src_y_prop) = out.card_info.src_y_prop {
                             req.add_property(
                                 out.card_info.primary_plane,
@@ -892,6 +935,17 @@ impl EventLoop {
                             out.card_info.plane_fb_id_prop,
                             drm::control::property::Value::Framebuffer(Some(frame.fb_handle)),
                         );
+
+                        if let Some(in_fence_fd_prop) = out.card_info.plane_in_fence_fd_prop {
+                            use std::os::unix::io::AsRawFd;
+                            req.add_property(
+                                out.card_info.primary_plane,
+                                in_fence_fd_prop,
+                                drm::control::property::Value::SignedRange(
+                                    sync_fd.as_raw_fd() as i64
+                                ),
+                            );
+                        }
 
                         if let Some(gamma_val) = gamma_to_apply {
                             req.add_property(

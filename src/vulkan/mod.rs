@@ -1,9 +1,9 @@
-use ash::{Device, Entry, Instance, vk};
+use ash::{Device, Entry, Instance, khr, vk};
 use drm::buffer::Buffer as _;
-use std::os::fd::{IntoRawFd, OwnedFd};
+use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
 use tracing::{error, warn};
 
-use crate::gpu::buffer::Buffer;
+use crate::{gpu::buffer::Buffer, vulkan::frame::VulkanFrame};
 
 pub mod frame;
 
@@ -33,6 +33,7 @@ pub struct VulkanContext {
     pub queue_family_index: u32,
     pub command_pool: vk::CommandPool,
     pub fence: vk::Fence,
+    pub ext_semaphore_fd: khr::external_semaphore_fd::Device,
 
     pub render_pass: vk::RenderPass,
     pub resume_render_pass: vk::RenderPass,
@@ -149,6 +150,8 @@ impl VulkanContext {
 
         let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
 
+        let ext_semaphore_fd = khr::external_semaphore_fd::Device::new(&instance, &device);
+
         let pool_create_info = vk::CommandPoolCreateInfo::default()
             .queue_family_index(queue_family_index)
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
@@ -207,6 +210,7 @@ impl VulkanContext {
             queue_family_index,
             command_pool,
             fence,
+            ext_semaphore_fd,
             render_pass,
             resume_render_pass,
             pipeline_layout,
@@ -221,6 +225,27 @@ impl VulkanContext {
             kawase_down_pipeline,
             kawase_up_pipeline,
         }
+    }
+
+    pub unsafe fn create_frame_sync_objects(
+        &self,
+    ) -> (vk::CommandBuffer, vk::Fence, vk::Semaphore) {
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(self.command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        let cmd_buffer = unsafe { self.device.allocate_command_buffers(&alloc_info).unwrap()[0] };
+
+        let fence_create_info =
+            vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+        let frame_fence = unsafe { self.device.create_fence(&fence_create_info, None).unwrap() };
+
+        let mut export_info = vk::ExportSemaphoreCreateInfo::default()
+            .handle_types(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD_KHR);
+        let semaphore_info = vk::SemaphoreCreateInfo::default().push_next(&mut export_info);
+        let out_semaphore = unsafe { self.device.create_semaphore(&semaphore_info, None).unwrap() };
+
+        (cmd_buffer, frame_fence, out_semaphore)
     }
 
     pub unsafe fn import_gbm_buffer(
@@ -957,8 +982,7 @@ impl VulkanContext {
 
     pub fn draw_frame(
         &self,
-        vk_fb: vk::Framebuffer,
-        swapchain_image: vk::Image,
+        frame: &VulkanFrame,
         screen_w: u32,
         screen_h: u32,
         quads: &[DrawCommand],
@@ -968,17 +992,20 @@ impl VulkanContext {
         signal_values: &[u64],
         blur_chain: Option<&BlurChain>,
         blur_passes: u32,
-    ) {
+    ) -> OwnedFd {
+        let cmd_buffer = frame.cmd_buffer;
         unsafe {
-            self.device.reset_fences(&[self.fence]).unwrap();
+            // Wait for this frame's previous execution to finish
+            self.device
+                .wait_for_fences(&[frame.frame_fence], true, u64::MAX)
+                .unwrap();
+            self.device.reset_fences(&[frame.frame_fence]).unwrap();
+
+            // Reset and reuse the frame's command buffer
+            self.device
+                .reset_command_buffer(cmd_buffer, vk::CommandBufferResetFlags::empty())
+                .unwrap();
         }
-
-        let alloc_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(self.command_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
-
-        let cmd_buffer = unsafe { self.device.allocate_command_buffers(&alloc_info).unwrap()[0] };
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
@@ -1020,7 +1047,7 @@ impl VulkanContext {
 
             let render_pass_begin_info = vk::RenderPassBeginInfo::default()
                 .render_pass(rp)
-                .framebuffer(vk_fb)
+                .framebuffer(frame.vk_fb)
                 .render_area(scissor)
                 .clear_values(if load_op == vk::AttachmentLoadOp::CLEAR {
                     &clear_values
@@ -1080,7 +1107,7 @@ impl VulkanContext {
                                 .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
                                 .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
                                 .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-                                .image(swapchain_image)
+                                .image(frame.image)
                                 .subresource_range(subresource_range),
                             vk::ImageMemoryBarrier::default()
                                 .old_layout(vk::ImageLayout::UNDEFINED)
@@ -1136,7 +1163,7 @@ impl VulkanContext {
                         unsafe {
                             self.device.cmd_blit_image(
                                 cmd_buffer,
-                                swapchain_image,
+                                frame.image,
                                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                                 target0.image,
                                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -1572,27 +1599,41 @@ impl VulkanContext {
             wait_stages.push(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT);
         }
 
+        let mut final_signal_semaphores = signal_semaphores.to_vec();
+        final_signal_semaphores.push(frame.out_semaphore);
+
+        let mut final_signal_values = signal_values.to_vec();
+        final_signal_values.push(0); // timeline ignored for binary semaphore
+
         let mut timeline_info = vk::TimelineSemaphoreSubmitInfo::default()
             .wait_semaphore_values(wait_values)
-            .signal_semaphore_values(signal_values);
+            .signal_semaphore_values(&final_signal_values);
 
         let submit_info = vk::SubmitInfo::default()
             .push_next(&mut timeline_info)
             .wait_semaphores(wait_semaphores)
             .wait_dst_stage_mask(&wait_stages)
             .command_buffers(std::slice::from_ref(&cmd_buffer))
-            .signal_semaphores(signal_semaphores);
+            .signal_semaphores(&final_signal_semaphores);
 
         unsafe {
             self.device
-                .queue_submit(self.queue, std::slice::from_ref(&submit_info), self.fence)
+                .queue_submit(
+                    self.queue,
+                    std::slice::from_ref(&submit_info),
+                    frame.frame_fence,
+                )
                 .expect("Failed to submit command buffer");
 
-            self.device
-                .wait_for_fences(&[self.fence], true, u64::MAX)
+            let get_fd_info = vk::SemaphoreGetFdInfoKHR::default()
+                .semaphore(frame.out_semaphore)
+                .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD_KHR);
+            let fd = self
+                .ext_semaphore_fd
+                .get_semaphore_fd(&get_fd_info)
                 .unwrap();
-            self.device
-                .free_command_buffers(self.command_pool, &[cmd_buffer]);
+
+            std::os::fd::OwnedFd::from_raw_fd(fd)
         }
     }
 

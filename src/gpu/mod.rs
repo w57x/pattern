@@ -53,9 +53,24 @@ impl Card {
         enumerator.match_subsystem("drm").ok()?;
         enumerator.match_sysname("card*").ok()?;
 
-        enumerator
-            .scan_devices()
-            .ok()?
+        let devices: Vec<_> = enumerator.scan_devices().ok()?.collect();
+
+        // We try to find the boot VGA device
+        for device in &devices {
+            if let Some(parent) = device.parent() {
+                if let Ok(boot_vga) = std::fs::read_to_string(parent.syspath().join("boot_vga")) {
+                    if boot_vga.trim() == "1" {
+                        if let Some(devnode) = device.devnode() {
+                            return Some(devnode.to_path_buf());
+                        }
+                    }
+                }
+            }
+        }
+
+        // We fallback to the first one
+        devices
+            .into_iter()
             .next()
             .and_then(|device| device.devnode().map(|p| p.to_path_buf()))
     }
@@ -260,6 +275,8 @@ impl Card {
                             let crtc_y_prop = self.find_property(primary_plane, "CRTC_Y");
                             let crtc_w_prop = self.find_property(primary_plane, "CRTC_W");
                             let crtc_h_prop = self.find_property(primary_plane, "CRTC_H");
+                            let plane_in_fence_fd_prop =
+                                self.find_property(primary_plane, "IN_FENCE_FD");
 
                             let cursor_plane =
                                 self.find_cursor_plane(crtc_handle, &assigned_planes);
@@ -300,6 +317,7 @@ impl Card {
                                 crtc_y_prop,
                                 crtc_w_prop,
                                 crtc_h_prop,
+                                plane_in_fence_fd_prop,
                             };
 
                             outputs.push(OutputLayoutInfo {
@@ -318,7 +336,7 @@ impl Card {
         }
 
         if outputs.is_empty() {
-            panic!("Cannot fetch gpu display and connection info");
+            tracing::warn!("No connected outputs found. Proceeding with headless state.");
         }
 
         outputs
@@ -374,6 +392,7 @@ pub struct CardInfo {
     pub crtc_y_prop: Option<drm::control::property::Handle>,
     pub crtc_w_prop: Option<drm::control::property::Handle>,
     pub crtc_h_prop: Option<drm::control::property::Handle>,
+    pub plane_in_fence_fd_prop: Option<drm::control::property::Handle>,
 }
 
 #[derive(Clone)]

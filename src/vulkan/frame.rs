@@ -16,6 +16,9 @@ pub struct VulkanFrame {
     pub vk_fb: vk::Framebuffer,
 
     pub blur_target: Option<BlurChain>,
+    pub cmd_buffer: vk::CommandBuffer,
+    pub frame_fence: vk::Fence,
+    pub out_semaphore: vk::Semaphore,
 }
 
 impl VulkanFrame {
@@ -37,6 +40,8 @@ impl VulkanFrame {
             device.destroy_image_view(self.vk_view, None);
             device.destroy_image(self.image, None);
             device.free_memory(self.memory, None);
+            device.destroy_fence(self.frame_fence, None);
+            device.destroy_semaphore(self.out_semaphore, None);
         }
         card.destroy_framebuffer(self.fb_handle).unwrap();
     }
