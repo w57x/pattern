@@ -1641,6 +1641,10 @@ impl WindowManager for Wm {
         output_id: usize,
         workspace_id: usize,
     ) -> bool {
+        if !self.outputs.iter().any(|o| o.id == output_id) {
+            return false;
+        }
+
         // 1. we find and remove the window from its current location
         let mut target_window = None;
         for out in &mut self.outputs {
@@ -1704,7 +1708,7 @@ impl WindowManager for Wm {
 
         // 2. If the window was found, insert it into the target workspace
         if let Some(window) = target_window {
-            self.ensure_workspace(workspace_id);
+            self.ensure_workspace_on_output(output_id, workspace_id);
             if let Some(output) = self.outputs.iter_mut().find(|o| o.id == output_id)
                 && let Some(Slot::Occupied(ws)) = output.workspaces.get_mut(workspace_id)
             {
