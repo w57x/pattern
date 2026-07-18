@@ -965,19 +965,13 @@ impl Input {
             return;
         }
 
-        if let Some((_surf, _edges, shape)) = find_resize_edge_under_cursor(cursor, state) {
-            state.cursor_shape = Some(shape);
-            state.set_pointer_focus(None, 0.0, 0.0, time);
-            return;
-        }
-
-        if let Some(grabbed_surface) = state.pointer_grab.clone()
-            && let Some((abs_x, abs_y)) = state.get_surface_position(&grabbed_surface.id())
-        {
-            let local_x = cursor.x - abs_x;
-            let local_y = cursor.y - abs_y;
-            state.set_pointer_focus(Some(grabbed_surface), local_x, local_y, time);
-            return;
+        if let Some(grabbed_surface) = state.pointer_grab.clone() {
+            if let Some((abs_x, abs_y)) = state.get_surface_position(&grabbed_surface.id()) {
+                let local_x = cursor.x - abs_x;
+                let local_y = cursor.y - abs_y;
+                state.set_pointer_focus(Some(grabbed_surface), local_x, local_y, time);
+                return;
+            }
         }
 
         let extra_surfaces = state.get_input_popup_surfaces();
@@ -992,6 +986,27 @@ impl Input {
             state.wm.as_ref(),
             &extra_surfaces,
         );
+
+        let mut is_popup_hit = false;
+        if let Some(surf) = &hit.surface {
+            if extra_surfaces.iter().any(|(s, _, _)| s.id() == surf.id())
+                || state
+                    .wm
+                    .get_popups()
+                    .iter()
+                    .any(|p| p.surface.id() == surf.id())
+            {
+                is_popup_hit = true;
+            }
+        }
+
+        if !is_popup_hit {
+            if let Some((_surf, _edges, shape)) = find_resize_edge_under_cursor(cursor, state) {
+                state.cursor_shape = Some(shape);
+                state.set_pointer_focus(None, 0.0, 0.0, time);
+                return;
+            }
+        }
 
         state.set_pointer_focus(hit.surface, hit.local_x, hit.local_y, time);
     }
@@ -1018,6 +1033,7 @@ fn find_resize_edge_under_cursor(
     windows.reverse();
 
     let border_width = 8.0;
+    let mut occluding_surface_above = false;
 
     for win in windows {
         let ws_id = state.wm.get_workspace_id_for_window(&win.surface.id());
@@ -1035,6 +1051,15 @@ fn find_resize_edge_under_cursor(
 
         let cx = cursor.x;
         let cy = cursor.y;
+
+        let is_inside_body = cx >= wx && cx <= wx + ww && cy >= wy && cy <= wy + wh;
+
+        if !win.ssd {
+            if is_inside_body {
+                occluding_surface_above = true;
+            }
+            continue;
+        }
 
         if cx >= wx - border_width
             && cx <= wx + ww + border_width
@@ -1061,6 +1086,9 @@ fn find_resize_edge_under_cursor(
             }
 
             if edges != 0 {
+                if occluding_surface_above {
+                    return None;
+                }
                 let shape = match edges {
                     1 => Shape::NResize,
                     2 => Shape::SResize,
@@ -1074,6 +1102,10 @@ fn find_resize_edge_under_cursor(
                 };
                 return Some((win.surface.clone(), edges, shape));
             }
+        }
+
+        if is_inside_body {
+            occluding_surface_above = true;
         }
     }
 
