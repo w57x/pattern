@@ -41,6 +41,10 @@ use wayland_server::{
 };
 
 fn main() {
+    unsafe {
+        libc::signal(libc::SIGCHLD, libc::SIG_IGN);
+    }
+
     let is_tty = std::io::stdout().is_terminal();
 
     tracing_subscriber::fmt()
