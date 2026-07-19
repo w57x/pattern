@@ -78,8 +78,9 @@ impl Dispatch<WlPointer, ()> for Composer {
         _dhandle: &wayland_server::DisplayHandle,
         _data_init: &mut wayland_server::DataInit<'_, Self>,
     ) {
+        use wayland_server::protocol::wl_pointer::Request;
         match request {
-            wayland_server::protocol::wl_pointer::Request::SetCursor {
+            Request::SetCursor {
                 surface,
                 hotspot_x,
                 hotspot_y,
@@ -92,7 +93,7 @@ impl Dispatch<WlPointer, ()> for Composer {
                     state.cursor_surface = None;
                 }
             }
-            wayland_server::protocol::wl_pointer::Request::Release => {
+            Request::Release => {
                 state.pointers.retain(|p| p.id() != resource.id());
             }
             _ => {}

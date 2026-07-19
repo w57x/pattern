@@ -9,7 +9,7 @@ use pattern::{
     wm::impls::floating_wm,
 };
 use tracing::{error, info};
-use wayland_protocols::ext::workspace::v1::server::ext_workspace_manager_v1::ExtWorkspaceManagerV1;
+use wayland_protocols::ext::{session_lock::v1::server::ext_session_lock_manager_v1::ExtSessionLockManagerV1, workspace::v1::server::ext_workspace_manager_v1::ExtWorkspaceManagerV1};
 use wayland_protocols::wp::cursor_shape::v1::server::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
 use wayland_protocols::wp::fifo::v1::server::wp_fifo_manager_v1::WpFifoManagerV1;
 use wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
@@ -64,7 +64,7 @@ fn main() {
     dh.create_global::<Composer, WlCompositor, ()>(5, ());
     dh.create_global::<Composer, WlShm, ()>(1, ());
     dh.create_global::<Composer, WlSubcompositor, ()>(1, ());
-    dh.create_global::<Composer, WlSeat, ()>(5, ());
+    dh.create_global::<Composer, WlSeat, ()>(10, ());
     dh.create_global::<Composer, WlDataDeviceManager, ()>(3, ());
     dh.create_global::<Composer, ZwpPrimarySelectionDeviceManagerV1, ()>(1, ());
     dh.create_global::<Composer, XdgWmBase, ()>(3, ());
@@ -89,6 +89,7 @@ fn main() {
     dh.create_global::<Composer, ZwpVirtualKeyboardManagerV1, ()>(1, ());
     dh.create_global::<Composer, ZwlrDataControlManagerV1, ()>(2, ());
     dh.create_global::<Composer, ZwlrGammaControlManagerV1, ()>(1, ());
+    dh.create_global::<Composer, ExtSessionLockManagerV1, ()>(1, ());
 
     let socket = ListeningSocket::bind_auto("wayland", 0..32).unwrap();
     let socket_name = socket.socket_name().unwrap().to_string_lossy().into_owned();

@@ -554,6 +554,13 @@ impl EventLoop {
                     .subsurfaces
                     .retain(|s| s.surface.is_alive() && s.parent.is_alive());
 
+                if let Some(lock) = composer.session_lock.as_ref() {
+                    if !lock.lock.is_alive() {
+                        composer.session_lock = None;
+                        composer.needs_redraw = true;
+                    }
+                }
+
                 let mut final_draw_list = composer.styler.generate_draw_list(
                     &composer.subsurfaces,
                     &composer.surface_textures,
@@ -576,6 +583,27 @@ impl EventLoop {
                         &composer.surface_to_viewport,
                         &mut final_draw_list,
                     );
+                }
+
+                if let Some(lock) = composer.session_lock.as_ref() {
+                    for (_, lock_surface, out_id) in &lock.surfaces {
+                        if let Some(wl_out) = composer.outputs.iter().find(|o| o.id() == *out_id) {
+                            if let Some(output_idx) = wl_out.data::<usize>() {
+                                if let Some(out_info) = composer.outputs_info.get(*output_idx) {
+                                    composer.styler.draw_surface_tree(
+                                        lock_surface,
+                                        out_info.x as f64,
+                                        out_info.y as f64,
+                                        &composer.subsurfaces,
+                                        &composer.surface_textures,
+                                        &composer.viewports,
+                                        &composer.surface_to_viewport,
+                                        &mut final_draw_list,
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
 
                 if composer.pointer_lock.is_none() {

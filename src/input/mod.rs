@@ -191,20 +191,22 @@ impl Input {
                         .xkb_state
                         .serialize_layout(xkbcommon::xkb::STATE_LAYOUT_EFFECTIVE);
 
-                    match handle_keybinding(
-                        state,
-                        dh,
-                        key,
-                        key_state,
-                        keysym,
-                        Mods::new(state.xkb_state.get_keymap(), depressed),
-                    ) {
-                        BindingAction::Handled => continue,
-                        BindingAction::Exit => {
-                            should_exit = true;
-                            continue;
+                    if state.session_lock.is_none() {
+                        match handle_keybinding(
+                            state,
+                            dh,
+                            key,
+                            key_state,
+                            keysym,
+                            Mods::new(state.xkb_state.get_keymap(), depressed),
+                        ) {
+                            BindingAction::Handled => continue,
+                            BindingAction::Exit => {
+                                should_exit = true;
+                                continue;
+                            }
+                            BindingAction::None => {}
                         }
-                        BindingAction::None => {}
                     }
 
                     // Forward to IME grabs
@@ -220,18 +222,32 @@ impl Input {
                         continue;
                     }
 
-                    if let Some(focused_surface) = &state.input_focus
-                        && let Some(client) = focused_surface.client()
-                    {
-                        state.serial += 1;
-
-                        for keyboard in state
-                            .keyboards
-                            .iter()
-                            .filter(|kbd| kbd.client().map(|c| c.id()) == Some(client.id()))
+                    if state.session_lock.is_none() {
+                        if let Some(focused_surface) = &state.input_focus
+                            && let Some(client) = focused_surface.client()
                         {
-                            keyboard.key(state.serial, time, key, key_state);
-                            keyboard.modifiers(state.serial, depressed, latched, locked, group);
+                            state.serial += 1;
+
+                            for keyboard in state
+                                .keyboards
+                                .iter()
+                                .filter(|kbd| kbd.client().map(|c| c.id()) == Some(client.id()))
+                            {
+                                keyboard.key(state.serial, time, key, key_state);
+                                keyboard.modifiers(state.serial, depressed, latched, locked, group);
+                            }
+                        }
+                    } else if let Some(session_lock) = state.session_lock.as_ref() {
+                        if let Some(client) = session_lock.lock.client() {
+                            state.serial += 1;
+                            for keyboard in state
+                                .keyboards
+                                .iter()
+                                .filter(|kbd| kbd.client().map(|c| c.id()) == Some(client.id()))
+                            {
+                                keyboard.key(state.serial, time, key, key_state);
+                                keyboard.modifiers(state.serial, depressed, latched, locked, group);
+                            }
                         }
                     }
                 }
@@ -961,6 +977,34 @@ impl Input {
     }
 
     fn route_pointer_motion(cursor: Vector2, state: &mut Composer, time: u32) {
+        if let Some(lock) = state.session_lock.as_ref() {
+            let mut target_surf = None;
+            let mut local_x = 0.0;
+            let mut local_y = 0.0;
+
+            for (_, surf, out_id) in &lock.surfaces {
+                if let Some(wl_out) = state.outputs.iter().find(|o| o.id() == *out_id) {
+                    if let Some(output_idx) = wl_out.data::<usize>() {
+                        if let Some(out_info) = state.outputs_info.get(*output_idx) {
+                            if cursor.x >= out_info.x as f64
+                                && cursor.x <= (out_info.x + out_info.width) as f64
+                                && cursor.y >= out_info.y as f64
+                                && cursor.y <= (out_info.y + out_info.height) as f64
+                            {
+                                target_surf = Some(surf.clone());
+                                local_x = cursor.x - out_info.x as f64;
+                                local_y = cursor.y - out_info.y as f64;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            state.set_pointer_focus(target_surf, local_x, local_y, time);
+            return;
+        }
+
         if state.wm.is_resizing() || state.wm.is_dragging() {
             return;
         }

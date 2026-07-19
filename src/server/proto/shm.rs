@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use crate::server::{Composer, ShmBuffer};
 use wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm::WlShm, wl_shm_pool::WlShmPool};
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
@@ -30,12 +32,12 @@ impl Dispatch<WlShm, ()> for Composer {
     ) {
         if let wayland_server::protocol::wl_shm::Request::CreatePool { id, size, fd, .. } = request
         {
-            let mmap = unsafe {
+            let mmap = Arc::new(Mutex::new(unsafe {
                 memmap2::MmapOptions::new()
                     .len(size as usize)
                     .map_mut(&fd)
                     .unwrap()
-            };
+            }));
             let pool = data_init.init(id, ());
             state.pools.insert(pool.id(), (fd, mmap));
         }
@@ -64,21 +66,25 @@ impl Dispatch<WlShmPool, ()> for Composer {
                 ..
             } => {
                 let buffer = data_init.init(id, ());
-                state.buffers.insert(
-                    buffer.id(),
-                    ShmBuffer {
-                        pool_id: resource.id(),
-                        offset,
-                        width,
-                        height,
-                        stride,
-                    },
-                );
+                if let Some((_, mmap)) = state.pools.get(&resource.id()) {
+                    state.buffers.insert(
+                        buffer.id(),
+                        ShmBuffer {
+                            pool_id: resource.id(),
+                            offset,
+                            width,
+                            height,
+                            stride,
+                            mmap: mmap.clone(),
+                        },
+                    );
+                }
             }
 
             wayland_server::protocol::wl_shm_pool::Request::Resize { size } => {
                 if let Some((fd, mmap)) = state.pools.get_mut(&resource.id()) {
-                    *mmap = unsafe {
+                    let mut lock = mmap.lock().unwrap();
+                    *lock = unsafe {
                         memmap2::MmapOptions::new()
                             .len(size as usize)
                             .map_mut(&fd.as_fd())

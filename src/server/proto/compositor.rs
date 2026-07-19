@@ -35,12 +35,6 @@ impl Dispatch<WlCompositor, ()> for Composer {
             wayland_server::protocol::wl_compositor::Request::CreateSurface { id } => {
                 let surface = data_init.init(id, ());
 
-                for output in &state.outputs {
-                    if surface.client().map(|c| c.id()) == output.client().map(|c| c.id()) {
-                        surface.enter(output);
-                    }
-                }
-
                 state.surfaces.push(surface);
             }
             wayland_server::protocol::wl_compositor::Request::CreateRegion { id } => {
@@ -269,12 +263,11 @@ impl Dispatch<WlSurface, ()> for Composer {
 
                     if let Some(buffer_info) = state.buffers.get(&buffer.id()) {
                         unsafe {
-                            let tex = if let Some(cached_tex) =
-                                state.buffer_textures.get(&buffer.id())
-                            {
-                                cached_tex.clone_with_scale(scale as f32)
-                            } else {
-                                if let Some((_, mmap)) = state.pools.get(&buffer_info.pool_id) {
+                            let tex =
+                                if let Some(cached_tex) = state.buffer_textures.get(&buffer.id()) {
+                                    cached_tex.clone_with_scale(scale as f32)
+                                } else {
+                                    let mmap = buffer_info.mmap.lock().unwrap();
                                     let start = buffer_info.offset as usize;
                                     let len = (buffer_info.height * buffer_info.stride) as usize;
                                     if len == 0 || start + len > mmap.len() {
@@ -313,15 +306,11 @@ impl Dispatch<WlSurface, ()> for Composer {
 
                                     state.buffer_textures.insert(buffer.id(), new_tex.clone());
                                     new_tex
-                                } else {
-                                    return;
-                                }
-                            };
+                                };
 
                             // Update SHM content if damaged. NO POLL NEEDED FOR SHM.
-                            if !damage.is_empty()
-                                && let Some((_, mmap)) = state.pools.get(&buffer_info.pool_id)
-                            {
+                            if !damage.is_empty() {
+                                let mmap = buffer_info.mmap.lock().unwrap();
                                 let start = buffer_info.offset as usize;
                                 let len = (buffer_info.height * buffer_info.stride) as usize;
                                 if len == 0 || start + len > mmap.len() {

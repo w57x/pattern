@@ -54,9 +54,13 @@ use wayland_protocols_misc::zwp_input_method_v2::server::{
 use crate::{
     config::CompositorCommand,
     gpu::CardInfo,
-    server::cursor_loader::CursorManager,
+    server::{
+        cursor_loader::CursorManager,
+        proto::{session_lock::SessionLockState, text_input::TextInputState},
+    },
     vulkan::{SurfaceTexture, VulkanContext},
 };
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 pub struct ShmBuffer {
@@ -65,6 +69,7 @@ pub struct ShmBuffer {
     pub width: i32,
     pub height: i32,
     pub stride: i32,
+    pub mmap: Arc<Mutex<memmap2::MmapMut>>,
 }
 
 pub struct DmabufData {
@@ -174,7 +179,7 @@ pub struct Composer {
     pub card_info: CardInfo,
     pub outputs_info: Vec<crate::gpu::OutputLayoutInfo>,
 
-    pub pools: HashMap<ObjectId, (OwnedFd, memmap2::MmapMut)>,
+    pub pools: HashMap<ObjectId, (OwnedFd, Arc<Mutex<memmap2::MmapMut>>)>,
     pub buffers: HashMap<ObjectId, ShmBuffer>,
 
     // Maps Surface ID -> WlBuffer
@@ -273,11 +278,7 @@ pub struct Composer {
         Vec<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1>,
     pub data_control_devices: Vec<zwlr_data_control_device_v1::ZwlrDataControlDeviceV1>,
 
-    pub text_inputs: Vec<(
-        ZwpTextInputV3,
-        WlSeat,
-        crate::server::proto::text_input::TextInputState,
-    )>,
+    pub text_inputs: Vec<(ZwpTextInputV3, WlSeat, TextInputState)>,
 
     pub input_methods: Vec<(ZwpInputMethodV2, WlSeat)>,
     pub input_popups: Vec<(ZwpInputPopupSurfaceV2, WlSurface, ZwpInputMethodV2)>,
@@ -297,6 +298,7 @@ pub struct Composer {
     pub pending_layer_state: HashMap<ObjectId, LayerState>,
     pub surface_input_region: HashMap<ObjectId, Vec<crate::wm::Rect>>,
     pub surface_opaque_region: HashMap<ObjectId, Vec<crate::wm::Rect>>,
+    pub session_lock: Option<SessionLockState>,
 }
 
 #[derive(Clone)]
@@ -485,6 +487,7 @@ impl Composer {
             pending_layer_state: HashMap::new(),
             surface_input_region: HashMap::new(),
             surface_opaque_region: HashMap::new(),
+            session_lock: None,
         }
     }
 }
@@ -1270,7 +1273,24 @@ impl Composer {
         }
 
         let (cx, cy) = self.cursor_pos;
-        let extra_surfaces = self.get_input_popup_surfaces();
+        let mut extra_surfaces = self.get_input_popup_surfaces();
+
+        if let Some(lock) = self.session_lock.as_ref() {
+            for (_, lock_surface, out_id) in &lock.surfaces {
+                if let Some(wl_out) = self.outputs.iter().find(|o| o.id() == *out_id) {
+                    if let Some(output_idx) = wl_out.data::<usize>() {
+                        if let Some(out_info) = self.outputs_info.get(*output_idx) {
+                            extra_surfaces.push((
+                                lock_surface.clone(),
+                                out_info.x as f64,
+                                out_info.y as f64,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
         let hit = self.styler.hit_test(
             cx,
             cy,
