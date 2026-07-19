@@ -636,7 +636,7 @@ impl Input {
                     input::event::PointerEvent::ScrollWheel(a) => {
                         use input::event::pointer::Axis as LibinputAxis;
                         use input::event::pointer::PointerScrollEvent;
-                        use wayland_server::protocol::wl_pointer::{Axis as WlAxis, AxisSource};
+                        use wayland_server::protocol::wl_pointer::{Axis as WlAxis, AxisSource, AxisRelativeDirection};
 
                         if let Some(focused) = &state.pointer_focus
                             && let Some(client) = focused.client()
@@ -654,6 +654,8 @@ impl Input {
                                     if value == 0.0 {
                                         pointer.axis_stop(a.time(), WlAxis::VerticalScroll);
                                     } else {
+                                        pointer.axis_relative_direction(WlAxis::VerticalScroll, AxisRelativeDirection::Identical);
+                                        pointer.axis_value120(WlAxis::VerticalScroll, v120 as i32);
                                         pointer.axis_discrete(
                                             WlAxis::VerticalScroll,
                                             (v120 / 120.0).round() as i32,
@@ -667,6 +669,8 @@ impl Input {
                                     if value == 0.0 {
                                         pointer.axis_stop(a.time(), WlAxis::HorizontalScroll);
                                     } else {
+                                        pointer.axis_relative_direction(WlAxis::HorizontalScroll, AxisRelativeDirection::Identical);
+                                        pointer.axis_value120(WlAxis::HorizontalScroll, v120 as i32);
                                         pointer.axis_discrete(
                                             WlAxis::HorizontalScroll,
                                             (v120 / 120.0).round() as i32,
@@ -679,10 +683,16 @@ impl Input {
                         }
                     }
                     input::event::PointerEvent::ScrollFinger(a) => {
+                        let dir = if self.natural_scroll {
+                            wayland_server::protocol::wl_pointer::AxisRelativeDirection::Inverted
+                        } else {
+                            wayland_server::protocol::wl_pointer::AxisRelativeDirection::Identical
+                        };
                         Self::handle_scroll(
                             a,
                             wayland_server::protocol::wl_pointer::AxisSource::Finger,
                             state,
+                            dir,
                         );
                     }
                     input::event::PointerEvent::ScrollContinuous(a) => {
@@ -690,6 +700,7 @@ impl Input {
                             a,
                             wayland_server::protocol::wl_pointer::AxisSource::Continuous,
                             state,
+                            wayland_server::protocol::wl_pointer::AxisRelativeDirection::Identical,
                         );
                     }
 
@@ -939,6 +950,7 @@ impl Input {
         event: E,
         source: wl_pointer::AxisSource,
         state: &mut Composer,
+        dir: wayland_server::protocol::wl_pointer::AxisRelativeDirection,
     ) {
         use pointer::Axis as LibinputAxis;
         use wl_pointer::Axis as WlAxis;
@@ -960,6 +972,7 @@ impl Input {
                     if value == 0.0 {
                         pointer.axis_stop(event.time(), WlAxis::VerticalScroll);
                     } else {
+                        pointer.axis_relative_direction(WlAxis::VerticalScroll, dir);
                         pointer.axis(event.time(), WlAxis::VerticalScroll, value);
                     }
                 }
@@ -968,6 +981,7 @@ impl Input {
                     if value == 0.0 {
                         pointer.axis_stop(event.time(), WlAxis::HorizontalScroll);
                     } else {
+                        pointer.axis_relative_direction(WlAxis::HorizontalScroll, dir);
                         pointer.axis(event.time(), WlAxis::HorizontalScroll, value);
                     }
                 }
