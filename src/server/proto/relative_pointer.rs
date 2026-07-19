@@ -1,32 +1,33 @@
-use crate::server::Composer;
 use wayland_protocols::wp::relative_pointer::zv1::server::{
     zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1,
     zwp_relative_pointer_v1::ZwpRelativePointerV1,
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<ZwpRelativePointerManagerV1, ()> for Composer {
+use crate::server::{ClientState, Composer, GlobalState};
+
+impl GlobalDispatch<ZwpRelativePointerManagerV1, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<ZwpRelativePointerManagerV1>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<ZwpRelativePointerManagerV1, ()> for Composer {
+impl Dispatch<ZwpRelativePointerManagerV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &ZwpRelativePointerManagerV1,
         request: wayland_protocols::wp::relative_pointer::zv1::server::zwp_relative_pointer_manager_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             wayland_protocols::wp::relative_pointer::zv1::server::zwp_relative_pointer_manager_v1::Request::Destroy => {}
@@ -34,7 +35,7 @@ impl Dispatch<ZwpRelativePointerManagerV1, ()> for Composer {
                 id,
                 pointer: _,
             } => {
-                let rp = data_init.init(id, ());
+                let rp = data_init.init(id, ClientState);
                 state.relative_pointers.push(rp);
             }
             _ => {}
@@ -42,15 +43,15 @@ impl Dispatch<ZwpRelativePointerManagerV1, ()> for Composer {
     }
 }
 
-impl Dispatch<ZwpRelativePointerV1, ()> for Composer {
+impl Dispatch<ZwpRelativePointerV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &ZwpRelativePointerV1,
         request: wayland_protocols::wp::relative_pointer::zv1::server::zwp_relative_pointer_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         if let wayland_protocols::wp::relative_pointer::zv1::server::zwp_relative_pointer_v1::Request::Destroy = request {
             state.relative_pointers.retain(|p| p.id() != resource.id());

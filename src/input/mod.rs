@@ -4,6 +4,7 @@ use input::event::pointer::PointerEventTrait;
 use input::event::{EventTrait, pointer};
 use input::{Libinput, LibinputInterface};
 use libseat::Seat;
+use nix::sys::timerfd::TimerFd;
 use nix::unistd::dup;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -52,6 +53,8 @@ impl LibinputInterface for SeatInterface {
 }
 
 pub struct Input {
+    pub key_repeat_timer: Option<TimerFd>,
+    pub key_repeat_data: Option<u32>,
     pub context: Libinput,
     pub cursor: Vector2,
     pub absolute_offset: Vector2,
@@ -99,6 +102,13 @@ impl Input {
 
         input.udev_assign_seat("seat0").unwrap();
         Self {
+            key_repeat_timer: TimerFd::new(
+                nix::sys::timerfd::ClockId::CLOCK_MONOTONIC,
+                nix::sys::timerfd::TimerFlags::TFD_NONBLOCK
+                    | nix::sys::timerfd::TimerFlags::TFD_CLOEXEC,
+            )
+            .ok(),
+            key_repeat_data: None,
             context: input,
             cursor: Vector2 {
                 x: width / 2.0,
@@ -158,13 +168,44 @@ impl Input {
                 input::Event::Device(_) => {}
                 input::Event::Keyboard(input::event::keyboard::KeyboardEvent::Key(k)) => {
                     let key = k.key();
-                    let time = k.time();
-
                     let key_state = if k.key_state() == input::event::keyboard::KeyState::Pressed {
                         wl_keyboard::KeyState::Pressed
                     } else {
                         wl_keyboard::KeyState::Released
                     };
+
+                    if key_state == wl_keyboard::KeyState::Pressed {
+                        self.key_repeat_data = Some(key);
+                        if let Some(timer) = &self.key_repeat_timer {
+                            let (rate, delay) = {
+                                let cfg = state.config_manager.config.lock().unwrap();
+                                (cfg.input.repeat_rate as u64, cfg.input.repeat_delay as u64)
+                            };
+                            if rate > 0 {
+                                let spec = nix::sys::timerfd::Expiration::IntervalDelayed(
+                                    nix::sys::time::TimeSpec::from_duration(
+                                        std::time::Duration::from_millis(delay),
+                                    ),
+                                    nix::sys::time::TimeSpec::from_duration(
+                                        std::time::Duration::from_millis(1000 / rate),
+                                    ),
+                                );
+                                let _ =
+                                    timer.set(spec, nix::sys::timerfd::TimerSetTimeFlags::empty());
+                            }
+                        }
+                    } else {
+                        if let Some(key_repeat) = self.key_repeat_data {
+                            if key_repeat == key {
+                                self.key_repeat_data = None;
+                                if let Some(timer) = &self.key_repeat_timer {
+                                    timer.unset().ok();
+                                }
+                            }
+                        }
+                    }
+
+                    let time = k.time();
 
                     let xkb_keycode = key + 8;
                     let keysym = state.xkb_state.key_get_one_sym(xkb_keycode.into());
@@ -636,7 +677,9 @@ impl Input {
                     input::event::PointerEvent::ScrollWheel(a) => {
                         use input::event::pointer::Axis as LibinputAxis;
                         use input::event::pointer::PointerScrollEvent;
-                        use wayland_server::protocol::wl_pointer::{Axis as WlAxis, AxisSource, AxisRelativeDirection};
+                        use wayland_server::protocol::wl_pointer::{
+                            Axis as WlAxis, AxisRelativeDirection, AxisSource,
+                        };
 
                         if let Some(focused) = &state.pointer_focus
                             && let Some(client) = focused.client()
@@ -654,7 +697,10 @@ impl Input {
                                     if value == 0.0 {
                                         pointer.axis_stop(a.time(), WlAxis::VerticalScroll);
                                     } else {
-                                        pointer.axis_relative_direction(WlAxis::VerticalScroll, AxisRelativeDirection::Identical);
+                                        pointer.axis_relative_direction(
+                                            WlAxis::VerticalScroll,
+                                            AxisRelativeDirection::Identical,
+                                        );
                                         pointer.axis_value120(WlAxis::VerticalScroll, v120 as i32);
                                         pointer.axis_discrete(
                                             WlAxis::VerticalScroll,
@@ -669,8 +715,12 @@ impl Input {
                                     if value == 0.0 {
                                         pointer.axis_stop(a.time(), WlAxis::HorizontalScroll);
                                     } else {
-                                        pointer.axis_relative_direction(WlAxis::HorizontalScroll, AxisRelativeDirection::Identical);
-                                        pointer.axis_value120(WlAxis::HorizontalScroll, v120 as i32);
+                                        pointer.axis_relative_direction(
+                                            WlAxis::HorizontalScroll,
+                                            AxisRelativeDirection::Identical,
+                                        );
+                                        pointer
+                                            .axis_value120(WlAxis::HorizontalScroll, v120 as i32);
                                         pointer.axis_discrete(
                                             WlAxis::HorizontalScroll,
                                             (v120 / 120.0).round() as i32,
@@ -1067,6 +1117,89 @@ impl Input {
         }
 
         state.set_pointer_focus(hit.surface, hit.local_x, hit.local_y, time);
+    }
+
+    pub fn handle_repeat(&mut self, state: &mut Composer, dh: &wayland_server::DisplayHandle) {
+        if let Some(key) = self.key_repeat_data {
+            let time = crate::utils::time::gettime() as u32; // time in ms
+            let key_state = wl_keyboard::KeyState::Repeated;
+
+            let xkb_keycode = key + 8;
+            let keysym = state.xkb_state.key_get_one_sym(xkb_keycode.into());
+
+            // Repeating does not update mods since they don't change
+            let depressed = state
+                .xkb_state
+                .serialize_mods(xkbcommon::xkb::STATE_MODS_DEPRESSED);
+            let latched = state
+                .xkb_state
+                .serialize_mods(xkbcommon::xkb::STATE_MODS_LATCHED);
+            let locked = state
+                .xkb_state
+                .serialize_mods(xkbcommon::xkb::STATE_MODS_LOCKED);
+            let group = state
+                .xkb_state
+                .serialize_layout(xkbcommon::xkb::STATE_LAYOUT_EFFECTIVE);
+
+            if state.session_lock.is_none() {
+                match handle_keybinding(
+                    state,
+                    dh,
+                    key,
+                    key_state,
+                    keysym,
+                    Mods::new(state.xkb_state.get_keymap(), depressed),
+                ) {
+                    BindingAction::Handled => return,
+                    BindingAction::Exit => return,
+                    BindingAction::None => {}
+                }
+            }
+
+            // Forward to IME grabs
+            let mut grabbed = false;
+            for (grab, _) in &state.input_method_grabs {
+                state.serial += 1;
+                grab.key(state.serial, time, key, key_state);
+                grab.modifiers(state.serial, depressed, latched, locked, group);
+                grabbed = true;
+            }
+
+            if grabbed {
+                return;
+            }
+
+            if state.session_lock.is_none() {
+                if let Some(focused_surface) = &state.input_focus
+                    && let Some(client) = focused_surface.client()
+                {
+                    state.serial += 1;
+
+                    for keyboard in state
+                        .keyboards
+                        .iter()
+                        .filter(|kbd| kbd.client().map(|c| c.id()) == Some(client.id()))
+                    {
+                        if keyboard.version() >= 10 {
+                            keyboard.key(state.serial, time, key, key_state);
+                        }
+                    }
+                }
+            } else if let Some(session_lock) = state.session_lock.as_ref() {
+                if let Some(client) = session_lock.lock.client() {
+                    state.serial += 1;
+                    for keyboard in state
+                        .keyboards
+                        .iter()
+                        .filter(|kbd| kbd.client().map(|c| c.id()) == Some(client.id()))
+                    {
+                        if keyboard.version() >= 10 {
+                            keyboard.key(state.serial, time, key, key_state);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -1,32 +1,33 @@
-use crate::server::Composer;
 use wayland_protocols::wp::cursor_shape::v1::server::{
     wp_cursor_shape_device_v1::{self, WpCursorShapeDeviceV1},
     wp_cursor_shape_manager_v1::{self, WpCursorShapeManagerV1},
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<WpCursorShapeManagerV1, ()> for Composer {
+use crate::server::{ClientState, Composer, GlobalState};
+
+impl GlobalDispatch<WpCursorShapeManagerV1, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<WpCursorShapeManagerV1>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<WpCursorShapeManagerV1, ()> for Composer {
+impl Dispatch<WpCursorShapeManagerV1, Composer> for ClientState {
     fn request(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &WpCursorShapeManagerV1,
         request: <WpCursorShapeManagerV1 as Resource>::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             wp_cursor_shape_manager_v1::Request::Destroy => {
@@ -36,28 +37,28 @@ impl Dispatch<WpCursorShapeManagerV1, ()> for Composer {
                 cursor_shape_device,
                 pointer: _,
             } => {
-                data_init.init(cursor_shape_device, ());
+                data_init.init(cursor_shape_device, ClientState);
             }
             wp_cursor_shape_manager_v1::Request::GetTabletToolV2 {
                 cursor_shape_device,
                 tablet_tool: _,
             } => {
-                data_init.init(cursor_shape_device, ());
+                data_init.init(cursor_shape_device, ClientState);
             }
             _ => {}
         }
     }
 }
 
-impl Dispatch<WpCursorShapeDeviceV1, ()> for Composer {
+impl Dispatch<WpCursorShapeDeviceV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         client: &wayland_server::Client,
         _resource: &WpCursorShapeDeviceV1,
         request: <WpCursorShapeDeviceV1 as Resource>::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             wp_cursor_shape_device_v1::Request::Destroy => {
@@ -72,12 +73,11 @@ impl Dispatch<WpCursorShapeDeviceV1, ()> for Composer {
                     && focus.client().map(|c| c.id()) == Some(client_id)
                 {
                     match shape {
-                        wayland_server::WEnum::Value(s) => {
-                            state.cursor_shape = Some(s);
+                        _ => {
+                            state.cursor_shape = Some(shape);
                             // NOTE: Invalidate wl_pointer.set_cursor if any
                             state.cursor_surface = None;
                         }
-                        wayland_server::WEnum::Unknown(_) => {}
                     }
                 }
             }

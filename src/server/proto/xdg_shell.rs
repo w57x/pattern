@@ -1,45 +1,45 @@
-use crate::server::Composer;
+use crate::server::{ClientState, Composer, GlobalState, PositionerData};
 use wayland_protocols::xdg::shell::server::{
     xdg_popup, xdg_popup::XdgPopup, xdg_positioner, xdg_positioner::XdgPositioner, xdg_surface,
     xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base::XdgWmBase,
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<XdgWmBase, ()> for Composer {
+impl GlobalDispatch<XdgWmBase, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<XdgWmBase>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<XdgWmBase, ()> for Composer {
+impl Dispatch<XdgWmBase, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &XdgWmBase,
         request: wayland_protocols::xdg::shell::server::xdg_wm_base::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             wayland_protocols::xdg::shell::server::xdg_wm_base::Request::GetXdgSurface {
                 id,
                 surface,
             } => {
-                let xdg_surface = data_init.init(id, ());
+                let xdg_surface = data_init.init(id, ClientState);
                 state.xdg_to_surface.insert(xdg_surface.id(), surface);
             }
             wayland_protocols::xdg::shell::server::xdg_wm_base::Request::CreatePositioner {
                 id,
             } => {
-                data_init.init(id, ());
+                data_init.init(id, ClientState);
             }
             wayland_protocols::xdg::shell::server::xdg_wm_base::Request::Pong { serial: _ } => {}
             wayland_protocols::xdg::shell::server::xdg_wm_base::Request::Destroy => {}
@@ -51,7 +51,7 @@ impl Dispatch<XdgWmBase, ()> for Composer {
 pub fn compute_popup_position(
     state: &Composer,
     parent_surface_id: &wayland_server::backend::ObjectId,
-    positioner_data: &crate::server::PositionerData,
+    positioner_data: &PositionerData,
 ) -> (i32, i32) {
     use xdg_positioner::{Anchor, Gravity};
 
@@ -59,54 +59,40 @@ pub fn compute_popup_position(
     let mut y = positioner_data.anchor_rect.1 + positioner_data.offset.1;
 
     match positioner_data.anchor {
-        wayland_server::WEnum::Value(Anchor::TopRight)
-        | wayland_server::WEnum::Value(Anchor::Right)
-        | wayland_server::WEnum::Value(Anchor::BottomRight) => {
+        Anchor::TopRight | Anchor::Right | Anchor::BottomRight => {
             x += positioner_data.anchor_rect.2;
         }
-        wayland_server::WEnum::Value(Anchor::Top)
-        | wayland_server::WEnum::Value(Anchor::Bottom) => {
+        Anchor::Top | Anchor::Bottom => {
             x += positioner_data.anchor_rect.2 / 2;
         }
         _ => {}
     }
 
     match positioner_data.anchor {
-        wayland_server::WEnum::Value(Anchor::BottomLeft)
-        | wayland_server::WEnum::Value(Anchor::Bottom)
-        | wayland_server::WEnum::Value(Anchor::BottomRight) => {
+        Anchor::BottomLeft | Anchor::Bottom | Anchor::BottomRight => {
             y += positioner_data.anchor_rect.3;
         }
-        wayland_server::WEnum::Value(Anchor::Left)
-        | wayland_server::WEnum::Value(Anchor::Right) => {
+        Anchor::Left | Anchor::Right => {
             y += positioner_data.anchor_rect.3 / 2;
         }
         _ => {}
     }
 
     match positioner_data.gravity {
-        wayland_server::WEnum::Value(Gravity::TopLeft)
-        | wayland_server::WEnum::Value(Gravity::Left)
-        | wayland_server::WEnum::Value(Gravity::BottomLeft) => {
+        Gravity::TopLeft | Gravity::Left | Gravity::BottomLeft => {
             x -= positioner_data.size.0;
         }
-        wayland_server::WEnum::Value(Gravity::None)
-        | wayland_server::WEnum::Value(Gravity::Top)
-        | wayland_server::WEnum::Value(Gravity::Bottom) => {
+        Gravity::None | Gravity::Top | Gravity::Bottom => {
             x -= positioner_data.size.0 / 2;
         }
         _ => {}
     }
 
     match positioner_data.gravity {
-        wayland_server::WEnum::Value(Gravity::TopLeft)
-        | wayland_server::WEnum::Value(Gravity::Top)
-        | wayland_server::WEnum::Value(Gravity::TopRight) => {
+        Gravity::TopLeft | Gravity::Top | Gravity::TopRight => {
             y -= positioner_data.size.1;
         }
-        wayland_server::WEnum::Value(Gravity::None)
-        | wayland_server::WEnum::Value(Gravity::Left)
-        | wayland_server::WEnum::Value(Gravity::Right) => {
+        Gravity::None | Gravity::Left | Gravity::Right => {
             y -= positioner_data.size.1 / 2;
         }
         _ => {}
@@ -133,19 +119,19 @@ pub fn compute_popup_position(
     (x, y)
 }
 
-impl Dispatch<XdgSurface, ()> for Composer {
+impl Dispatch<XdgSurface, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &XdgSurface,
         request: xdg_surface::Request,
-        _data: &(),
         dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             xdg_surface::Request::GetToplevel { id } => {
-                let toplevel = data_init.init(id, ());
+                let toplevel = data_init.init(id, ClientState);
                 let surface = state.xdg_to_surface.get(&resource.id()).cloned();
 
                 if let Some(surface) = surface {
@@ -172,7 +158,7 @@ impl Dispatch<XdgSurface, ()> for Composer {
                     state.set_pointer_focus(hit.surface, hit.local_x, hit.local_y, 0);
                 }
 
-                let state_val = xdg_toplevel::State::Activated as u32;
+                let state_val = u32::from(xdg_toplevel::State::Activated);
                 let states_bytes = state_val.to_ne_bytes().to_vec();
 
                 state.serial += 1;
@@ -184,7 +170,7 @@ impl Dispatch<XdgSurface, ()> for Composer {
                 parent,
                 positioner,
             } => {
-                let popup = data_init.init(id, ());
+                let popup = data_init.init(id, ClientState);
                 let positioner_data = state
                     .pending_positioners
                     .get(&positioner.id())
@@ -262,15 +248,15 @@ impl Dispatch<XdgSurface, ()> for Composer {
     }
 }
 
-impl Dispatch<XdgPopup, ()> for Composer {
+impl Dispatch<XdgPopup, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &XdgPopup,
         request: xdg_popup::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             xdg_popup::Request::Destroy => {
@@ -322,15 +308,15 @@ impl Dispatch<XdgPopup, ()> for Composer {
     }
 }
 
-impl Dispatch<XdgToplevel, ()> for Composer {
+impl Dispatch<XdgToplevel, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &XdgToplevel,
         request: xdg_toplevel::Request,
-        _data: &(),
         dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             xdg_toplevel::Request::SetTitle { title } => {
@@ -429,15 +415,15 @@ impl Dispatch<XdgToplevel, ()> for Composer {
     }
 }
 
-impl Dispatch<XdgPositioner, ()> for Composer {
+impl Dispatch<XdgPositioner, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &XdgPositioner,
         request: xdg_positioner::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         let entry = state.pending_positioners.entry(resource.id()).or_default();
         match request {

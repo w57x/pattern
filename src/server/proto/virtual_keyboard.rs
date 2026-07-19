@@ -1,51 +1,52 @@
-use crate::server::Composer;
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::server::{
     zwp_virtual_keyboard_manager_v1::{self, ZwpVirtualKeyboardManagerV1},
     zwp_virtual_keyboard_v1::{self, ZwpVirtualKeyboardV1},
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<ZwpVirtualKeyboardManagerV1, ()> for Composer {
+use crate::server::{ClientState, Composer, GlobalState};
+
+impl GlobalDispatch<ZwpVirtualKeyboardManagerV1, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<ZwpVirtualKeyboardManagerV1>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<ZwpVirtualKeyboardManagerV1, ()> for Composer {
+impl Dispatch<ZwpVirtualKeyboardManagerV1, Composer> for ClientState {
     fn request(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &ZwpVirtualKeyboardManagerV1,
         request: <ZwpVirtualKeyboardManagerV1 as Resource>::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         if let zwp_virtual_keyboard_manager_v1::Request::CreateVirtualKeyboard { seat: _, id } =
             request
         {
-            let _vk = data_init.init(id, ());
+            let _vk = data_init.init(id, ClientState);
             // We could track virtual keyboards in state, but for now we just handle their requests
         }
     }
 }
 
-impl Dispatch<ZwpVirtualKeyboardV1, ()> for Composer {
+impl Dispatch<ZwpVirtualKeyboardV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &ZwpVirtualKeyboardV1,
         request: <ZwpVirtualKeyboardV1 as Resource>::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             zwp_virtual_keyboard_v1::Request::Keymap {

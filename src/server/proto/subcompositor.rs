@@ -1,29 +1,29 @@
-use crate::server::{Composer, SubsurfaceData};
+use crate::server::{ClientState, Composer, GlobalState, SubsurfaceData};
 use wayland_server::protocol::{wl_subcompositor::WlSubcompositor, wl_subsurface::WlSubsurface};
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<WlSubcompositor, ()> for Composer {
+impl GlobalDispatch<WlSubcompositor, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<WlSubcompositor>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<WlSubcompositor, ()> for Composer {
+impl Dispatch<WlSubcompositor, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &WlSubcompositor,
         request: wayland_server::protocol::wl_subcompositor::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             wayland_server::protocol::wl_subcompositor::Request::GetSubsurface {
@@ -31,7 +31,7 @@ impl Dispatch<WlSubcompositor, ()> for Composer {
                 surface,
                 parent,
             } => {
-                let subsurface = data_init.init(id, ());
+                let subsurface = data_init.init(id, ClientState);
                 state.subsurfaces.push(SubsurfaceData {
                     id: subsurface.id(),
                     surface: surface.clone(),
@@ -46,15 +46,15 @@ impl Dispatch<WlSubcompositor, ()> for Composer {
     }
 }
 
-impl Dispatch<WlSubsurface, ()> for Composer {
+impl Dispatch<WlSubsurface, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &WlSubsurface,
         request: wayland_server::protocol::wl_subsurface::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             wayland_server::protocol::wl_subsurface::Request::SetPosition { x, y } => {

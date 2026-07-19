@@ -4,25 +4,15 @@ interface: 'wl_shm',                                     version:  1, name:  2
 	         0 = 'AR24'
 	         1 = 'XR24'
 interface: 'wl_subcompositor',                           version:  1, name:  3
-interface: 'wl_output',                                  version:  4, name:  4
-	name: WL-1
-	description: Pattern Display
-	x: 0, y: 0, scale: 1,
-	physical_width: 1920 mm, physical_height: 1200 mm,
-	make: 'Pattern', model: 'Virtual Display',
-	subpixel_orientation: unknown, output_transform: normal,
-	mode:
-		width: 1920 px, height: 1200 px, refresh: 60.000 Hz,
-		flags: current
-interface: 'wl_seat',                                    version:  5, name:  5
+interface: 'wl_seat',                                    version: 10, name:  4
 	name: pattern-seat
 	capabilities: pointer keyboard
 	keyboard repeat rate: 30
 	keyboard repeat delay: 500
-interface: 'wl_data_device_manager',                     version:  3, name:  6
-interface: 'zwp_primary_selection_device_manager_v1',    version:  1, name:  7
-interface: 'xdg_wm_base',                                version:  3, name:  8
-interface: 'zwp_linux_dmabuf_v1',                        version:  5, name:  9
+interface: 'wl_data_device_manager',                     version:  3, name:  5
+interface: 'zwp_primary_selection_device_manager_v1',    version:  1, name:  6
+interface: 'xdg_wm_base',                                version:  3, name:  7
+interface: 'zwp_linux_dmabuf_v1',                        version:  5, name:  8
 	main device: 0xE201 (/dev/dri/card1 or /dev/dri/renderD128)
 	tranche
 		target device: 0xE201 (/dev/dri/card1 or /dev/dri/renderD128)
@@ -32,30 +22,41 @@ interface: 'zwp_linux_dmabuf_v1',                        version:  5, name:  9
 		0x34325258 = 'XR24'; 0x0000000000000000 = LINEAR
 		0x34324241 = 'AB24'; 0x0000000000000000 = LINEAR
 		0x34324258 = 'XB24'; 0x0000000000000000 = LINEAR
-interface: 'zxdg_decoration_manager_v1',                 version:  1, name: 10
-interface: 'wp_viewporter',                              version:  1, name: 11
-interface: 'zxdg_output_manager_v1',                     version:  2, name: 12
+interface: 'zxdg_decoration_manager_v1',                 version:  1, name:  9
+interface: 'wp_viewporter',                              version:  1, name: 10
+interface: 'zxdg_output_manager_v1',                     version:  2, name: 11
 	xdg_output_v1
-		output: 4
+		output: 30
 		name: 'eDP-1'
 		description: 'Chimei Innolux Corporation 0x1457 (eDP-1)'
 		logical_x: 0, logical_y: 0
 		logical_width: 1920, logical_height: 1200
-interface: 'zwlr_layer_shell_v1',                        version:  4, name: 13
-interface: 'ext_workspace_manager_v1',                   version:  1, name: 14
-interface: 'xdg_wm_dialog_v1',                           version:  1, name: 15
-interface: 'xdg_activation_v1',                          version:  1, name: 16
-interface: 'zwp_pointer_gestures_v1',                    version:  3, name: 17
-interface: 'wp_cursor_shape_manager_v1',                 version:  2, name: 18
-interface: 'wp_pointer_warp_v1',                         version:  1, name: 19
-interface: 'zwp_pointer_constraints_v1',                 version:  1, name: 20
-interface: 'zwp_relative_pointer_manager_v1',            version:  1, name: 21
-interface: 'wp_linux_drm_syncobj_manager_v1',            version:  1, name: 22
-interface: 'wp_fifo_manager_v1',                         version:  1, name: 23
-interface: 'wp_presentation',                            version:  2, name: 24
+interface: 'zwlr_layer_shell_v1',                        version:  4, name: 12
+interface: 'ext_workspace_manager_v1',                   version:  1, name: 13
+interface: 'xdg_wm_dialog_v1',                           version:  1, name: 14
+interface: 'xdg_activation_v1',                          version:  1, name: 15
+interface: 'zwp_pointer_gestures_v1',                    version:  3, name: 16
+interface: 'wp_cursor_shape_manager_v1',                 version:  2, name: 17
+interface: 'wp_pointer_warp_v1',                         version:  1, name: 18
+interface: 'zwp_pointer_constraints_v1',                 version:  1, name: 19
+interface: 'zwp_relative_pointer_manager_v1',            version:  1, name: 20
+interface: 'wp_linux_drm_syncobj_manager_v1',            version:  1, name: 21
+interface: 'wp_fifo_manager_v1',                         version:  1, name: 22
+interface: 'wp_presentation',                            version:  2, name: 23
 	presentation clock id: 1 (CLOCK_MONOTONIC)
-interface: 'zwp_text_input_manager_v3',                  version:  1, name: 25
-interface: 'zwp_input_method_manager_v2',                version:  1, name: 26
-interface: 'zwp_virtual_keyboard_manager_v1',            version:  1, name: 27
-interface: 'zwlr_data_control_manager_v1',               version:  2, name: 28
-interface: 'zwlr_gamma_control_manager_v1',              version:  1, name: 29
+interface: 'zwp_text_input_manager_v3',                  version:  1, name: 24
+interface: 'zwp_input_method_manager_v2',                version:  1, name: 25
+interface: 'zwp_virtual_keyboard_manager_v1',            version:  1, name: 26
+interface: 'zwlr_data_control_manager_v1',               version:  2, name: 27
+interface: 'zwlr_gamma_control_manager_v1',              version:  1, name: 28
+interface: 'ext_session_lock_manager_v1',                version:  1, name: 29
+interface: 'wl_output',                                  version:  4, name: 30
+	name: eDP-1
+	description: Chimei Innolux Corporation 0x1457 (eDP-1)
+	x: 0, y: 0, scale: 1,
+	physical_width: 1920 mm, physical_height: 1200 mm,
+	make: 'Pattern', model: 'eDP-1',
+	subpixel_orientation: unknown, output_transform: normal,
+	mode:
+		width: 1920 px, height: 1200 px, refresh: 60.000 Hz,
+		flags: current

@@ -19,6 +19,7 @@ pub struct VulkanFrame {
     pub cmd_buffer: vk::CommandBuffer,
     pub frame_fence: vk::Fence,
     pub out_semaphore: vk::Semaphore,
+    pub texture_garbage: Vec<crate::vulkan::GarbageTexture>,
 }
 
 impl VulkanFrame {
@@ -42,6 +43,14 @@ impl VulkanFrame {
             device.free_memory(self.memory, None);
             device.destroy_fence(self.frame_fence, None);
             device.destroy_semaphore(self.out_semaphore, None);
+
+            for g in &self.texture_garbage {
+                device.destroy_sampler(g.samp, None);
+                device.destroy_image_view(g.view, None);
+                device.destroy_image(g.img, None);
+                device.free_memory(g.mem, None);
+                device.destroy_descriptor_pool(g.pool, None);
+            }
         }
         card.destroy_framebuffer(self.fb_handle).unwrap();
     }

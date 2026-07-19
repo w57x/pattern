@@ -1,4 +1,3 @@
-use crate::server::Composer;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use wayland_backend::server::ObjectId;
@@ -8,37 +7,39 @@ use wayland_server::protocol::{
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<WlCompositor, ()> for Composer {
+use crate::server::{ClientState, Composer, GlobalState};
+
+impl GlobalDispatch<WlCompositor, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<WlCompositor>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<WlCompositor, ()> for Composer {
+impl Dispatch<WlCompositor, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &WlCompositor,
         request: wayland_server::protocol::wl_compositor::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             wayland_server::protocol::wl_compositor::Request::CreateSurface { id } => {
-                let surface = data_init.init(id, ());
+                let surface = data_init.init(id, ClientState);
 
                 state.surfaces.push(surface);
             }
             wayland_server::protocol::wl_compositor::Request::CreateRegion { id } => {
-                let region = data_init.init(id, ());
+                let region = data_init.init(id, ClientState);
                 state.regions.insert(region.id(), Vec::new());
             }
             _ => {}
@@ -46,15 +47,15 @@ impl Dispatch<WlCompositor, ()> for Composer {
     }
 }
 
-impl Dispatch<WlSurface, ()> for Composer {
+impl Dispatch<WlSurface, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         surface: &WlSurface,
         request: wayland_server::protocol::wl_surface::Request,
-        _data: &(),
         dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         use crate::vulkan::SurfaceTexture;
         use crate::wm::Rect;
@@ -253,7 +254,7 @@ impl Dispatch<WlSurface, ()> for Composer {
 
                 state.needs_redraw = true;
 
-                let damage = state
+                let _damage = state
                     .pending_damage
                     .remove(&surface.id())
                     .unwrap_or_default();
@@ -263,67 +264,88 @@ impl Dispatch<WlSurface, ()> for Composer {
 
                     if let Some(buffer_info) = state.buffers.get(&buffer.id()) {
                         unsafe {
-                            let tex =
-                                if let Some(cached_tex) = state.buffer_textures.get(&buffer.id()) {
-                                    cached_tex.clone_with_scale(scale as f32)
-                                } else {
-                                    let mmap = buffer_info.mmap.lock().unwrap();
-                                    let start = buffer_info.offset as usize;
-                                    let len = (buffer_info.height * buffer_info.stride) as usize;
-                                    if len == 0 || start + len > mmap.len() {
-                                        return;
-                                    }
-                                    let pixels = &mmap[start..start + len];
-                                    let (img, mem, view, samp) = state.vkctx.upload_texture(
-                                        buffer_info.width as u32,
-                                        buffer_info.height as u32,
-                                        buffer_info.stride as u32,
-                                        pixels,
-                                    );
-
-                                    let (pool, set) = state.vkctx.create_descriptor_set(
-                                        state.vkctx.descriptor_set_layout,
-                                        view,
-                                        samp,
-                                    );
-
-                                    let inner = Arc::new(crate::vulkan::VulkanTextureInner {
-                                        device: state.vkctx.device.clone(),
-                                        img,
-                                        mem,
-                                        view,
-                                        samp,
-                                        pool,
-                                    });
-
-                                    let new_tex = SurfaceTexture {
-                                        inner,
-                                        set,
-                                        w: buffer_info.width as f32,
-                                        h: buffer_info.height as f32,
-                                        scale: scale as f32,
-                                    };
-
-                                    state.buffer_textures.insert(buffer.id(), new_tex.clone());
-                                    new_tex
-                                };
-
-                            // Update SHM content if damaged. NO POLL NEEDED FOR SHM.
-                            if !damage.is_empty() {
+                            let tex = if let Some(cached_tex) =
+                                state.buffer_textures.get(&buffer.id())
+                            {
+                                cached_tex.clone_with_scale(scale as f32)
+                            } else {
                                 let mmap = buffer_info.mmap.lock().unwrap();
                                 let start = buffer_info.offset as usize;
                                 let len = (buffer_info.height * buffer_info.stride) as usize;
-                                if len == 0 || start + len > mmap.len() {
+                                if len == 0
+                                    || start + len > mmap.len()
+                                    || buffer_info.stride % 4 != 0
+                                {
+                                    return;
+                                }
+                                if buffer_info.width == 0
+                                    || buffer_info.height == 0
+                                    || buffer_info.stride < buffer_info.width * 4
+                                {
+                                    tracing::warn!(
+                                        "Invalid wl_shm buffer parameters: width={}, height={}, stride={}",
+                                        buffer_info.width,
+                                        buffer_info.height,
+                                        buffer_info.stride
+                                    );
                                     return;
                                 }
                                 let pixels = &mmap[start..start + len];
+                                let (img, mem, view, samp) = state.vkctx.upload_texture(
+                                    buffer_info.width as u32,
+                                    buffer_info.height as u32,
+                                    buffer_info.stride as u32,
+                                    pixels,
+                                );
+
+                                let (pool, set) = state.vkctx.create_descriptor_set(
+                                    state.vkctx.descriptor_set_layout,
+                                    view,
+                                    samp,
+                                );
+
+                                let inner = Arc::new(crate::vulkan::VulkanTextureInner {
+                                    device: state.vkctx.device.clone(),
+                                    img,
+                                    mem,
+                                    view,
+                                    samp,
+                                    pool,
+                                    garbage_queue: state.vkctx.texture_garbage_queue.clone(),
+                                });
+
+                                let new_tex = SurfaceTexture {
+                                    inner,
+                                    set,
+                                    w: buffer_info.width as f32,
+                                    h: buffer_info.height as f32,
+                                    scale: scale as f32,
+                                };
+
+                                state.buffer_textures.insert(buffer.id(), new_tex.clone());
+                                new_tex
+                            };
+
+                            // NOTE: Update SHM content. We must upload the full buffer because textures are cached per-buffer,
+                            // and the damage is surface-relative. If we only upload damage, we miss updates from other buffers
+                            let mmap = buffer_info.mmap.lock().unwrap();
+                            let start = buffer_info.offset as usize;
+                            let len = (buffer_info.height * buffer_info.stride) as usize;
+                            if len > 0 && start + len <= mmap.len() && buffer_info.stride % 4 == 0 {
+                                let pixels = &mmap[start..start + len];
+                                let full_damage = [crate::wm::Rect::new(
+                                    0,
+                                    0,
+                                    buffer_info.width as i32,
+                                    buffer_info.height as i32,
+                                )];
                                 state.vkctx.update_texture(
                                     tex.inner.img,
                                     buffer_info.width as u32,
                                     buffer_info.height as u32,
                                     buffer_info.stride as u32,
                                     pixels,
-                                    &damage,
+                                    &full_damage,
                                 );
                             }
 
@@ -418,6 +440,7 @@ impl Dispatch<WlSurface, ()> for Composer {
                                         view,
                                         samp,
                                         pool,
+                                        garbage_queue: state.vkctx.texture_garbage_queue.clone(),
                                     });
 
                                     let new_tex = SurfaceTexture {
@@ -464,7 +487,7 @@ impl Dispatch<WlSurface, ()> for Composer {
                 }
             }
             wayland_server::protocol::wl_surface::Request::Frame { callback } => {
-                let cb = data_init.init(callback, ());
+                let cb = data_init.init(callback, ClientState);
                 state
                     .pending_frame_callbacks
                     .entry(surface.id())
@@ -482,28 +505,28 @@ impl Dispatch<WlSurface, ()> for Composer {
     }
 }
 
-impl Dispatch<WlCallback, ()> for Composer {
+impl Dispatch<WlCallback, Composer> for ClientState {
     fn request(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &WlCallback,
         _request: wayland_server::protocol::wl_callback::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
     }
 }
 
-impl Dispatch<WlRegion, ()> for Composer {
+impl Dispatch<WlRegion, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &WlRegion,
         request: wayland_server::protocol::wl_region::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         use crate::wm::Rect;
         match request {

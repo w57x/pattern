@@ -167,6 +167,7 @@ impl Backend {
                 cmd_buffer,
                 frame_fence,
                 out_semaphore,
+                texture_garbage: Vec::new(),
             });
         }
 
@@ -261,6 +262,7 @@ impl Backend {
                 cmd_buffer,
                 frame_fence,
                 out_semaphore,
+                texture_garbage: Vec::new(),
             });
         }
 
@@ -335,6 +337,16 @@ impl EventLoop {
                 epoll::EpollEvent::new(epoll::EpollFlags::EPOLLIN, 5),
             )
             .unwrap();
+
+        if let Some(timer) = &input.key_repeat_timer {
+            use std::os::fd::AsFd;
+            epoll
+                .add(
+                    timer.as_fd(),
+                    epoll::EpollEvent::new(epoll::EpollFlags::EPOLLIN, 6),
+                )
+                .unwrap();
+        }
 
         Self {
             epoll,
@@ -475,6 +487,15 @@ impl EventLoop {
                             initial_modeset = true;
                         }
                     }
+                    6 => {
+                        if let Some(timer) = &input.key_repeat_timer {
+                            use std::os::fd::AsFd;
+                            let mut buf = [0u8; 8];
+                            let _ = nix::unistd::read(timer.as_fd(), &mut buf);
+                            input.handle_repeat(composer, &dh);
+                            composer.needs_redraw = true;
+                        }
+                    }
                     _ => unreachable!(),
                 }
             }
@@ -499,7 +520,7 @@ impl EventLoop {
                 );
                 composer.needs_redraw = animating;
 
-                let frame = &backend.swapchain[frame_index % 2];
+                let frame = &mut backend.swapchain[frame_index % 2];
 
                 let mut dead_surface_ids = Vec::new();
 
@@ -732,7 +753,6 @@ impl EventLoop {
                         &wait_values,
                         &signal_semaphores,
                         &signal_values,
-                        frame.blur_target.as_ref(),
                         composer.styler.blur_passes(),
                     );
                     composer.drop_semaphores();

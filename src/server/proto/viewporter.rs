@@ -1,35 +1,36 @@
-use crate::server::Composer;
 use wayland_protocols::wp::viewporter::server::{
     wp_viewport, wp_viewport::WpViewport, wp_viewporter, wp_viewporter::WpViewporter,
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<WpViewporter, ()> for Composer {
+use crate::server::{ClientState, Composer, GlobalState};
+
+impl GlobalDispatch<WpViewporter, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<WpViewporter>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<WpViewporter, ()> for Composer {
+impl Dispatch<WpViewporter, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &WpViewporter,
         request: wp_viewporter::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             wp_viewporter::Request::GetViewport { id, surface } => {
-                let viewport = data_init.init(id, ());
+                let viewport = data_init.init(id, ClientState);
                 state
                     .surface_to_viewport
                     .insert(surface.id(), viewport.id());
@@ -40,15 +41,15 @@ impl Dispatch<WpViewporter, ()> for Composer {
     }
 }
 
-impl Dispatch<WpViewport, ()> for Composer {
+impl Dispatch<WpViewport, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &WpViewport,
         request: wp_viewport::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         let entry = state.viewports.entry(resource.id()).or_insert((None, None));
         match request {

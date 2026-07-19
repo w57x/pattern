@@ -1,4 +1,3 @@
-use crate::server::Composer;
 use wayland_protocols::xdg::xdg_output::zv1::server::{
     zxdg_output_manager_v1::{self, ZxdgOutputManagerV1},
     zxdg_output_v1::{self, ZxdgOutputV1},
@@ -6,17 +5,20 @@ use wayland_protocols::xdg::xdg_output::zv1::server::{
 use wayland_server::protocol::wl_output::WlOutput;
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<WlOutput, usize> for Composer {
+use crate::server::{ClientState, Composer, GlobalState, MonitorData};
+
+impl GlobalDispatch<WlOutput, Composer> for MonitorData {
     fn bind(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<WlOutput>,
-        global_data: &usize,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        let output_idx = *global_data;
-        let output = data_init.init(resource, output_idx);
+        let output_idx = self.0;
+
+        let output = data_init.init(resource, MonitorData(output_idx));
 
         if let Some(out) = state.outputs_info.get(output_idx) {
             output.geometry(
@@ -58,46 +60,46 @@ impl GlobalDispatch<WlOutput, usize> for Composer {
     }
 }
 
-impl Dispatch<WlOutput, usize> for Composer {
+impl Dispatch<WlOutput, Composer> for MonitorData {
     fn request(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &WlOutput,
         _request: wayland_server::protocol::wl_output::Request,
-        _data: &usize,
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
     }
 }
 
-impl GlobalDispatch<ZxdgOutputManagerV1, ()> for Composer {
+impl GlobalDispatch<ZxdgOutputManagerV1, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<ZxdgOutputManagerV1>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<ZxdgOutputManagerV1, ()> for Composer {
+impl Dispatch<ZxdgOutputManagerV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &ZxdgOutputManagerV1,
         request: zxdg_output_manager_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             zxdg_output_manager_v1::Request::GetXdgOutput { id, output } => {
                 let xdg_output = data_init.init(id, output.clone());
-                let output_idx = *output.data::<usize>().unwrap_or(&0);
+                let output_idx = *output.data::<MonitorData>().map(|m| &m.0).unwrap_or(&0);
                 if let Some(out) = state.outputs_info.get(output_idx) {
                     xdg_output.logical_position(out.x, out.y);
                     xdg_output.logical_size(out.width, out.height);
@@ -114,31 +116,32 @@ impl Dispatch<ZxdgOutputManagerV1, ()> for Composer {
     }
 }
 
-impl Dispatch<ZxdgOutputV1, WlOutput> for Composer {
+impl Dispatch<ZxdgOutputV1, Composer> for WlOutput {
     fn request(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &ZxdgOutputV1,
         request: zxdg_output_v1::Request,
-        _output: &WlOutput,
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         if let zxdg_output_v1::Request::Destroy = request {}
     }
 }
 
-impl GlobalDispatch<ZxdgOutputV1, WlOutput> for Composer {
+impl GlobalDispatch<ZxdgOutputV1, Composer> for WlOutput {
     fn bind(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<ZxdgOutputV1>,
-        output: &WlOutput,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
+        let output = self;
         let xdg_output = data_init.init(resource, output.clone());
-        let output_idx = *output.data::<usize>().unwrap_or(&0);
+        let output_idx = *output.data::<MonitorData>().map(|m| &m.0).unwrap_or(&0);
         if let Some(out) = state.outputs_info.get(output_idx) {
             xdg_output.logical_position(out.x, out.y);
             xdg_output.logical_size(out.width, out.height);

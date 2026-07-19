@@ -1,31 +1,32 @@
-use crate::server::Composer;
 use wayland_protocols::ext::workspace::v1::server::{
     ext_workspace_group_handle_v1, ext_workspace_handle_v1, ext_workspace_manager_v1,
 };
 use wayland_server::{Dispatch, GlobalDispatch};
 
-impl GlobalDispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for Composer {
+use crate::server::{ClientState, Composer, GlobalState};
+
+impl GlobalDispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<ext_workspace_manager_v1::ExtWorkspaceManagerV1>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for Composer {
+impl Dispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, Composer> for ClientState {
     fn request(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &ext_workspace_manager_v1::ExtWorkspaceManagerV1,
         request: ext_workspace_manager_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             ext_workspace_manager_v1::Request::Commit => {}
@@ -35,15 +36,15 @@ impl Dispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for Composer 
     }
 }
 
-impl Dispatch<ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1, ()> for Composer {
+impl Dispatch<ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1, Composer> for ClientState {
     fn request(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1,
         request: ext_workspace_group_handle_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             ext_workspace_group_handle_v1::Request::CreateWorkspace { workspace: _ } => {}
@@ -53,15 +54,15 @@ impl Dispatch<ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1, ()> for 
     }
 }
 
-impl Dispatch<ext_workspace_handle_v1::ExtWorkspaceHandleV1, ()> for Composer {
+impl Dispatch<ext_workspace_handle_v1::ExtWorkspaceHandleV1, Composer> for ClientState {
     fn request(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &ext_workspace_handle_v1::ExtWorkspaceHandleV1,
         request: ext_workspace_handle_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             ext_workspace_handle_v1::Request::Activate => {}

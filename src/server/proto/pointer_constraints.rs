@@ -1,32 +1,33 @@
-use crate::server::Composer;
 use wayland_protocols::wp::pointer_constraints::zv1::server::{
     zwp_confined_pointer_v1::ZwpConfinedPointerV1, zwp_locked_pointer_v1::ZwpLockedPointerV1,
     zwp_pointer_constraints_v1::ZwpPointerConstraintsV1,
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<ZwpPointerConstraintsV1, ()> for Composer {
+use crate::server::{ClientState, Composer, GlobalState};
+
+impl GlobalDispatch<ZwpPointerConstraintsV1, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<ZwpPointerConstraintsV1>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<ZwpPointerConstraintsV1, ()> for Composer {
+impl Dispatch<ZwpPointerConstraintsV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &ZwpPointerConstraintsV1,
         request: wayland_protocols::wp::pointer_constraints::zv1::server::zwp_pointer_constraints_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             wayland_protocols::wp::pointer_constraints::zv1::server::zwp_pointer_constraints_v1::Request::Destroy => {}
@@ -37,7 +38,7 @@ impl Dispatch<ZwpPointerConstraintsV1, ()> for Composer {
                 region: _,
                 lifetime: _,
             } => {
-                let lock = data_init.init(id, ());
+                let lock = data_init.init(id, ClientState);
                 state.pointer_lock = Some(lock.clone());
                 lock.locked();
             }
@@ -48,7 +49,7 @@ impl Dispatch<ZwpPointerConstraintsV1, ()> for Composer {
                 region: _,
                 lifetime: _,
             } => {
-                let confine = data_init.init(id, ());
+                let confine = data_init.init(id, ClientState);
                 state.pointer_confine = Some(confine.clone());
                 confine.confined();
             }
@@ -57,15 +58,15 @@ impl Dispatch<ZwpPointerConstraintsV1, ()> for Composer {
     }
 }
 
-impl Dispatch<ZwpLockedPointerV1, ()> for Composer {
+impl Dispatch<ZwpLockedPointerV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &ZwpLockedPointerV1,
         request: wayland_protocols::wp::pointer_constraints::zv1::server::zwp_locked_pointer_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             wayland_protocols::wp::pointer_constraints::zv1::server::zwp_locked_pointer_v1::Request::Destroy
@@ -81,15 +82,15 @@ impl Dispatch<ZwpLockedPointerV1, ()> for Composer {
     }
 }
 
-impl Dispatch<ZwpConfinedPointerV1, ()> for Composer {
+impl Dispatch<ZwpConfinedPointerV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &ZwpConfinedPointerV1,
         request: wayland_protocols::wp::pointer_constraints::zv1::server::zwp_confined_pointer_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             wayland_protocols::wp::pointer_constraints::zv1::server::zwp_confined_pointer_v1::Request::Destroy

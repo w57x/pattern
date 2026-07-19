@@ -1,12 +1,7 @@
 use std::io::IsTerminal;
 
 use pattern::{
-    backend::{Backend, EventLoop},
-    config::ConfigManager,
-    input::Input,
-    server::Composer,
-    styler,
-    wm::impls::floating_wm,
+    backend::{Backend, EventLoop}, config::ConfigManager, input::Input, server::{Composer, GlobalState}, styler, wm::impls::floating_wm,
 };
 use tracing::{error, info};
 use wayland_protocols::ext::{session_lock::v1::server::ext_session_lock_manager_v1::ExtSessionLockManagerV1, workspace::v1::server::ext_workspace_manager_v1::ExtWorkspaceManagerV1};
@@ -61,35 +56,35 @@ fn main() {
     let mut display: Display<Composer> = Display::new().unwrap();
     let dh = display.handle();
 
-    dh.create_global::<Composer, WlCompositor, ()>(5, ());
-    dh.create_global::<Composer, WlShm, ()>(1, ());
-    dh.create_global::<Composer, WlSubcompositor, ()>(1, ());
-    dh.create_global::<Composer, WlSeat, ()>(10, ());
-    dh.create_global::<Composer, WlDataDeviceManager, ()>(3, ());
-    dh.create_global::<Composer, ZwpPrimarySelectionDeviceManagerV1, ()>(1, ());
-    dh.create_global::<Composer, XdgWmBase, ()>(3, ());
-    dh.create_global::<Composer, ZwpLinuxDmabufV1, ()>(5, ());
-    dh.create_global::<Composer, ZxdgDecorationManagerV1, ()>(1, ());
-    dh.create_global::<Composer, WpViewporter, ()>(1, ());
-    dh.create_global::<Composer, ZxdgOutputManagerV1, ()>(2, ());
-    dh.create_global::<Composer, ZwlrLayerShellV1, ()>(4, ());
-    dh.create_global::<Composer, ExtWorkspaceManagerV1, ()>(1, ());
-    dh.create_global::<Composer, XdgWmDialogV1, ()>(1, ());
-    dh.create_global::<Composer, XdgActivationV1, ()>(1, ());
-    dh.create_global::<Composer, ZwpPointerGesturesV1, ()>(3, ());
-    dh.create_global::<Composer, WpCursorShapeManagerV1, ()>(2, ());
-    dh.create_global::<Composer, WpPointerWarpV1, ()>(1, ());
-    dh.create_global::<Composer, ZwpPointerConstraintsV1, ()>(1, ());
-    dh.create_global::<Composer, ZwpRelativePointerManagerV1, ()>(1, ());
-    dh.create_global::<Composer, WpLinuxDrmSyncobjManagerV1, ()>(1, ());
-    dh.create_global::<Composer, WpFifoManagerV1, ()>(1, ());
-    dh.create_global::<Composer, WpPresentation, ()>(2, ());
-    dh.create_global::<Composer, ZwpTextInputManagerV3, ()>(1, ());
-    dh.create_global::<Composer, ZwpInputMethodManagerV2, ()>(1, ());
-    dh.create_global::<Composer, ZwpVirtualKeyboardManagerV1, ()>(1, ());
-    dh.create_global::<Composer, ZwlrDataControlManagerV1, ()>(2, ());
-    dh.create_global::<Composer, ZwlrGammaControlManagerV1, ()>(1, ());
-    dh.create_global::<Composer, ExtSessionLockManagerV1, ()>(1, ());
+    dh.create_global::<Composer, WlCompositor, GlobalState>(5, GlobalState);
+    dh.create_global::<Composer, WlShm, GlobalState>(1, GlobalState);
+    dh.create_global::<Composer, WlSubcompositor, GlobalState>(1, GlobalState);
+    dh.create_global::<Composer, WlSeat, GlobalState>(10, GlobalState);
+    dh.create_global::<Composer, WlDataDeviceManager, GlobalState>(3, GlobalState);
+    dh.create_global::<Composer, ZwpPrimarySelectionDeviceManagerV1, GlobalState>(1, GlobalState);
+    dh.create_global::<Composer, XdgWmBase, GlobalState>(3, GlobalState);
+    dh.create_global::<Composer, ZwpLinuxDmabufV1, GlobalState>(5, GlobalState);
+    dh.create_global::<Composer, ZxdgDecorationManagerV1, GlobalState>(1, GlobalState);
+    dh.create_global::<Composer, WpViewporter, GlobalState>(1, GlobalState);
+    dh.create_global::<Composer, ZxdgOutputManagerV1, GlobalState>(2, GlobalState);
+    dh.create_global::<Composer, ZwlrLayerShellV1, GlobalState>(4, GlobalState);
+    dh.create_global::<Composer, ExtWorkspaceManagerV1, GlobalState>(1, GlobalState);
+    dh.create_global::<Composer, XdgWmDialogV1, GlobalState>(1, GlobalState);
+    dh.create_global::<Composer, XdgActivationV1, GlobalState>(1, GlobalState);
+    dh.create_global::<Composer, ZwpPointerGesturesV1, GlobalState>(3, GlobalState);
+    dh.create_global::<Composer, WpCursorShapeManagerV1, GlobalState>(2, GlobalState);
+    dh.create_global::<Composer, WpPointerWarpV1, GlobalState>(1, GlobalState);
+    dh.create_global::<Composer, ZwpPointerConstraintsV1, GlobalState>(1, GlobalState);
+    dh.create_global::<Composer, ZwpRelativePointerManagerV1, GlobalState>(1, GlobalState);
+    dh.create_global::<Composer, WpLinuxDrmSyncobjManagerV1, GlobalState>(1, GlobalState);
+    dh.create_global::<Composer, WpFifoManagerV1, GlobalState>(1, GlobalState);
+    dh.create_global::<Composer, WpPresentation, GlobalState>(2, GlobalState);
+    dh.create_global::<Composer, ZwpTextInputManagerV3, GlobalState>(1, GlobalState);
+    dh.create_global::<Composer, ZwpInputMethodManagerV2, GlobalState>(1, GlobalState);
+    dh.create_global::<Composer, ZwpVirtualKeyboardManagerV1, GlobalState>(1, GlobalState);
+    dh.create_global::<Composer, ZwlrDataControlManagerV1, GlobalState>(2, GlobalState);
+    dh.create_global::<Composer, ZwlrGammaControlManagerV1, GlobalState>(1, GlobalState);
+    dh.create_global::<Composer, ExtSessionLockManagerV1, GlobalState>(1, GlobalState);
 
     let socket = ListeningSocket::bind_auto("wayland", 0..32).unwrap();
     let socket_name = socket.socket_name().unwrap().to_string_lossy().into_owned();

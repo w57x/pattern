@@ -15,7 +15,7 @@ use wayland_protocols_wlr::data_control::v1::server::{
     zwlr_data_control_device_v1, zwlr_data_control_offer_v1, zwlr_data_control_source_v1,
 };
 use wayland_server::{
-    Client, Resource, WEnum,
+    Client, Resource,
     backend::{ClientData, ClientId, DisconnectReason, ObjectId},
     protocol::{
         wl_buffer::WlBuffer, wl_callback::WlCallback, wl_data_device, wl_data_offer::WlDataOffer,
@@ -87,9 +87,9 @@ pub struct PositionerData {
     pub size: (i32, i32),
     pub anchor_rect: (i32, i32, i32, i32),
     pub offset: (i32, i32),
-    pub anchor: WEnum<xdg_positioner::Anchor>,
-    pub gravity: WEnum<xdg_positioner::Gravity>,
-    pub constraint_adjustment: WEnum<xdg_positioner::ConstraintAdjustment>,
+    pub anchor: xdg_positioner::Anchor,
+    pub gravity: xdg_positioner::Gravity,
+    pub constraint_adjustment: xdg_positioner::ConstraintAdjustment,
 }
 
 impl Default for PositionerData {
@@ -98,9 +98,9 @@ impl Default for PositionerData {
             size: (0, 0),
             anchor_rect: (0, 0, 0, 0),
             offset: (0, 0),
-            anchor: WEnum::Value(xdg_positioner::Anchor::None),
-            gravity: WEnum::Value(xdg_positioner::Gravity::None),
-            constraint_adjustment: WEnum::Value(xdg_positioner::ConstraintAdjustment::None),
+            anchor: xdg_positioner::Anchor::None,
+            gravity: xdg_positioner::Gravity::None,
+            constraint_adjustment: xdg_positioner::ConstraintAdjustment::None,
         }
     }
 }
@@ -375,9 +375,9 @@ impl Composer {
         let mut wl_output_globals = Vec::new();
         for (i, _) in outputs_info.iter().enumerate() {
             let global_id = dh
-                .create_global::<Composer, wayland_server::protocol::wl_output::WlOutput, usize>(
-                    4, i,
-                );
+                .create_global::<crate::server::Composer, wayland_server::protocol::wl_output::WlOutput, crate::server::MonitorData>(
+                    4, crate::server::MonitorData(i,
+                ));
             wl_output_globals.push(global_id);
         }
 
@@ -510,9 +510,9 @@ impl Composer {
 
         for (i, _) in self.outputs_info.iter().enumerate() {
             let global_id = dh
-                .create_global::<Composer, wayland_server::protocol::wl_output::WlOutput, usize>(
-                    4, i,
-                );
+                .create_global::<crate::server::Composer, wayland_server::protocol::wl_output::WlOutput, crate::server::MonitorData>(
+                    4, crate::server::MonitorData(i,
+                ));
             self.wl_output_globals.push(global_id);
         }
 
@@ -869,10 +869,10 @@ impl Composer {
                 let mut states = Vec::new();
                 // NOTE: Intentionally omitting State::Activated
                 if win.maximized {
-                    states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
+                    states.extend_from_slice(&(State::Maximized.0).to_ne_bytes());
                 }
                 if win.fullscreen {
-                    states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
+                    states.extend_from_slice(&(State::Fullscreen.0).to_ne_bytes());
                 }
 
                 // Only enforcing size if maximized or fullscreen
@@ -921,12 +921,12 @@ impl Composer {
                 && let (Some(toplevel), Some(xdg_surface)) = (&win.toplevel, &win.xdg_surface)
             {
                 let mut states = Vec::new();
-                states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
+                states.extend_from_slice(&(State::Activated.0).to_ne_bytes());
                 if win.maximized {
-                    states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
+                    states.extend_from_slice(&(State::Maximized.0).to_ne_bytes());
                 }
                 if win.fullscreen {
-                    states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
+                    states.extend_from_slice(&(State::Fullscreen.0).to_ne_bytes());
                 }
 
                 let (cfg_w, cfg_h) = if win.maximized || win.fullscreen {
@@ -1080,7 +1080,7 @@ impl Composer {
             for device in &self.data_devices {
                 if device.client().map(|c| c.id()) == Some(client.id()) {
                     let offer = client
-                        .create_resource::<WlDataOffer, (), Self>(dh, device.version(), ())
+                        .create_resource::<WlDataOffer, crate::server::ClientState, crate::server::Composer>(dh, device.version(), crate::server::ClientState)
                         .expect("Failed to create WlDataOffer");
                     device.data_offer(&offer);
 
@@ -1109,7 +1109,7 @@ impl Composer {
             for device in &self.data_control_devices {
                 if device.client().map(|c| c.id()) == Some(client.id()) {
                     let offer = client
-                        .create_resource::<zwlr_data_control_offer_v1::ZwlrDataControlOfferV1, (), Self>(dh, device.version(), ());
+                        .create_resource::<zwlr_data_control_offer_v1::ZwlrDataControlOfferV1, crate::server::ClientState, crate::server::Composer>(dh, device.version(), crate::server::ClientState);
 
                     if offer.is_err() {
                         error!("Failed to create ZwlrDataControlOfferV1");
@@ -1153,10 +1153,10 @@ impl Composer {
         if let Some(source) = &self.primary_selection {
             for device in &self.primary_selection_devices {
                 if device.client().map(|c| c.id()) == Some(client.id()) {
-                    let offer = client.create_resource::<ZwpPrimarySelectionOfferV1, (), Self>(
+                    let offer = client.create_resource::<ZwpPrimarySelectionOfferV1, crate::server::ClientState, crate::server::Composer>(
                         dh,
                         device.version(),
-                        (),
+                        crate::server::ClientState,
                     );
 
                     if offer.is_err() {
@@ -1193,7 +1193,7 @@ impl Composer {
             for device in &self.data_control_devices {
                 if device.client().map(|c| c.id()) == Some(client.id()) {
                     let offer = client
-                        .create_resource::<zwlr_data_control_offer_v1::ZwlrDataControlOfferV1, (), Self>(dh, device.version(), ());
+                        .create_resource::<zwlr_data_control_offer_v1::ZwlrDataControlOfferV1, crate::server::ClientState, crate::server::Composer>(dh, device.version(), crate::server::ClientState);
 
                     if offer.is_err() {
                         error!("Failed to create ZwlrDataControlOfferV1");
@@ -1423,6 +1423,10 @@ impl Drop for Composer {
 }
 
 pub struct ClientState;
+pub struct GlobalState;
+
+pub struct MonitorData(pub usize);
+pub struct SyncobjSurfaceData(pub wayland_server::backend::ObjectId);
 
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}

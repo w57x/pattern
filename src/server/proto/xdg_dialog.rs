@@ -1,33 +1,34 @@
-use crate::server::Composer;
 use wayland_protocols::xdg::dialog::v1::server::{xdg_dialog_v1, xdg_wm_dialog_v1};
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<xdg_wm_dialog_v1::XdgWmDialogV1, ()> for Composer {
+use crate::server::{ClientState, Composer, GlobalState};
+
+impl GlobalDispatch<xdg_wm_dialog_v1::XdgWmDialogV1, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<xdg_wm_dialog_v1::XdgWmDialogV1>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<xdg_wm_dialog_v1::XdgWmDialogV1, ()> for Composer {
+impl Dispatch<xdg_wm_dialog_v1::XdgWmDialogV1, Composer> for ClientState {
     fn request(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &xdg_wm_dialog_v1::XdgWmDialogV1,
         request: xdg_wm_dialog_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             xdg_wm_dialog_v1::Request::GetXdgDialog { id, toplevel } => {
-                let dialog = data_init.init(id, ());
+                let dialog = data_init.init(id, ClientState);
                 _state.dialog_to_toplevel.insert(dialog.id(), toplevel.id());
             }
             xdg_wm_dialog_v1::Request::Destroy => {}
@@ -36,15 +37,15 @@ impl Dispatch<xdg_wm_dialog_v1::XdgWmDialogV1, ()> for Composer {
     }
 }
 
-impl Dispatch<xdg_dialog_v1::XdgDialogV1, ()> for Composer {
+impl Dispatch<xdg_dialog_v1::XdgDialogV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &xdg_dialog_v1::XdgDialogV1,
         request: xdg_dialog_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         let toplevel_id = if let Some(id) = state.dialog_to_toplevel.get(&resource.id()) {
             id.clone()

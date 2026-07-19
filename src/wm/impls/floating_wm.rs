@@ -798,12 +798,12 @@ impl WindowManager for Wm {
             if let (Some(toplevel), Some(xdg_surface)) = (&window.toplevel, &window.xdg_surface) {
                 use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
                 let mut states = Vec::new();
-                states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
+                states.extend_from_slice(&u32::from(State::Activated).to_ne_bytes());
                 if config.maximized {
-                    states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
+                    states.extend_from_slice(&u32::from(State::Maximized).to_ne_bytes());
                 }
                 if config.fullscreen {
-                    states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
+                    states.extend_from_slice(&u32::from(State::Fullscreen).to_ne_bytes());
                 }
                 toplevel.configure(config.w, config.h, states);
                 xdg_surface.configure(serial);
@@ -876,12 +876,12 @@ impl WindowManager for Wm {
                 {
                     use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
                     let mut states = Vec::new();
-                    states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
+                    states.extend_from_slice(&u32::from(State::Activated).to_ne_bytes());
                     if window.maximized {
-                        states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
+                        states.extend_from_slice(&u32::from(State::Maximized).to_ne_bytes());
                     }
                     if config.fullscreen {
-                        states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
+                        states.extend_from_slice(&u32::from(State::Fullscreen).to_ne_bytes());
                     }
                     toplevel.configure(config.w, config.h, states);
                     xdg_surface.configure(serial);
@@ -1101,13 +1101,13 @@ impl WindowManager for Wm {
             if let (Some(toplevel), Some(xdg_surface)) = (&window.toplevel, &window.xdg_surface) {
                 use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
                 let mut states = Vec::new();
-                states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
-                states.extend_from_slice(&(State::Resizing as u32).to_ne_bytes());
+                states.extend_from_slice(&u32::from(State::Activated).to_ne_bytes());
+                states.extend_from_slice(&u32::from(State::Resizing).to_ne_bytes());
                 if window.maximized {
-                    states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
+                    states.extend_from_slice(&u32::from(State::Maximized).to_ne_bytes());
                 }
                 if window.fullscreen {
-                    states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
+                    states.extend_from_slice(&u32::from(State::Fullscreen).to_ne_bytes());
                 }
 
                 toplevel.configure(new_gw as i32, new_gh as i32, states);
@@ -1136,12 +1136,12 @@ impl WindowManager for Wm {
             if let (Some(toplevel), Some(xdg_surface)) = (&window.toplevel, &window.xdg_surface) {
                 use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
                 let mut states = Vec::new();
-                states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
+                states.extend_from_slice(&u32::from(State::Activated).to_ne_bytes());
                 if window.maximized {
-                    states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
+                    states.extend_from_slice(&u32::from(State::Maximized).to_ne_bytes());
                 }
                 if window.fullscreen {
-                    states.extend_from_slice(&(State::Fullscreen as u32).to_ne_bytes());
+                    states.extend_from_slice(&u32::from(State::Fullscreen).to_ne_bytes());
                 }
                 toplevel.configure(0, 0, states);
                 xdg_surface.configure(serial);
@@ -1475,8 +1475,8 @@ impl WindowManager for Wm {
                         {
                             use wayland_protocols::xdg::shell::server::xdg_toplevel::State;
                             let mut states = Vec::new();
-                            states.extend_from_slice(&(State::Activated as u32).to_ne_bytes());
-                            states.extend_from_slice(&(State::Maximized as u32).to_ne_bytes());
+                            states.extend_from_slice(&u32::from(State::Activated).to_ne_bytes());
+                            states.extend_from_slice(&u32::from(State::Maximized).to_ne_bytes());
                             toplevel.configure(win.w, win.h, states);
                             xdg_surface.configure(serial);
                         }

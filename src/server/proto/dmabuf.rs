@@ -1,4 +1,4 @@
-use crate::server::{Composer, DmabufData};
+use crate::server::{ClientState, Composer, DmabufData, GlobalState};
 use std::os::fd::AsFd;
 use wayland_protocols::wp::linux_dmabuf::zv1::server::{
     zwp_linux_buffer_params_v1,
@@ -10,16 +10,16 @@ use wayland_protocols::wp::linux_dmabuf::zv1::server::{
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<ZwpLinuxDmabufV1, ()> for Composer {
+impl GlobalDispatch<ZwpLinuxDmabufV1, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<ZwpLinuxDmabufV1>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        let dmabuf = data_init.init(resource, ());
+        let dmabuf = data_init.init(resource, ClientState);
 
         if dmabuf.version() < 4 {
             // ARGB8888
@@ -30,23 +30,23 @@ impl GlobalDispatch<ZwpLinuxDmabufV1, ()> for Composer {
     }
 }
 
-impl Dispatch<ZwpLinuxDmabufV1, ()> for Composer {
+impl Dispatch<ZwpLinuxDmabufV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &ZwpLinuxDmabufV1,
         request: zwp_linux_dmabuf_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             zwp_linux_dmabuf_v1::Request::CreateParams { params_id } => {
-                data_init.init(params_id, ());
+                data_init.init(params_id, ClientState);
             }
             zwp_linux_dmabuf_v1::Request::GetDefaultFeedback { id }
             | zwp_linux_dmabuf_v1::Request::GetSurfaceFeedback { id, .. } => {
-                let feedback = data_init.init(id, ());
+                let feedback = data_init.init(id, ClientState);
 
                 // Send the sealed 64-byte format table (Contains 4 formats)
                 feedback.format_table(state.dmabuf_table_fd.as_fd(), 64);
@@ -73,28 +73,28 @@ impl Dispatch<ZwpLinuxDmabufV1, ()> for Composer {
     }
 }
 
-impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for Composer {
+impl Dispatch<ZwpLinuxDmabufFeedbackV1, Composer> for ClientState {
     fn request(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &ZwpLinuxDmabufFeedbackV1,
         _request: zwp_linux_dmabuf_feedback_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
     }
 }
 
-impl Dispatch<ZwpLinuxBufferParamsV1, ()> for Composer {
+impl Dispatch<ZwpLinuxBufferParamsV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         client: &wayland_server::Client,
         resource: &ZwpLinuxBufferParamsV1,
         request: zwp_linux_buffer_params_v1::Request,
-        _data: &(),
         dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             zwp_linux_buffer_params_v1::Request::Add {
@@ -134,10 +134,10 @@ impl Dispatch<ZwpLinuxBufferParamsV1, ()> for Composer {
                     data.height = height as u32;
                     data.format = format;
 
-                    let wl_buffer = client.create_resource::<wayland_server::protocol::wl_buffer::WlBuffer, (), Composer>(
+                    let wl_buffer = client.create_resource::<wayland_server::protocol::wl_buffer::WlBuffer, ClientState, Composer>(
                         dhandle,
                         resource.version(),
-                        (),
+                        ClientState,
                     ).expect("Failed to create wl_buffer resource");
 
                     resource.created(&wl_buffer);
@@ -155,7 +155,7 @@ impl Dispatch<ZwpLinuxBufferParamsV1, ()> for Composer {
                 ..
             } => {
                 // The client finished defining the buffer. Give them a WlBuffer
-                let wl_buffer = data_init.init(buffer_id, ());
+                let wl_buffer = data_init.init(buffer_id, ClientState);
 
                 if let Some(mut data) = state.pending_dmabufs.remove(&resource.id()) {
                     data.width = width as u32;

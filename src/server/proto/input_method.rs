@@ -1,4 +1,3 @@
-use crate::server::Composer;
 use std::os::fd::AsFd;
 use wayland_protocols_misc::zwp_input_method_v2::server::{
     zwp_input_method_keyboard_grab_v2::{self, ZwpInputMethodKeyboardGrabV2},
@@ -8,32 +7,34 @@ use wayland_protocols_misc::zwp_input_method_v2::server::{
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<ZwpInputMethodManagerV2, ()> for Composer {
+use crate::server::{ClientState, Composer, GlobalState};
+
+impl GlobalDispatch<ZwpInputMethodManagerV2, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<ZwpInputMethodManagerV2>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<ZwpInputMethodManagerV2, ()> for Composer {
+impl Dispatch<ZwpInputMethodManagerV2, Composer> for ClientState {
     fn request(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &ZwpInputMethodManagerV2,
         request: <ZwpInputMethodManagerV2 as Resource>::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             zwp_input_method_manager_v2::Request::GetInputMethod { input_method, seat } => {
-                let input_method = data_init.init(input_method, ());
+                let input_method = data_init.init(input_method, ClientState);
                 _state.input_methods.push((input_method, seat));
             }
             zwp_input_method_manager_v2::Request::Destroy => {}
@@ -42,15 +43,15 @@ impl Dispatch<ZwpInputMethodManagerV2, ()> for Composer {
     }
 }
 
-impl Dispatch<ZwpInputMethodV2, ()> for Composer {
+impl Dispatch<ZwpInputMethodV2, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &ZwpInputMethodV2,
         request: <ZwpInputMethodV2 as Resource>::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         // Find the focused text_input
         // NOTE: For single-seat, we just find the currently focused text input in the composer.
@@ -112,7 +113,7 @@ impl Dispatch<ZwpInputMethodV2, ()> for Composer {
                 }
             }
             zwp_input_method_v2::Request::GetInputPopupSurface { id, surface } => {
-                let popup = data_init.init(id, ());
+                let popup = data_init.init(id, ClientState);
 
                 // Immediately send the text input rectangle if available
                 if let Some(ti_state) = target.as_ref().map(|(_, _, state)| state) {
@@ -123,7 +124,7 @@ impl Dispatch<ZwpInputMethodV2, ()> for Composer {
                 state.input_popups.push((popup, surface, resource.clone()));
             }
             zwp_input_method_v2::Request::GrabKeyboard { keyboard } => {
-                let grab = data_init.init(keyboard, ());
+                let grab = data_init.init(keyboard, ClientState);
 
                 // Send initial state to the grab
                 grab.keymap(
@@ -145,15 +146,15 @@ impl Dispatch<ZwpInputMethodV2, ()> for Composer {
     }
 }
 
-impl Dispatch<ZwpInputPopupSurfaceV2, ()> for Composer {
+impl Dispatch<ZwpInputPopupSurfaceV2, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &ZwpInputPopupSurfaceV2,
         request: <ZwpInputPopupSurfaceV2 as Resource>::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         if let zwp_input_popup_surface_v2::Request::Destroy = request {
             state.input_popups.retain(|(p, _, _)| p != resource);
@@ -161,15 +162,15 @@ impl Dispatch<ZwpInputPopupSurfaceV2, ()> for Composer {
     }
 }
 
-impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Composer {
+impl Dispatch<ZwpInputMethodKeyboardGrabV2, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &ZwpInputMethodKeyboardGrabV2,
         request: <ZwpInputMethodKeyboardGrabV2 as Resource>::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         if let zwp_input_method_keyboard_grab_v2::Request::Release = request {
             state.input_method_grabs.retain(|(g, _)| g != resource);

@@ -5,18 +5,15 @@ use wayland_protocols::wp::linux_drm_syncobj::v1::server::{
     wp_linux_drm_syncobj_surface_v1::WpLinuxDrmSyncobjSurfaceV1,
     wp_linux_drm_syncobj_timeline_v1::WpLinuxDrmSyncobjTimelineV1,
 };
-use wayland_server::{
-    Dispatch, DisplayHandle, GlobalDispatch, Resource,
-    backend::{ClientId, ObjectId},
-};
+use wayland_server::{Dispatch, DisplayHandle, GlobalDispatch, Resource, backend::ClientId};
 
-use crate::server::Composer;
+use ash::vk;
+
+use crate::server::{ClientState, Composer, GlobalState, SyncobjSurfaceData};
 
 pub struct Timeline {
     pub fd: OwnedFd,
 }
-
-use ash::vk;
 
 #[derive(Default, Clone)]
 pub struct SurfaceSyncObjState {
@@ -25,28 +22,28 @@ pub struct SurfaceSyncObjState {
     pub signal_queue: Vec<(vk::Semaphore, u64)>,     // Old buffers to be released
 }
 
-impl GlobalDispatch<WpLinuxDrmSyncobjManagerV1, ()> for Composer {
+impl GlobalDispatch<WpLinuxDrmSyncobjManagerV1, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<WpLinuxDrmSyncobjManagerV1>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<WpLinuxDrmSyncobjManagerV1, ()> for Composer {
+impl Dispatch<WpLinuxDrmSyncobjManagerV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &WpLinuxDrmSyncobjManagerV1,
         request: <WpLinuxDrmSyncobjManagerV1 as wayland_server::Resource>::Request,
-        _data: &(),
         _dhandle: &DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         use wayland_protocols::wp::linux_drm_syncobj::v1::server::wp_linux_drm_syncobj_manager_v1::Request;
         match request {
@@ -55,7 +52,7 @@ impl Dispatch<WpLinuxDrmSyncobjManagerV1, ()> for Composer {
             }
             Request::GetSurface { id, surface } => {
                 state.explicit_sync_surfaces.insert(surface.id());
-                data_init.init(id, surface.id());
+                data_init.init(id, SyncobjSurfaceData(surface.id()));
             }
             Request::ImportTimeline { id, fd } => {
                 data_init.init(id, Timeline { fd });
@@ -65,17 +62,18 @@ impl Dispatch<WpLinuxDrmSyncobjManagerV1, ()> for Composer {
     }
 }
 
-impl Dispatch<WpLinuxDrmSyncobjSurfaceV1, ObjectId> for Composer {
+impl Dispatch<WpLinuxDrmSyncobjSurfaceV1, Composer> for SyncobjSurfaceData {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &WpLinuxDrmSyncobjSurfaceV1,
         request: <WpLinuxDrmSyncobjSurfaceV1 as wayland_server::Resource>::Request,
-        surface_id: &ObjectId,
         dhandle: &DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         use wayland_protocols::wp::linux_drm_syncobj::v1::server::wp_linux_drm_syncobj_surface_v1::Request;
+        let surface_id = &self.0;
         match request {
             Request::Destroy => {
                 state.explicit_sync_surfaces.remove(surface_id);
@@ -120,15 +118,15 @@ impl Dispatch<WpLinuxDrmSyncobjSurfaceV1, ObjectId> for Composer {
     }
 }
 
-impl Dispatch<WpLinuxDrmSyncobjTimelineV1, Timeline> for Composer {
+impl Dispatch<WpLinuxDrmSyncobjTimelineV1, Composer> for Timeline {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &WpLinuxDrmSyncobjTimelineV1,
         request: <WpLinuxDrmSyncobjTimelineV1 as wayland_server::Resource>::Request,
-        _data: &Timeline,
         _dhandle: &DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         use wayland_protocols::wp::linux_drm_syncobj::v1::server::wp_linux_drm_syncobj_timeline_v1::Request;
         if let Request::Destroy = request
@@ -139,10 +137,10 @@ impl Dispatch<WpLinuxDrmSyncobjTimelineV1, Timeline> for Composer {
     }
 
     fn destroyed(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: ClientId,
         resource: &WpLinuxDrmSyncobjTimelineV1,
-        _data: &Timeline,
     ) {
         if let Some(e) = state.syncobj_timelines.remove(&resource.id()) {
             state.dead_semaphores.push(e);

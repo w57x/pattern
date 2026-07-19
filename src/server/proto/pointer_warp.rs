@@ -1,30 +1,33 @@
 use wayland_protocols::wp::pointer_warp::v1::server::wp_pointer_warp_v1::{self, WpPointerWarpV1};
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-use crate::{server::Composer, utils::time::gettime};
+use crate::{
+    server::{ClientState, Composer, GlobalState},
+    utils::time::gettime,
+};
 
-impl GlobalDispatch<WpPointerWarpV1, ()> for Composer {
+impl GlobalDispatch<WpPointerWarpV1, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<WpPointerWarpV1>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<WpPointerWarpV1, ()> for Composer {
+impl Dispatch<WpPointerWarpV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         client: &wayland_server::Client,
         _resource: &WpPointerWarpV1,
         request: <WpPointerWarpV1 as wayland_server::Resource>::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             wp_pointer_warp_v1::Request::Destroy => {}

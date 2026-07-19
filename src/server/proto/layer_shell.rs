@@ -1,30 +1,31 @@
-use crate::server::Composer;
-use crate::server::proto::xdg_shell::compute_popup_position;
+use crate::server::{LayerState, proto::xdg_shell::compute_popup_position};
 use wayland_protocols_wlr::layer_shell::v1::server::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
-use wayland_server::{Dispatch, GlobalDispatch, Resource, WEnum};
+use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, ()> for Composer {
+use crate::server::{ClientState, Composer, GlobalState};
+
+impl GlobalDispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, ()> for Composer {
+impl Dispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &zwlr_layer_shell_v1::ZwlrLayerShellV1,
         request: zwlr_layer_shell_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             zwlr_layer_shell_v1::Request::GetLayerSurface {
@@ -34,13 +35,13 @@ impl Dispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, ()> for Composer {
                 layer,
                 namespace,
             } => {
-                let layer_surface = data_init.init(id, ());
+                let layer_surface = data_init.init(id, ClientState);
 
                 let layer_val = match layer {
-                    WEnum::Value(zwlr_layer_shell_v1::Layer::Background) => 0,
-                    WEnum::Value(zwlr_layer_shell_v1::Layer::Bottom) => 1,
-                    WEnum::Value(zwlr_layer_shell_v1::Layer::Top) => 2,
-                    WEnum::Value(zwlr_layer_shell_v1::Layer::Overlay) => 3,
+                    zwlr_layer_shell_v1::Layer::Background => 0,
+                    zwlr_layer_shell_v1::Layer::Bottom => 1,
+                    zwlr_layer_shell_v1::Layer::Top => 2,
+                    zwlr_layer_shell_v1::Layer::Overlay => 3,
                     _ => 2,
                 };
 
@@ -61,15 +62,15 @@ impl Dispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, ()> for Composer {
     }
 }
 
-impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Composer {
+impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
         request: zwlr_layer_surface_v1::Request,
-        _data: &(),
         dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         let surface_id = if let Some(surface) = state.xdg_to_surface.get(&resource.id()) {
             surface.id()
@@ -82,7 +83,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Composer {
                 let state = state
                     .pending_layer_state
                     .entry(surface_id.clone())
-                    .or_insert(crate::server::LayerState {
+                    .or_insert(LayerState {
                         size: None,
                         anchor: None,
                         zone: None,
@@ -92,14 +93,11 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Composer {
                 state.size = Some((width, height));
             }
             zwlr_layer_surface_v1::Request::SetAnchor { anchor } => {
-                let anchor_val = match anchor {
-                    wayland_server::WEnum::Value(a) => a.bits(),
-                    _ => 0,
-                };
+                let anchor_val = anchor.bits();
                 let state = state
                     .pending_layer_state
                     .entry(surface_id.clone())
-                    .or_insert(crate::server::LayerState {
+                    .or_insert(LayerState {
                         size: None,
                         anchor: None,
                         zone: None,
@@ -112,7 +110,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Composer {
                 let state = state
                     .pending_layer_state
                     .entry(surface_id.clone())
-                    .or_insert(crate::server::LayerState {
+                    .or_insert(LayerState {
                         size: None,
                         anchor: None,
                         zone: None,
@@ -130,7 +128,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Composer {
                 let state = state
                     .pending_layer_state
                     .entry(surface_id.clone())
-                    .or_insert(crate::server::LayerState {
+                    .or_insert(LayerState {
                         size: None,
                         anchor: None,
                         zone: None,
@@ -142,14 +140,11 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for Composer {
             zwlr_layer_surface_v1::Request::SetKeyboardInteractivity {
                 keyboard_interactivity,
             } => {
-                let inter_val = match keyboard_interactivity {
-                    wayland_server::WEnum::Value(i) => i as u32,
-                    _ => 0,
-                };
+                let inter_val = u32::from(keyboard_interactivity);
                 let state = state
                     .pending_layer_state
                     .entry(surface_id.clone())
-                    .or_insert(crate::server::LayerState {
+                    .or_insert(LayerState {
                         size: None,
                         anchor: None,
                         zone: None,

@@ -1,6 +1,7 @@
 use ash::{Device, Entry, Instance, khr, vk};
 use drm::buffer::Buffer as _;
 use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
+use std::sync::{Arc, Mutex};
 use tracing::{error, warn};
 
 use crate::{gpu::buffer::Buffer, vulkan::frame::VulkanFrame};
@@ -22,6 +23,14 @@ pub struct BlurChain {
     pub sampler: vk::Sampler,
     pub pool: vk::DescriptorPool,
     pub render_pass: vk::RenderPass,
+}
+
+pub struct GarbageTexture {
+    pub img: vk::Image,
+    pub mem: vk::DeviceMemory,
+    pub view: vk::ImageView,
+    pub samp: vk::Sampler,
+    pub pool: vk::DescriptorPool,
 }
 
 pub struct VulkanContext {
@@ -51,6 +60,8 @@ pub struct VulkanContext {
     pub blur_pipeline: vk::Pipeline,
     pub kawase_down_pipeline: vk::Pipeline,
     pub kawase_up_pipeline: vk::Pipeline,
+
+    pub texture_garbage_queue: Arc<Mutex<Vec<GarbageTexture>>>,
 }
 
 impl Drop for VulkanContext {
@@ -224,6 +235,7 @@ impl VulkanContext {
             blur_pipeline,
             kawase_down_pipeline,
             kawase_up_pipeline,
+            texture_garbage_queue: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -982,7 +994,7 @@ impl VulkanContext {
 
     pub fn draw_frame(
         &self,
-        frame: &VulkanFrame,
+        frame: &mut VulkanFrame,
         screen_w: u32,
         screen_h: u32,
         quads: &[DrawCommand],
@@ -990,7 +1002,6 @@ impl VulkanContext {
         wait_values: &[u64],
         signal_semaphores: &[vk::Semaphore],
         signal_values: &[u64],
-        blur_chain: Option<&BlurChain>,
         blur_passes: u32,
     ) -> OwnedFd {
         let cmd_buffer = frame.cmd_buffer;
@@ -999,6 +1010,21 @@ impl VulkanContext {
             self.device
                 .wait_for_fences(&[frame.frame_fence], true, u64::MAX)
                 .unwrap();
+
+            // Destroy the texture garbage from the PREVIOUS cycle of this frame
+            for g in frame.texture_garbage.drain(..) {
+                self.device.destroy_sampler(g.samp, None);
+                self.device.destroy_image_view(g.view, None);
+                self.device.destroy_image(g.img, None);
+                self.device.free_memory(g.mem, None);
+                self.device.destroy_descriptor_pool(g.pool, None);
+            }
+
+            // Move the global garbage queue into this frame's garbage queue to be destroyed next cycle
+            if let Ok(mut queue) = self.texture_garbage_queue.lock() {
+                frame.texture_garbage.extend(queue.drain(..));
+            }
+
             self.device.reset_fences(&[frame.frame_fence]).unwrap();
 
             // Reset and reuse the frame's command buffer
@@ -1087,7 +1113,7 @@ impl VulkanContext {
                     }
                     pass_active = false;
 
-                    if let Some(chain) = blur_chain {
+                    if let Some(chain) = frame.blur_target.as_ref() {
                         let passes = (blur_passes as usize).min(chain.targets.len() - 1);
                         if passes == 0 || chain.targets.is_empty() {
                             continue;
@@ -1536,7 +1562,7 @@ impl VulkanContext {
                         current_pipeline = self.blur_pipeline;
                     }
 
-                    if let Some(chain) = blur_chain {
+                    if let Some(chain) = frame.blur_target.as_ref() {
                         unsafe {
                             self.device.cmd_bind_descriptor_sets(
                                 cmd_buffer,
@@ -1668,6 +1694,10 @@ impl VulkanContext {
             vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cmd_buffer));
 
         unsafe {
+            self.device
+                .reset_fences(std::slice::from_ref(&self.fence))
+                .unwrap();
+
             self.device
                 .queue_submit(self.queue, std::slice::from_ref(&submit_info), self.fence)
                 .expect("Failed to submit one-time command");
@@ -1948,11 +1978,12 @@ impl VulkanContext {
 
                 let mut regions = Vec::with_capacity(damage.len());
                 for rect in damage {
-                    // Clamp rect to image dimensions
                     let x = rect.x.max(0);
                     let y = rect.y.max(0);
-                    let w = rect.w.min(width as i32 - x).max(0) as u32;
-                    let h = rect.h.min(height as i32 - y).max(0) as u32;
+                    let x_end = (rect.x as i64 + rect.w as i64).min(width as i64) as i32;
+                    let y_end = (rect.y as i64 + rect.h as i64).min(height as i64) as i32;
+                    let w = (x_end - x).max(0) as u32;
+                    let h = (y_end - y).max(0) as u32;
 
                     if w == 0 || h == 0 {
                         continue;
@@ -2325,8 +2356,6 @@ impl RenderQuad {
     }
 }
 
-use std::sync::Arc;
-
 pub struct VulkanTextureInner {
     pub device: ash::Device,
     pub img: vk::Image,
@@ -2334,16 +2363,28 @@ pub struct VulkanTextureInner {
     pub view: vk::ImageView,
     pub samp: vk::Sampler,
     pub pool: vk::DescriptorPool,
+    pub garbage_queue: Arc<Mutex<Vec<GarbageTexture>>>,
 }
 
 impl Drop for VulkanTextureInner {
     fn drop(&mut self) {
-        unsafe {
-            self.device.destroy_sampler(self.samp, None);
-            self.device.destroy_image_view(self.view, None);
-            self.device.destroy_image(self.img, None);
-            self.device.free_memory(self.mem, None);
-            self.device.destroy_descriptor_pool(self.pool, None);
+        if let Ok(mut queue) = self.garbage_queue.lock() {
+            queue.push(GarbageTexture {
+                img: self.img,
+                mem: self.mem,
+                view: self.view,
+                samp: self.samp,
+                pool: self.pool,
+            });
+        } else {
+            // Fallback if mutex is poisoned
+            unsafe {
+                self.device.destroy_sampler(self.samp, None);
+                self.device.destroy_image_view(self.view, None);
+                self.device.destroy_image(self.img, None);
+                self.device.free_memory(self.mem, None);
+                self.device.destroy_descriptor_pool(self.pool, None);
+            }
         }
     }
 }

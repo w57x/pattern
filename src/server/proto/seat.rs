@@ -1,4 +1,4 @@
-use crate::server::{Composer, SelectionSource};
+use crate::server::{ClientState, Composer, GlobalState, SelectionSource};
 use std::os::fd::AsFd;
 use wayland_server::protocol::{
     wl_data_device::WlDataDevice, wl_data_device_manager::WlDataDeviceManager,
@@ -8,39 +8,39 @@ use wayland_server::protocol::{
 use wayland_server::protocol::{wl_keyboard, wl_seat};
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<WlSeat, ()> for Composer {
+impl GlobalDispatch<WlSeat, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<WlSeat>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        let seat = data_init.init(resource, ());
+        let seat = data_init.init(resource, ClientState);
 
         seat.capabilities(wl_seat::Capability::Pointer | wl_seat::Capability::Keyboard);
         seat.name("pattern-seat".to_string());
     }
 }
 
-impl Dispatch<WlSeat, ()> for Composer {
+impl Dispatch<WlSeat, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         client: &wayland_server::Client,
         _resource: &WlSeat,
         request: wayland_server::protocol::wl_seat::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             wl_seat::Request::GetPointer { id } => {
-                let pointer = data_init.init(id, ());
+                let pointer = data_init.init(id, ClientState);
                 state.pointers.push(pointer);
             }
             wl_seat::Request::GetKeyboard { id } => {
-                let keyboard = data_init.init(id, ());
+                let keyboard = data_init.init(id, ClientState);
                 let fd = state.keymap_fd.as_fd();
                 keyboard.keymap(wl_keyboard::KeymapFormat::XkbV1, fd, state.keymap_size);
 
@@ -49,7 +49,11 @@ impl Dispatch<WlSeat, ()> for Composer {
                         let cfg = state.config_manager.config.lock().unwrap();
                         (cfg.input.repeat_rate as i32, cfg.input.repeat_delay as i32)
                     };
-                    keyboard.repeat_info(rate, delay);
+                    if keyboard.version() >= 10 {
+                        keyboard.repeat_info(0, 0);
+                    } else {
+                        keyboard.repeat_info(rate, delay);
+                    }
                 }
 
                 if let Some(focused_surface) = &state.input_focus
@@ -68,15 +72,15 @@ impl Dispatch<WlSeat, ()> for Composer {
     }
 }
 
-impl Dispatch<WlPointer, ()> for Composer {
+impl Dispatch<WlPointer, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &WlPointer,
         request: wayland_server::protocol::wl_pointer::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         use wayland_server::protocol::wl_pointer::Request;
         match request {
@@ -101,15 +105,15 @@ impl Dispatch<WlPointer, ()> for Composer {
     }
 }
 
-impl Dispatch<WlKeyboard, ()> for Composer {
+impl Dispatch<WlKeyboard, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &WlKeyboard,
         request: wayland_server::protocol::wl_keyboard::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         if let wayland_server::protocol::wl_keyboard::Request::Release = request {
             state.keyboards.retain(|k| k.id() != resource.id());
@@ -117,34 +121,34 @@ impl Dispatch<WlKeyboard, ()> for Composer {
     }
 }
 
-impl GlobalDispatch<WlDataDeviceManager, ()> for Composer {
+impl GlobalDispatch<WlDataDeviceManager, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<WlDataDeviceManager>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<WlDataDeviceManager, ()> for Composer {
+impl Dispatch<WlDataDeviceManager, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &WlDataDeviceManager,
         request: wayland_server::protocol::wl_data_device_manager::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             wayland_server::protocol::wl_data_device_manager::Request::GetDataDevice {
                 id, ..
             } => {
-                let device = data_init.init(id, ());
+                let device = data_init.init(id, ClientState);
                 state.data_devices.push(device.clone());
 
                 if let Some(focused_surface) = &state.input_focus
@@ -153,10 +157,10 @@ impl Dispatch<WlDataDeviceManager, ()> for Composer {
                 {
                     if let Some(source) = &state.selection {
                         let offer = _client
-                            .create_resource::<WlDataOffer, (), Self>(
+                            .create_resource::<WlDataOffer, ClientState, Composer>(
                                 _dhandle,
                                 device.version(),
-                                (),
+                                ClientState,
                             )
                             .expect("Failed to create WlDataOffer");
                         device.data_offer(&offer);
@@ -186,7 +190,7 @@ impl Dispatch<WlDataDeviceManager, ()> for Composer {
                 }
             }
             wayland_server::protocol::wl_data_device_manager::Request::CreateDataSource { id } => {
-                let source = data_init.init(id, ());
+                let source = data_init.init(id, ClientState);
                 state
                     .data_sources
                     .insert(source.id(), (source.clone(), Vec::new()));
@@ -196,15 +200,15 @@ impl Dispatch<WlDataDeviceManager, ()> for Composer {
     }
 }
 
-impl Dispatch<WlDataDevice, ()> for Composer {
+impl Dispatch<WlDataDevice, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &WlDataDevice,
         request: wayland_server::protocol::wl_data_device::Request,
-        _data: &(),
         dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             wayland_server::protocol::wl_data_device::Request::SetSelection { source, .. } => {
@@ -236,15 +240,15 @@ impl Dispatch<WlDataDevice, ()> for Composer {
     }
 }
 
-impl Dispatch<WlDataSource, ()> for Composer {
+impl Dispatch<WlDataSource, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &WlDataSource,
         request: wayland_server::protocol::wl_data_source::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             wayland_server::protocol::wl_data_source::Request::Offer { mime_type } => {
@@ -263,15 +267,15 @@ impl Dispatch<WlDataSource, ()> for Composer {
     }
 }
 
-impl Dispatch<WlDataOffer, ()> for Composer {
+impl Dispatch<WlDataOffer, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &WlDataOffer,
         request: wayland_server::protocol::wl_data_offer::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             wayland_server::protocol::wl_data_offer::Request::Accept { mime_type, .. } => {

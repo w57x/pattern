@@ -1,40 +1,42 @@
-use crate::gpu::DrmColorLut;
-use crate::server::Composer;
+use crate::{
+    gpu::DrmColorLut,
+    server::{ClientState, Composer, GlobalState},
+};
 use wayland_protocols_wlr::gamma_control::v1::server::{
     zwlr_gamma_control_manager_v1::{self, ZwlrGammaControlManagerV1},
     zwlr_gamma_control_v1::{self, ZwlrGammaControlV1},
 };
 use wayland_server::{Dispatch, GlobalDispatch};
 
-impl GlobalDispatch<ZwlrGammaControlManagerV1, ()> for Composer {
+impl GlobalDispatch<ZwlrGammaControlManagerV1, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<ZwlrGammaControlManagerV1>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<ZwlrGammaControlManagerV1, ()> for Composer {
+impl Dispatch<ZwlrGammaControlManagerV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &ZwlrGammaControlManagerV1,
         request: zwlr_gamma_control_manager_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             zwlr_gamma_control_manager_v1::Request::GetGammaControl {
                 id,
                 output: _output,
             } => {
-                let gamma_control = data_init.init(id, ());
+                let gamma_control = data_init.init(id, ClientState);
                 let size = state.card_info.gamma_size;
                 gamma_control.gamma_size(size);
             }
@@ -44,15 +46,15 @@ impl Dispatch<ZwlrGammaControlManagerV1, ()> for Composer {
     }
 }
 
-impl Dispatch<ZwlrGammaControlV1, ()> for Composer {
+impl Dispatch<ZwlrGammaControlV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &ZwlrGammaControlV1,
         request: zwlr_gamma_control_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             zwlr_gamma_control_v1::Request::SetGamma { fd } => {
@@ -101,10 +103,10 @@ impl Dispatch<ZwlrGammaControlV1, ()> for Composer {
     }
 
     fn destroyed(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: wayland_server::backend::ClientId,
         _resource: &ZwlrGammaControlV1,
-        _data: &(),
     ) {
         state.pending_gamma = Some(Vec::new());
         state.needs_redraw = true;

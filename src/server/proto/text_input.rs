@@ -3,9 +3,9 @@ use wayland_protocols::wp::text_input::zv3::server::{
     zwp_text_input_v3::{self, ZwpTextInputV3},
 };
 use wayland_server::protocol::wl_surface::WlSurface;
-use wayland_server::{Dispatch, GlobalDispatch, WEnum};
+use wayland_server::{Dispatch, GlobalDispatch};
 
-use crate::server::Composer;
+use crate::server::{ClientState, Composer, GlobalState};
 
 #[derive(Default)]
 pub struct TextInputState {
@@ -14,10 +14,10 @@ pub struct TextInputState {
     // Pending state (buffered until commit)
     pub pending_enabled: Option<bool>,
     pub pending_surrounding_text: Option<(String, i32, i32)>,
-    pub pending_cause: Option<WEnum<zwp_text_input_v3::ChangeCause>>,
+    pub pending_cause: Option<zwp_text_input_v3::ChangeCause>,
     pub pending_content_type: Option<(
-        WEnum<zwp_text_input_v3::ContentHint>,
-        WEnum<zwp_text_input_v3::ContentPurpose>,
+        zwp_text_input_v3::ContentHint,
+        zwp_text_input_v3::ContentPurpose,
     )>,
     pub pending_cursor_rect: Option<(i32, i32, i32, i32)>,
 
@@ -28,33 +28,33 @@ pub struct TextInputState {
     pub current_preedit: Option<(String, i32, i32)>,
 }
 
-impl GlobalDispatch<ZwpTextInputManagerV3, ()> for Composer {
+impl GlobalDispatch<ZwpTextInputManagerV3, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<ZwpTextInputManagerV3>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<ZwpTextInputManagerV3, ()> for Composer {
+impl Dispatch<ZwpTextInputManagerV3, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &ZwpTextInputManagerV3,
         request: <ZwpTextInputManagerV3 as wayland_server::Resource>::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             zwp_text_input_manager_v3::Request::Destroy => {}
             zwp_text_input_manager_v3::Request::GetTextInput { id, seat } => {
-                let text_input = data_init.init(id, ());
+                let text_input = data_init.init(id, ClientState);
                 state
                     .text_inputs
                     .push((text_input, seat, TextInputState::default()));
@@ -64,15 +64,15 @@ impl Dispatch<ZwpTextInputManagerV3, ()> for Composer {
     }
 }
 
-impl Dispatch<ZwpTextInputV3, ()> for Composer {
+impl Dispatch<ZwpTextInputV3, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &ZwpTextInputV3,
         request: <ZwpTextInputV3 as wayland_server::Resource>::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         let text_input_data = state
             .text_inputs
@@ -139,15 +139,11 @@ impl Dispatch<ZwpTextInputV3, ()> for Composer {
                                 (*anchor).try_into().unwrap_or(0),
                             );
                         }
-                        if let Some(cause) = &ti_state.pending_cause
-                            && let WEnum::Value(c) = cause
-                        {
-                            im.text_change_cause(*c);
+                        if let Some(cause) = &ti_state.pending_cause {
+                            im.text_change_cause(*cause);
                         }
-                        if let Some((hint, purpose)) = &ti_state.pending_content_type
-                            && let (WEnum::Value(h), WEnum::Value(p)) = (hint, purpose)
-                        {
-                            im.content_type(*h, *p);
+                        if let Some((hint, purpose)) = &ti_state.pending_content_type {
+                            im.content_type(*hint, *purpose);
                         }
                         let (x, y, w, h) = ti_state.cursor_rect;
                         for (popup, _, popup_im) in &state.input_popups {

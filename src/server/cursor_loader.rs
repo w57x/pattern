@@ -98,6 +98,7 @@ impl CursorManager {
                 view: cursor_view,
                 samp: cursor_sampler,
                 pool: desc_pool,
+                garbage_queue: vkctx.texture_garbage_queue.clone(),
             });
 
             let tex = SurfaceTexture {

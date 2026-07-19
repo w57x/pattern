@@ -6,41 +6,41 @@ use wayland_server::{
     Dispatch, GlobalDispatch, Resource, backend::ObjectId, protocol::wl_surface::WlSurface,
 };
 
-use crate::server::Composer;
+use crate::server::{ClientState, Composer, GlobalState};
 
 pub struct SessionLockState {
     pub lock: ExtSessionLockV1,
     pub surfaces: Vec<(ExtSessionLockSurfaceV1, WlSurface, ObjectId)>,
 }
 
-impl GlobalDispatch<ExtSessionLockManagerV1, ()> for Composer {
+impl GlobalDispatch<ExtSessionLockManagerV1, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<ExtSessionLockManagerV1>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<ExtSessionLockManagerV1, ()> for Composer {
+impl Dispatch<ExtSessionLockManagerV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &ExtSessionLockManagerV1,
         request: <ExtSessionLockManagerV1 as wayland_server::Resource>::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         use wayland_protocols::ext::session_lock::v1::server::ext_session_lock_manager_v1::Request;
         match request {
             Request::Destroy => {}
             Request::Lock { id } => {
-                let lock = data_init.init(id, ());
+                let lock = data_init.init(id, ClientState);
                 if state.session_lock.is_some() {
                     // Protocol requires sending finished if a lock is already active
                     lock.finished();
@@ -58,15 +58,15 @@ impl Dispatch<ExtSessionLockManagerV1, ()> for Composer {
     }
 }
 
-impl Dispatch<ExtSessionLockV1, ()> for Composer {
+impl Dispatch<ExtSessionLockV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &ExtSessionLockV1,
         request: <ExtSessionLockV1 as wayland_server::Resource>::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         use wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::Request;
         match request {
@@ -75,7 +75,7 @@ impl Dispatch<ExtSessionLockV1, ()> for Composer {
                 surface,
                 output,
             } => {
-                let lock_surface = data_init.init(id, ());
+                let lock_surface = data_init.init(id, ClientState);
 
                 if let Some(lock_state) = &mut state.session_lock {
                     if lock_state.lock.id() == resource.id() {
@@ -134,15 +134,15 @@ impl Dispatch<ExtSessionLockV1, ()> for Composer {
     }
 }
 
-impl Dispatch<ExtSessionLockSurfaceV1, ()> for Composer {
+impl Dispatch<ExtSessionLockSurfaceV1, Composer> for ClientState {
     fn request(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &ExtSessionLockSurfaceV1,
         request: <ExtSessionLockSurfaceV1 as wayland_server::Resource>::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         use wayland_protocols::ext::session_lock::v1::server::ext_session_lock_surface_v1::Request;
         match request {

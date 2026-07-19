@@ -1,34 +1,34 @@
 use std::sync::{Arc, Mutex};
 
-use crate::server::{Composer, ShmBuffer};
+use crate::server::{ClientState, Composer, GlobalState, ShmBuffer};
 use wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm::WlShm, wl_shm_pool::WlShmPool};
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<WlShm, ()> for Composer {
+impl GlobalDispatch<WlShm, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<WlShm>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        let shm = data_init.init(resource, ());
+        let shm = data_init.init(resource, ClientState);
 
         shm.format(wayland_server::protocol::wl_shm::Format::Xrgb8888);
         shm.format(wayland_server::protocol::wl_shm::Format::Argb8888);
     }
 }
 
-impl Dispatch<WlShm, ()> for Composer {
+impl Dispatch<WlShm, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &WlShm,
         request: wayland_server::protocol::wl_shm::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         if let wayland_server::protocol::wl_shm::Request::CreatePool { id, size, fd, .. } = request
         {
@@ -38,21 +38,21 @@ impl Dispatch<WlShm, ()> for Composer {
                     .map_mut(&fd)
                     .unwrap()
             }));
-            let pool = data_init.init(id, ());
+            let pool = data_init.init(id, ClientState);
             state.pools.insert(pool.id(), (fd, mmap));
         }
     }
 }
 
-impl Dispatch<WlShmPool, ()> for Composer {
+impl Dispatch<WlShmPool, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &WlShmPool,
         request: wayland_server::protocol::wl_shm_pool::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         use std::os::fd::AsFd;
 
@@ -65,7 +65,7 @@ impl Dispatch<WlShmPool, ()> for Composer {
                 stride,
                 ..
             } => {
-                let buffer = data_init.init(id, ());
+                let buffer = data_init.init(id, ClientState);
                 if let Some((_, mmap)) = state.pools.get(&resource.id()) {
                     state.buffers.insert(
                         buffer.id(),
@@ -102,15 +102,15 @@ impl Dispatch<WlShmPool, ()> for Composer {
     }
 }
 
-impl Dispatch<WlBuffer, ()> for Composer {
+impl Dispatch<WlBuffer, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         resource: &WlBuffer,
         request: wayland_server::protocol::wl_buffer::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         if let wayland_server::protocol::wl_buffer::Request::Destroy = request {
             state.buffers.remove(&resource.id());

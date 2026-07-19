@@ -1,36 +1,37 @@
-use crate::server::Composer;
 use wayland_protocols::wp::pointer_gestures::zv1::server::{
     zwp_pointer_gesture_hold_v1, zwp_pointer_gesture_pinch_v1, zwp_pointer_gesture_swipe_v1,
     zwp_pointer_gestures_v1,
 };
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-impl GlobalDispatch<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, ()> for Composer {
+use crate::server::{ClientState, Composer, GlobalState};
+
+impl GlobalDispatch<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, Composer> for GlobalState {
     fn bind(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _handle: &wayland_server::DisplayHandle,
         _client: &wayland_server::Client,
         resource: wayland_server::New<zwp_pointer_gestures_v1::ZwpPointerGesturesV1>,
-        _global_data: &(),
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ClientState);
     }
 }
 
-impl Dispatch<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, ()> for Composer {
+impl Dispatch<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, Composer> for ClientState {
     fn request(
-        state: &mut Self,
+        &self,
+        state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &zwp_pointer_gestures_v1::ZwpPointerGesturesV1,
         request: zwp_pointer_gestures_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        data_init: &mut wayland_server::DataInit<'_, Self>,
+        data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         match request {
             zwp_pointer_gestures_v1::Request::GetSwipeGesture { id, pointer } => {
-                let swipe = data_init.init(id, ());
+                let swipe = data_init.init(id, ClientState);
                 state
                     .swipe_gestures
                     .entry(pointer.id())
@@ -38,7 +39,7 @@ impl Dispatch<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, ()> for Composer {
                     .push(swipe);
             }
             zwp_pointer_gestures_v1::Request::GetPinchGesture { id, pointer } => {
-                let pinch = data_init.init(id, ());
+                let pinch = data_init.init(id, ClientState);
                 state
                     .pinch_gestures
                     .entry(pointer.id())
@@ -46,7 +47,7 @@ impl Dispatch<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, ()> for Composer {
                     .push(pinch);
             }
             zwp_pointer_gestures_v1::Request::GetHoldGesture { id, pointer } => {
-                let hold = data_init.init(id, ());
+                let hold = data_init.init(id, ClientState);
                 state
                     .hold_gestures
                     .entry(pointer.id())
@@ -59,43 +60,43 @@ impl Dispatch<zwp_pointer_gestures_v1::ZwpPointerGesturesV1, ()> for Composer {
     }
 }
 
-impl Dispatch<zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1, ()> for Composer {
+impl Dispatch<zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1, Composer> for ClientState {
     fn request(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &zwp_pointer_gesture_swipe_v1::ZwpPointerGestureSwipeV1,
         request: zwp_pointer_gesture_swipe_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         if let zwp_pointer_gesture_swipe_v1::Request::Destroy = request {}
     }
 }
 
-impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()> for Composer {
+impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, Composer> for ClientState {
     fn request(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1,
         request: zwp_pointer_gesture_pinch_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         if let zwp_pointer_gesture_pinch_v1::Request::Destroy = request {}
     }
 }
 
-impl Dispatch<zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1, ()> for Composer {
+impl Dispatch<zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1, Composer> for ClientState {
     fn request(
-        _state: &mut Self,
+        &self,
+        _state: &mut Composer,
         _client: &wayland_server::Client,
         _resource: &zwp_pointer_gesture_hold_v1::ZwpPointerGestureHoldV1,
         request: zwp_pointer_gesture_hold_v1::Request,
-        _data: &(),
         _dhandle: &wayland_server::DisplayHandle,
-        _data_init: &mut wayland_server::DataInit<'_, Self>,
+        _data_init: &mut wayland_server::DataInit<'_, Composer>,
     ) {
         if let zwp_pointer_gesture_hold_v1::Request::Destroy = request {}
     }
