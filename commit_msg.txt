@@ -1,0 +1,14 @@
+fix: Zen/Firefox crash by withholding wl_pointer::axis_relative_direction
+
+Bumping `wl_seat` to version 10 natively bumped the advertised `wl_pointer`
+version to 10. Zen browser (and Firefox/Gecko) correctly negotiates the
+maximum version (10) but currently provides a legacy `wl_pointer_listener`
+struct compiled against older headers (missing the 10th callback).
+
+Consequently, when the compositor dispatched the `axis_relative_direction`
+event (opcode 10) during scroll, Zen crashed in `libwayland-client` due to
+a NULL function pointer dereference.
+
+To work around this client bug and prevent crashes, we now unconditionally
+withhold the `axis_relative_direction` event during scrolling routines in
+`src/input/mod.rs`.

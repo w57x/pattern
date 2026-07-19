@@ -677,9 +677,7 @@ impl Input {
                     input::event::PointerEvent::ScrollWheel(a) => {
                         use input::event::pointer::Axis as LibinputAxis;
                         use input::event::pointer::PointerScrollEvent;
-                        use wayland_server::protocol::wl_pointer::{
-                            Axis as WlAxis, AxisRelativeDirection, AxisSource,
-                        };
+                        use wayland_server::protocol::wl_pointer::{Axis as WlAxis, AxisSource};
 
                         if let Some(focused) = &state.pointer_focus
                             && let Some(client) = focused.client()
@@ -689,23 +687,28 @@ impl Input {
                                 .iter()
                                 .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
                             {
-                                pointer.axis_source(AxisSource::Wheel);
+                                if pointer.version() >= 5 {
+                                    pointer.axis_source(AxisSource::Wheel);
+                                }
 
                                 if a.has_axis(LibinputAxis::Vertical) {
                                     let value = a.scroll_value(LibinputAxis::Vertical);
                                     let v120 = a.scroll_value_v120(LibinputAxis::Vertical);
                                     if value == 0.0 {
-                                        pointer.axis_stop(a.time(), WlAxis::VerticalScroll);
+                                        if pointer.version() >= 5 {
+                                            pointer.axis_stop(a.time(), WlAxis::VerticalScroll);
+                                        }
                                     } else {
-                                        pointer.axis_relative_direction(
-                                            WlAxis::VerticalScroll,
-                                            AxisRelativeDirection::Identical,
-                                        );
-                                        pointer.axis_value120(WlAxis::VerticalScroll, v120 as i32);
-                                        pointer.axis_discrete(
-                                            WlAxis::VerticalScroll,
-                                            (v120 / 120.0).round() as i32,
-                                        );
+                                        if pointer.version() >= 8 {
+                                            pointer
+                                                .axis_value120(WlAxis::VerticalScroll, v120 as i32);
+                                        }
+                                        if pointer.version() >= 5 {
+                                            pointer.axis_discrete(
+                                                WlAxis::VerticalScroll,
+                                                (v120 / 120.0).round() as i32,
+                                            );
+                                        }
                                         pointer.axis(a.time(), WlAxis::VerticalScroll, value);
                                     }
                                 }
@@ -713,18 +716,22 @@ impl Input {
                                     let value = a.scroll_value(LibinputAxis::Horizontal);
                                     let v120 = a.scroll_value_v120(LibinputAxis::Horizontal);
                                     if value == 0.0 {
-                                        pointer.axis_stop(a.time(), WlAxis::HorizontalScroll);
+                                        if pointer.version() >= 5 {
+                                            pointer.axis_stop(a.time(), WlAxis::HorizontalScroll);
+                                        }
                                     } else {
-                                        pointer.axis_relative_direction(
-                                            WlAxis::HorizontalScroll,
-                                            AxisRelativeDirection::Identical,
-                                        );
-                                        pointer
-                                            .axis_value120(WlAxis::HorizontalScroll, v120 as i32);
-                                        pointer.axis_discrete(
-                                            WlAxis::HorizontalScroll,
-                                            (v120 / 120.0).round() as i32,
-                                        );
+                                        if pointer.version() >= 8 {
+                                            pointer.axis_value120(
+                                                WlAxis::HorizontalScroll,
+                                                v120 as i32,
+                                            );
+                                        }
+                                        if pointer.version() >= 5 {
+                                            pointer.axis_discrete(
+                                                WlAxis::HorizontalScroll,
+                                                (v120 / 120.0).round() as i32,
+                                            );
+                                        }
                                         pointer.axis(a.time(), WlAxis::HorizontalScroll, value);
                                     }
                                 }
@@ -1000,7 +1007,7 @@ impl Input {
         event: E,
         source: wl_pointer::AxisSource,
         state: &mut Composer,
-        dir: wayland_server::protocol::wl_pointer::AxisRelativeDirection,
+        _dir: wayland_server::protocol::wl_pointer::AxisRelativeDirection,
     ) {
         use pointer::Axis as LibinputAxis;
         use wl_pointer::Axis as WlAxis;
@@ -1015,23 +1022,27 @@ impl Input {
                 .iter()
                 .filter(|p| p.client().map(|c| c.id()) == Some(client.id()))
             {
-                pointer.axis_source(source);
+                if pointer.version() >= 5 {
+                    pointer.axis_source(source);
+                }
 
                 if event.has_axis(LibinputAxis::Vertical) {
                     let value = event.scroll_value(LibinputAxis::Vertical);
                     if value == 0.0 {
-                        pointer.axis_stop(event.time(), WlAxis::VerticalScroll);
+                        if pointer.version() >= 5 {
+                            pointer.axis_stop(event.time(), WlAxis::VerticalScroll);
+                        }
                     } else {
-                        pointer.axis_relative_direction(WlAxis::VerticalScroll, dir);
                         pointer.axis(event.time(), WlAxis::VerticalScroll, value);
                     }
                 }
                 if event.has_axis(LibinputAxis::Horizontal) {
                     let value = event.scroll_value(LibinputAxis::Horizontal);
                     if value == 0.0 {
-                        pointer.axis_stop(event.time(), WlAxis::HorizontalScroll);
+                        if pointer.version() >= 5 {
+                            pointer.axis_stop(event.time(), WlAxis::HorizontalScroll);
+                        }
                     } else {
-                        pointer.axis_relative_direction(WlAxis::HorizontalScroll, dir);
                         pointer.axis(event.time(), WlAxis::HorizontalScroll, value);
                     }
                 }
