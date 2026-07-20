@@ -50,7 +50,9 @@ impl Dispatch<WlSeat, Composer> for ClientState {
                         (cfg.input.repeat_rate as i32, cfg.input.repeat_delay as i32)
                     };
                     if keyboard.version() >= 10 {
-                        keyboard.repeat_info(0, 0);
+                        // Temporarily disabled until wl_keyboard v10 is more widely adopted.
+                        // Relying on client-side repeating to workaround buggy KeyState::Repeated implementations.
+                        keyboard.repeat_info(rate, delay);
                     } else {
                         keyboard.repeat_info(rate, delay);
                     }

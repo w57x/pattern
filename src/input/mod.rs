@@ -176,6 +176,9 @@ impl Input {
 
                     if key_state == wl_keyboard::KeyState::Pressed {
                         self.key_repeat_data = Some(key);
+                        // Temporarily disabled until wl_keyboard v10 is more widely adopted.
+                        // Relying on client-side repeating to workaround buggy KeyState::Repeated implementations.
+                        /*
                         if let Some(timer) = &self.key_repeat_timer {
                             let (rate, delay) = {
                                 let cfg = state.config_manager.config.lock().unwrap();
@@ -194,6 +197,7 @@ impl Input {
                                     timer.set(spec, nix::sys::timerfd::TimerSetTimeFlags::empty());
                             }
                         }
+                        */
                     } else {
                         if let Some(key_repeat) = self.key_repeat_data {
                             if key_repeat == key {
@@ -254,8 +258,8 @@ impl Input {
                     let mut grabbed = false;
                     for (grab, _) in &state.input_method_grabs {
                         state.serial += 1;
-                        grab.key(state.serial, time, key, key_state);
                         grab.modifiers(state.serial, depressed, latched, locked, group);
+                        grab.key(state.serial, time, key, key_state);
                         grabbed = true;
                     }
 
@@ -274,8 +278,8 @@ impl Input {
                                 .iter()
                                 .filter(|kbd| kbd.client().map(|c| c.id()) == Some(client.id()))
                             {
-                                keyboard.key(state.serial, time, key, key_state);
                                 keyboard.modifiers(state.serial, depressed, latched, locked, group);
+                                keyboard.key(state.serial, time, key, key_state);
                             }
                         }
                     } else if let Some(session_lock) = state.session_lock.as_ref() {
@@ -286,8 +290,8 @@ impl Input {
                                 .iter()
                                 .filter(|kbd| kbd.client().map(|c| c.id()) == Some(client.id()))
                             {
-                                keyboard.key(state.serial, time, key, key_state);
                                 keyboard.modifiers(state.serial, depressed, latched, locked, group);
+                                keyboard.key(state.serial, time, key, key_state);
                             }
                         }
                     }
@@ -1193,6 +1197,7 @@ impl Input {
                         .filter(|kbd| kbd.client().map(|c| c.id()) == Some(client.id()))
                     {
                         if keyboard.version() >= 10 {
+                            keyboard.modifiers(state.serial, depressed, latched, locked, group);
                             keyboard.key(state.serial, time, key, key_state);
                         }
                     }
@@ -1206,6 +1211,7 @@ impl Input {
                         .filter(|kbd| kbd.client().map(|c| c.id()) == Some(client.id()))
                     {
                         if keyboard.version() >= 10 {
+                            keyboard.modifiers(state.serial, depressed, latched, locked, group);
                             keyboard.key(state.serial, time, key, key_state);
                         }
                     }
