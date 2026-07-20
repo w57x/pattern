@@ -2,7 +2,7 @@ use crate::server::{LayerState, proto::xdg_shell::compute_popup_position};
 use wayland_protocols_wlr::layer_shell::v1::server::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 use wayland_server::{Dispatch, GlobalDispatch, Resource};
 
-use crate::server::{ClientState, Composer, GlobalState};
+use crate::server::{ClientState, Composer, GlobalState, MonitorData};
 
 impl GlobalDispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, Composer> for GlobalState {
     fn bind(
@@ -45,7 +45,9 @@ impl Dispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, Composer> for ClientState {
                     _ => 2,
                 };
 
-                let output_id = output.as_ref().and_then(|o| o.data::<usize>().copied());
+                let output_id = output
+                    .as_ref()
+                    .and_then(|o| o.data::<MonitorData>().map(|m| m.0));
 
                 state.wm.map_layer_surface(
                     surface.clone(),

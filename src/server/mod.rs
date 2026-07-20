@@ -56,7 +56,11 @@ use crate::{
     gpu::CardInfo,
     server::{
         cursor_loader::CursorManager,
-        proto::{session_lock::SessionLockState, text_input::TextInputState},
+        proto::{
+            linux_drm_syncobj::{self, SurfaceSyncObjState},
+            session_lock::SessionLockState,
+            text_input::TextInputState,
+        },
     },
     vulkan::{SurfaceTexture, VulkanContext},
 };
@@ -222,10 +226,8 @@ pub struct Composer {
     pub outputs: Vec<wayland_server::protocol::wl_output::WlOutput>,
     pub wl_output_globals: Vec<wayland_server::backend::GlobalId>,
 
-    pub pending_syncobj_state:
-        HashMap<ObjectId, crate::server::proto::linux_drm_syncobj::SurfaceSyncObjState>,
-    pub syncobj_state:
-        HashMap<ObjectId, crate::server::proto::linux_drm_syncobj::SurfaceSyncObjState>,
+    pub pending_syncobj_state: HashMap<ObjectId, SurfaceSyncObjState>,
+    pub syncobj_state: HashMap<ObjectId, SurfaceSyncObjState>,
     pub syncobj_timelines: HashMap<ObjectId, ash::vk::Semaphore>,
     pub explicit_sync_surfaces: HashSet<ObjectId>,
     pub buffer_textures: HashMap<ObjectId, crate::vulkan::SurfaceTexture>,
@@ -375,8 +377,8 @@ impl Composer {
         let mut wl_output_globals = Vec::new();
         for (i, _) in outputs_info.iter().enumerate() {
             let global_id = dh
-                .create_global::<crate::server::Composer, wayland_server::protocol::wl_output::WlOutput, crate::server::MonitorData>(
-                    4, crate::server::MonitorData(i,
+                .create_global::<Composer, wayland_server::protocol::wl_output::WlOutput, MonitorData>(
+                    4, MonitorData(i,
                 ));
             wl_output_globals.push(global_id);
         }
@@ -510,8 +512,8 @@ impl Composer {
 
         for (i, _) in self.outputs_info.iter().enumerate() {
             let global_id = dh
-                .create_global::<crate::server::Composer, wayland_server::protocol::wl_output::WlOutput, crate::server::MonitorData>(
-                    4, crate::server::MonitorData(i,
+                .create_global::<Composer, wayland_server::protocol::wl_output::WlOutput, MonitorData>(
+                    4, MonitorData(i,
                 ));
             self.wl_output_globals.push(global_id);
         }
@@ -803,14 +805,13 @@ impl Composer {
             }
         };
 
-        let timeline_data =
-            match timeline.data::<crate::server::proto::linux_drm_syncobj::Timeline>() {
-                Some(data) => data,
-                None => {
-                    error!("Failed to get timeline data for {:?}", timeline_id);
-                    return None;
-                }
-            };
+        let timeline_data = match timeline.data::<linux_drm_syncobj::Timeline>() {
+            Some(data) => data,
+            None => {
+                error!("Failed to get timeline data for {:?}", timeline_id);
+                return None;
+            }
+        };
 
         let fd_dup = match timeline_data.fd.try_clone() {
             Ok(fd) => fd,
@@ -1080,7 +1081,11 @@ impl Composer {
             for device in &self.data_devices {
                 if device.client().map(|c| c.id()) == Some(client.id()) {
                     let offer = client
-                        .create_resource::<WlDataOffer, crate::server::ClientState, crate::server::Composer>(dh, device.version(), crate::server::ClientState)
+                        .create_resource::<WlDataOffer, ClientState, Composer>(
+                            dh,
+                            device.version(),
+                            ClientState,
+                        )
                         .expect("Failed to create WlDataOffer");
                     device.data_offer(&offer);
 
@@ -1109,7 +1114,7 @@ impl Composer {
             for device in &self.data_control_devices {
                 if device.client().map(|c| c.id()) == Some(client.id()) {
                     let offer = client
-                        .create_resource::<zwlr_data_control_offer_v1::ZwlrDataControlOfferV1, crate::server::ClientState, crate::server::Composer>(dh, device.version(), crate::server::ClientState);
+                        .create_resource::<zwlr_data_control_offer_v1::ZwlrDataControlOfferV1, ClientState, Composer>(dh, device.version(), ClientState);
 
                     if offer.is_err() {
                         error!("Failed to create ZwlrDataControlOfferV1");
@@ -1153,11 +1158,12 @@ impl Composer {
         if let Some(source) = &self.primary_selection {
             for device in &self.primary_selection_devices {
                 if device.client().map(|c| c.id()) == Some(client.id()) {
-                    let offer = client.create_resource::<ZwpPrimarySelectionOfferV1, crate::server::ClientState, crate::server::Composer>(
-                        dh,
-                        device.version(),
-                        crate::server::ClientState,
-                    );
+                    let offer = client
+                        .create_resource::<ZwpPrimarySelectionOfferV1, ClientState, Composer>(
+                            dh,
+                            device.version(),
+                            ClientState,
+                        );
 
                     if offer.is_err() {
                         error!("Failed to create ZwpPrimarySelectionOfferV1");
@@ -1193,7 +1199,7 @@ impl Composer {
             for device in &self.data_control_devices {
                 if device.client().map(|c| c.id()) == Some(client.id()) {
                     let offer = client
-                        .create_resource::<zwlr_data_control_offer_v1::ZwlrDataControlOfferV1, crate::server::ClientState, crate::server::Composer>(dh, device.version(), crate::server::ClientState);
+                        .create_resource::<zwlr_data_control_offer_v1::ZwlrDataControlOfferV1, ClientState, Composer>(dh, device.version(), ClientState);
 
                     if offer.is_err() {
                         error!("Failed to create ZwlrDataControlOfferV1");
@@ -1278,8 +1284,9 @@ impl Composer {
         if let Some(lock) = self.session_lock.as_ref() {
             for (_, lock_surface, out_id) in &lock.surfaces {
                 if let Some(wl_out) = self.outputs.iter().find(|o| o.id() == *out_id) {
-                    if let Some(output_idx) = wl_out.data::<usize>() {
-                        if let Some(out_info) = self.outputs_info.get(*output_idx) {
+                    if let Some(monitor_data) = wl_out.data::<MonitorData>() {
+                        let output_idx = monitor_data.0;
+                        if let Some(out_info) = self.outputs_info.get(output_idx) {
                             extra_surfaces.push((
                                 lock_surface.clone(),
                                 out_info.x as f64,

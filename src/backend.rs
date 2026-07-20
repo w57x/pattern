@@ -19,7 +19,7 @@ use wayland_server::{Display, ListeningSocket, Resource};
 use crate::{
     gpu::{Card, buffer::Buffer},
     input::Input,
-    server::{ClientState, Composer},
+    server::{ClientState, Composer, MonitorData},
     vulkan::{DrawCommand, RenderQuad, VulkanContext, frame::VulkanFrame},
 };
 
@@ -609,8 +609,9 @@ impl EventLoop {
                 if let Some(lock) = composer.session_lock.as_ref() {
                     for (_, lock_surface, out_id) in &lock.surfaces {
                         if let Some(wl_out) = composer.outputs.iter().find(|o| o.id() == *out_id) {
-                            if let Some(output_idx) = wl_out.data::<usize>() {
-                                if let Some(out_info) = composer.outputs_info.get(*output_idx) {
+                            if let Some(monitor_data) = wl_out.data::<MonitorData>() {
+                                let output_idx = monitor_data.0;
+                                if let Some(out_info) = composer.outputs_info.get(output_idx) {
                                     composer.styler.draw_surface_tree(
                                         lock_surface,
                                         out_info.x as f64,

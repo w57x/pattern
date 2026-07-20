@@ -18,7 +18,7 @@ use wayland_server::protocol::{wl_keyboard, wl_pointer};
 use xkbcommon::xkb::Keymap;
 
 use crate::animation::math::Vector2;
-use crate::server::Composer;
+use crate::server::{Composer, MonitorData};
 
 mod bindings;
 use bindings::{BindingAction, handle_keybinding};
@@ -1059,8 +1059,9 @@ impl Input {
 
             for (_, surf, out_id) in &lock.surfaces {
                 if let Some(wl_out) = state.outputs.iter().find(|o| o.id() == *out_id) {
-                    if let Some(output_idx) = wl_out.data::<usize>() {
-                        if let Some(out_info) = state.outputs_info.get(*output_idx) {
+                    if let Some(monitor_data) = wl_out.data::<MonitorData>() {
+                        let output_idx = monitor_data.0;
+                        if let Some(out_info) = state.outputs_info.get(output_idx) {
                             if cursor.x >= out_info.x as f64
                                 && cursor.x <= (out_info.x + out_info.width) as f64
                                 && cursor.y >= out_info.y as f64

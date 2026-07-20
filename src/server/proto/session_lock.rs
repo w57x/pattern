@@ -6,7 +6,7 @@ use wayland_server::{
     Dispatch, GlobalDispatch, Resource, backend::ObjectId, protocol::wl_surface::WlSurface,
 };
 
-use crate::server::{ClientState, Composer, GlobalState};
+use crate::server::{ClientState, Composer, GlobalState, MonitorData};
 
 pub struct SessionLockState {
     pub lock: ExtSessionLockV1,
@@ -88,8 +88,9 @@ impl Dispatch<ExtSessionLockV1, Composer> for ClientState {
                         // Send initial configure
                         let mut sent = false;
                         if let Some(wl_out) = state.outputs.iter().find(|o| o.id() == output.id()) {
-                            if let Some(output_idx) = wl_out.data::<usize>() {
-                                if let Some(out_info) = state.outputs_info.get(*output_idx) {
+                            if let Some(monitor_data) = wl_out.data::<MonitorData>() {
+                                let output_idx = monitor_data.0;
+                                if let Some(out_info) = state.outputs_info.get(output_idx) {
                                     state.serial += 1;
                                     lock_surface.configure(
                                         state.serial,
